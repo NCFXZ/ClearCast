@@ -23,6 +23,9 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string Settings => Get("设置", "Settings");
     public string About => Get("关于", "About");
     public string AboutVersion { get; } = typeof(UiText).Assembly.GetName().Version?.ToString() ?? "—";
+    public string AboutRepository => Get("GitHub 仓库", "GitHub repository");
+    public string AboutLicense => Get("开源许可证", "Open-source license");
+    public string AboutReportIssue => Get("问题反馈", "Report an issue");
 
     public string PairingCode => Get("投屏验证码", "Mirroring code");
     public string ReceiverError => Get("接收遇到问题", "Couldn't receive the stream");

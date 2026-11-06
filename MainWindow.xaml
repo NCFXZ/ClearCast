@@ -414,18 +414,39 @@
                                 <TextBlock x:Name="AboutHeading" AutomationProperties.HeadingLevel="Level1"
                                     Style="{StaticResource TitleTextBlockStyle}" Text="{x:Bind Texts.About, Mode=OneWay}" />
                                 <StackPanel Spacing="12">
-                                    <Border Padding="16,12" MinHeight="68" CornerRadius="4" BorderThickness="1"
-                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
-                                        <Grid ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
-                                            <Image Width="28" Height="28" Source="ms-appx:///Assets/ClearCast.png" />
-                                            <TextBlock x:Name="AboutAppName" Grid.Column="1" Text="ClearCast" VerticalAlignment="Center" TextWrapping="Wrap" />
-                                            <TextBlock x:Name="AboutVersionLabel" Grid.Column="2" Text="{x:Bind Texts.AboutVersion}"
-                                                VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                        </Grid>
-                                    </Border>
-                                    <HyperlinkButton x:Name="AboutGitHubLink" Padding="0" HorizontalAlignment="Left"
-                                        AutomationProperties.Name="GitHub" NavigateUri="https://github.com/NCFXZ/ClearCast">
+                                    <local:SettingsExpander x:Name="AboutExpander" MinHeight="68" Padding="0" HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Stretch" AutomationProperties.Name="ClearCast"
+                                        HeaderBackground="{ThemeResource ExpanderHeaderBackground}"
+                                        HeaderPointerOverBackground="{ThemeResource ControlFillColorSecondaryBrush}">
+                                        <local:SettingsExpander.Resources>
+                                            <SolidColorBrush x:Key="ExpanderChevronPointerOverBackground" Color="Transparent" />
+                                            <SolidColorBrush x:Key="ExpanderChevronPressedBackground" Color="Transparent" />
+                                        </local:SettingsExpander.Resources>
+                                        <local:SettingsExpander.Header>
+                                            <Grid Margin="0,12,12,12" ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
+                                                <Image Width="28" Height="28" Source="ms-appx:///Assets/ClearCast.png" />
+                                                <TextBlock x:Name="AboutAppName" Grid.Column="1" Text="ClearCast" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                                <TextBlock x:Name="AboutVersionLabel" Grid.Column="2" Text="{x:Bind Texts.AboutVersion}"
+                                                    VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </Grid>
+                                        </local:SettingsExpander.Header>
+                                        <StackPanel>
+                                            <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+                                                <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                                    <TextBlock Text="{x:Bind Texts.AboutRepository, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                                    <HyperlinkButton x:Name="AboutRepositoryLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
+                                                        HorizontalAlignment="Right" Content="NCFXZ/ClearCast" NavigateUri="https://github.com/NCFXZ/ClearCast" />
+                                                </Grid>
+                                            </Border>
+                                            <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                                <TextBlock Text="{x:Bind Texts.AboutLicense, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                                <HyperlinkButton x:Name="AboutLicenseLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
+                                                    HorizontalAlignment="Right" Content="GPL-3.0-or-later" NavigateUri="https://github.com/NCFXZ/ClearCast/blob/main/LICENSE" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </local:SettingsExpander>
+                                    <HyperlinkButton x:Name="AboutIssueLink" Padding="0" HorizontalAlignment="Right"
+                                        AutomationProperties.Name="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" NavigateUri="https://github.com/NCFXZ/ClearCast/issues/new">
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <PathIcon Width="16" Height="16" VerticalAlignment="Center"
                                                 Data="M 6.766 11.328
@@ -442,7 +463,7 @@
                                                       -.172 -.422 -.36 -.672 -.719 -.719 -.187 -.015 -.25 -.093 -.25 -.187
                                                       0 -.188 .313 -.328 .625 -.328 .453 0 .844 .281 1.25 .86
                                                       .313 .452 .64 .655 1.031 .655 s .641 -.14 1 -.5 c .266 -.265 .47 -.5 .657 -.656 z" />
-                                            <TextBlock Text="GitHub" VerticalAlignment="Center" />
+                                            <TextBlock Text="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" VerticalAlignment="Center" />
                                         </StackPanel>
                                     </HyperlinkButton>
                                 </StackPanel>
