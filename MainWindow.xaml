@@ -424,28 +424,19 @@
                                         </local:SettingsExpander.Resources>
                                         <local:SettingsExpander.Header>
                                             <Grid Margin="0,12,12,12" ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
-                                                <Image Width="28" Height="28" Source="ms-appx:///Assets/ClearCast.png" />
-                                                <TextBlock x:Name="AboutAppName" Grid.Column="1" Text="ClearCast" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                                <Image Width="28" Height="28" VerticalAlignment="Center" Source="ms-appx:///Assets/ClearCast.png" />
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                                    <TextBlock x:Name="AboutAppName" Text="ClearCast" TextWrapping="Wrap" />
+                                                    <TextBlock x:Name="AboutLicenseText" Text="{x:Bind Texts.AboutLicense, Mode=OneWay}"
+                                                        Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                        TextWrapping="Wrap" />
+                                                </StackPanel>
                                                 <TextBlock x:Name="AboutVersionLabel" Grid.Column="2" Text="{x:Bind Texts.AboutVersion}"
                                                     VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             </Grid>
                                         </local:SettingsExpander.Header>
-                                        <StackPanel>
-                                            <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
-                                                <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                                                    <TextBlock Text="{x:Bind Texts.AboutRepository, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                                    <HyperlinkButton x:Name="AboutRepositoryLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
-                                                        HorizontalAlignment="Right" Content="{x:Bind Texts.AboutRepositoryLinkText, Mode=OneWay}"
-                                                        NavigateUri="https://github.com/NCFXZ/ClearCast" />
-                                                </Grid>
-                                            </Border>
-                                            <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
-                                                <TextBlock Text="{x:Bind Texts.AboutLicense, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                                <HyperlinkButton x:Name="AboutLicenseLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
-                                                    HorizontalAlignment="Right" Content="{x:Bind Texts.AboutLicenseLinkText, Mode=OneWay}"
-                                                    NavigateUri="https://github.com/NCFXZ/ClearCast/blob/main/LICENSE" />
-                                            </Grid>
-                                        </StackPanel>
+                                        <HyperlinkButton x:Name="AboutRepositoryLink" Margin="48,8,44,8" Padding="12,6"
+                                            HorizontalAlignment="Left" Content="GitHub" NavigateUri="https://github.com/NCFXZ/ClearCast" />
                                     </local:SettingsExpander>
                                     <HyperlinkButton x:Name="AboutIssueLink" Padding="0" HorizontalAlignment="Right"
                                         AutomationProperties.Name="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" NavigateUri="https://github.com/NCFXZ/ClearCast/issues/new">

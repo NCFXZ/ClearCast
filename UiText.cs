@@ -23,10 +23,7 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string Settings => Get("设置", "Settings");
     public string About => Get("关于", "About");
     public string AboutVersion { get; } = typeof(UiText).Assembly.GetName().Version?.ToString() ?? "—";
-    public string AboutRepository => Get("源代码", "Source code");
-    public string AboutRepositoryLinkText => Get("在 GitHub 上查看", "View on GitHub");
-    public string AboutLicense => Get("开源许可证", "Open-source license");
-    public string AboutLicenseLinkText => Get("GNU GPL v3 或更高版本", "GNU GPL v3 or later");
+    public string AboutLicense => Get("GNU GPL v3 或更高版本", "GNU GPL v3 or later");
     public string AboutReportIssue => Get("问题反馈", "Report an issue");
 
     public string PairingCode => Get("投屏验证码", "Mirroring code");
