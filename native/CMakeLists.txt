@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.13)
+project(ClearCastReceiver LANGUAGES C CXX)
+
+if(NOT WIN32 OR NOT DEFINED UXPLAY_SOURCE_DIR)
+  message(FATAL_ERROR "A Windows toolchain and UXPLAY_SOURCE_DIR are required.")
+endif()
+
+add_subdirectory("${UXPLAY_SOURCE_DIR}" uxplay EXCLUDE_FROM_ALL)
+add_library(clearcast_receiver SHARED "${UXPLAY_SOURCE_DIR}/uxplay.cpp")
+target_compile_features(clearcast_receiver PRIVATE cxx_std_11)
+foreach(target clearcast_receiver airplay renderers)
+  target_compile_definitions(${target} PRIVATE CLEARCAST_IN_PROCESS)
+endforeach()
+target_include_directories(clearcast_receiver PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${UXPLAY_SOURCE_DIR}")
+target_include_directories(renderers PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(clearcast_receiver PRIVATE renderers airplay)
+set_target_properties(clearcast_receiver PROPERTIES PREFIX "")

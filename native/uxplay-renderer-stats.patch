@@ -1,0 +1,103 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -58,6 +58,7 @@
+ static void clearcast_mirror_running(bool running);
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+ extern "C" void clearcast_pipeline_error();
++extern "C" void clearcast_pairing_status(int rejected);
+ #endif
+ #else
+ #include <csignal>
+@@ -2776,7 +2777,9 @@
+ }
+ 
+ extern "C" void display_pin(void *cls, char *pin) {
+-#ifndef CLEARCAST_IN_PROCESS
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_pairing_status(0);
++#else
+     int margin = 10;
+     int spacing = 3;
+     char *image = create_pin_display(pin, margin, spacing);
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -28,6 +28,7 @@
+ static uintptr_t external_window_handle = 0;
+ #ifdef CLEARCAST_IN_PROCESS
+ extern void clearcast_pipeline_error(void);
++extern void clearcast_set_video_sink(GstElement *sink);
+ #endif
+ 
+ static GstBusSyncReply
+@@ -1126,6 +1127,18 @@
+                gst_element_state_get_name (old_state),gst_element_state_get_name (new_state));
+     gst_video_pipeline_base_time = gst_element_get_base_time(renderer->appsrc);
+ 
++#ifdef CLEARCAST_IN_PROCESS
++    if (!video_is_jpeg) {
++        char *name = g_strdup_printf("d3d11videosink_%s", renderer->codec);
++        GstElement *sink = gst_bin_get_by_name(GST_BIN(renderer->pipeline), name);
++        clearcast_set_video_sink(sink);
++        if (sink) {
++            gst_object_unref(sink);
++        }
++        g_free(name);
++    }
++#endif
++
+     /* destroy unused renderers */
+     for (int i = 0; i < n_renderers; i++) {
+         if (renderer_type[i] == renderer) {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -247,6 +247,10 @@
+     plist_free(res_node);
+     http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
+ }
++
++#ifdef CLEARCAST_IN_PROCESS
++extern void clearcast_pairing_status(int rejected);
++#endif
+ 
+ static void
+ raop_handler_pairpinstart(raop_conn_t *conn,
+@@ -434,6 +438,9 @@
+         return;
+     }
+  authentication_failed:;
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_pairing_status(1);
++#endif
+     http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+ }
+ 
+@@ -500,6 +507,9 @@
+             || pairing_session_get_public_key(conn->session, public_key)
+             || pairing_session_get_signature(conn->session, signature)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error initializing pair-verify handshake");
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_pairing_status(1);
++#endif
+             http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+             http_response_set_disconnect(response, 1);
+             return;
+@@ -515,6 +525,9 @@
+             }
+ 
+             if (!registered_client) {
++#ifdef CLEARCAST_IN_PROCESS
++                clearcast_pairing_status(1);
++#endif
+                 return;
+             }
+         }
+@@ -535,6 +548,9 @@
+ 
+         if (pairing_session_finish(conn->session, data + 4)) {
+             logger_log(raop->logger, LOGGER_ERR, "Incorrect pair-verify signature");
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_pairing_status(1);
++#endif
+             http_response_set_disconnect(response, 1);
+             return;
+         }

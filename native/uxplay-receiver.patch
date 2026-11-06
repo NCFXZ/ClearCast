@@ -1,0 +1,1021 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -51,6 +51,14 @@
+ #include <cerrno>
+ #include <cstdlib>
+ #include "winui_video_host.h"
++#ifdef CLEARCAST_IN_PROCESS
++#include <atomic>
++#include <glib/gstdio.h>
++static std::atomic<bool> clearcast_stopping(false);
++static void clearcast_mirror_running(bool running);
++static void clearcast_mirror_geometry(int width, int height, bool hevc);
++extern "C" void clearcast_pipeline_error();
++#endif
+ #else
+ #include <csignal>
+ #include <glib-unix.h>
+@@ -110,9 +118,21 @@
+ static bool video_sync = true;
+ static int64_t audio_delay_alac = 0;
+ static int64_t audio_delay_aac = 0;
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<bool> relaunch_video(false);
++#else
+ static bool relaunch_video = false;
++#endif
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<bool> reset_loop(false);
++#else
+ static bool reset_loop = false;
++#endif
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<unsigned int> open_connections(0);
++#else
+ static unsigned int open_connections= 0;
++#endif
+ static std::string videosink = "autovideosink";
+ static std::string videosink_options = "";
+ #ifdef _WIN32
+@@ -166,7 +186,11 @@
+ static bool nofreeze = false;
+ static unsigned short raop_port;
+ static unsigned short airplay_port;
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<uint64_t> remote_clock_offset(0);
++#else
+ static uint64_t remote_clock_offset = 0;
++#endif
+ static std::vector<std::string> allowed_clients;
+ static std::vector<std::string> blocked_clients;
+ static bool restrict_clients;
+@@ -199,11 +223,23 @@
+ static guint video_eos_watch_id = 0;
+ static guint progress_id = 0;
+ static guint gst_hls_position_id = 0;
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<bool> preserve_connections(false);
++#else
+ static bool preserve_connections = false;
++#endif
+ static guint missed_feedback_limit = MISSED_FEEDBACK_LIMIT;
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<guint> missed_feedback(0);
++#else
+ static guint missed_feedback = 0;
++#endif
+ static guint playbin_version = DEFAULT_PLAYBIN_VERSION;
++#ifdef CLEARCAST_IN_PROCESS
++static std::atomic<bool> reset_httpd(false);
++#else
+ static bool reset_httpd = false;
++#endif
+ static bool monitor_progress = false;
+ static uint32_t rtptime = 0;
+ static uint32_t rtptime_prev = 0;
+@@ -278,6 +314,16 @@
+ /* logging */
+ 
+ static void log(int level, const char* format, ...) {
++#ifdef CLEARCAST_IN_PROCESS
++    if (level > LOGGER_WARNING) return;
++    char message[4096];
++    va_list vargs;
++    va_start(vargs, format);
++    vsnprintf(message, sizeof(message), format, vargs);
++    va_end(vargs);
++    OutputDebugStringA(message);
++    OutputDebugStringA("\n");
++#else
+     va_list vargs;
+     if (level > log_level) return;
+     switch (level) {
+@@ -297,6 +343,7 @@
+     vprintf(format, vargs);
+     printf("\n");
+     va_end(vargs);
++#endif
+ }
+ 
+ #define LOGD(...) log(LOGGER_DEBUG, __VA_ARGS__)
+@@ -678,7 +725,7 @@
+             g_main_loop_quit((GMainLoop *) loop);
+             return TRUE;
+         } else if (missed_feedback > 2) {
+-            LOGE("%3u seconds since last client feedback request (expected every two seconds); client may be offline", missed_feedback);
++            LOGE("%3u seconds since last client feedback request (expected every two seconds); client may be offline", static_cast<unsigned int>(missed_feedback));
+         }
+         missed_feedback++;
+     } else {
+@@ -688,6 +735,13 @@
+ }
+ 
+ static gboolean reset_callback(gpointer loop) {
++#ifdef CLEARCAST_IN_PROCESS
++    if (clearcast_stopping) {
++        relaunch_video = false;
++        g_main_loop_quit((GMainLoop *) loop);
++        return G_SOURCE_CONTINUE;
++    }
++#endif
+     if (reset_loop) {
+         g_main_loop_quit((GMainLoop *) loop);
+     }
+@@ -830,7 +884,9 @@
+     GMainLoop *loop = g_main_loop_new(NULL,FALSE);
+     relaunch_video = false;
+     monitor_progress = false;
++#ifndef CLEARCAST_IN_PROCESS
+     reset_loop = false;
++#endif
+     reset_httpd = false;
+     preserve_connections = false;
+     n_video_renderers = 0;
+@@ -2655,10 +2711,15 @@
+             LOGI("ClearCast: mirror ended");
+         }
+ #endif
+-        LOGD("video_reset: type = RTP_Shutdown");      
++        LOGD("video_reset: type = RTP_Shutdown");
++#ifdef CLEARCAST_IN_PROCESS
++        if (!preserve_connections) clearcast_mirror_running(false);
++        return;
++#else
+         if (use_video) {
+             video_renderer_stop();
+         }
++#endif
+         remote_clock_offset = 0;
+         relaunch_video = true;
+         break;
+@@ -2703,10 +2764,19 @@
+     geom.y_offset = (int) y_offset;
+     geom.width = (int) width;
+     geom.height = (int) height;
+-    return video_renderer_choose_codec_and_size(false, video_is_h265, &geom);
++    int result = video_renderer_choose_codec_and_size(false, video_is_h265, &geom);
++#ifdef CLEARCAST_IN_PROCESS
++    if (result == 0) {
++        clearcast_mirror_geometry(geom.width, geom.height, video_is_h265);
++    } else {
++        clearcast_pipeline_error();
++    }
++#endif
++    return result;
+ }
+ 
+ extern "C" void display_pin(void *cls, char *pin) {
++#ifndef CLEARCAST_IN_PROCESS
+     int margin = 10;
+     int spacing = 3;
+     char *image = create_pin_display(pin, margin, spacing);
+@@ -2716,6 +2786,7 @@
+         LOGI("%s\n",image);     
+         free (image);
+     }
++#endif
+ }
+ 
+ extern "C" const char *passwd(void *cls, int *len){
+@@ -2744,14 +2815,14 @@
+ 
+ extern "C" void conn_init (void *cls) {
+     open_connections++;
+-    LOGD("Open connections: %i", open_connections);
++    LOGD("Open connections: %u", static_cast<unsigned int>(open_connections));
+     //video_renderer_update_background(1);
+ }
+ 
+ extern "C" void conn_destroy (void *cls) {
+     //video_renderer_update_background(-1);
+     open_connections--;
+-    LOGD("Open connections: %i", open_connections);
++    LOGD("Open connections: %u", static_cast<unsigned int>(open_connections));
+     if (open_connections == 0) {
+         remote_clock_offset = 0;
+         if (use_audio) {
+@@ -3082,7 +3153,11 @@
+     LOGI("registered new client: %s DeviceID = %s PK = \n%s", client_name, device_id, client_pk);
+     registered_keys.push_back(client_pk);
+     if (strlen(pairing_register.c_str())) {
++#ifdef CLEARCAST_IN_PROCESS
++        FILE *fp = g_fopen(pairing_register.c_str(), "a");
++#else
+         FILE *fp = fopen600(pairing_register.c_str(), "a");
++#endif
+         if (fp) {
+             time_t raw_time = time(NULL);
+             struct tm *tm_info = localtime(&raw_time);
+@@ -3238,7 +3313,9 @@
+     raop_cbs.video_reset = video_reset;
+     raop_cbs.video_set_codec_and_size = video_set_codec_and_size;
+     raop_cbs.get_custom_profile = get_custom_profile;
+-#ifdef DBUS
++#ifdef CLEARCAST_IN_PROCESS
++    raop_cbs.mirror_video_running = [](void*, bool running) { clearcast_mirror_running(running); };
++#elif defined(DBUS)
+     raop_cbs.mirror_video_running = mirror_video_running;
+ #endif
+     raop_cbs.on_video_play = on_video_play;
+@@ -3258,7 +3335,8 @@
+     /* set nohold = 1 to allow  capture by new client */
+     if (raop_init2(raop, nohold, mac_address.c_str(), keyfile.c_str())){
+         LOGE("Error initializing raop (2)!");
+-        free (raop);
++        raop_destroy(raop);
++        raop = NULL;
+         return -1;
+     }
+ 
+@@ -3281,7 +3359,9 @@
+     raop_set_udp_ports(raop, udp);
+ 
+     raop_port = raop_get_port(raop);
+-    raop_start_httpd(raop, &raop_port);
++    if (raop_start_httpd(raop, &raop_port) < 0) {
++        return -1;
++    }
+     raop_set_port(raop, raop_port);
+ 
+     /* use raop_port for airplay_port (instead of tcp[2]) */
+@@ -3391,6 +3471,10 @@
+     }
+ }
+ 
++#ifdef CLEARCAST_IN_PROCESS
++#include "clearcast_receiver_impl.h"
++static void cleanup() {}
++#else
+ #ifdef GST_MACOS
+ /* workaround for GStreamer >= 1.22 "Official Builds" on macOS */
+ #include <TargetConditionals.h>
+@@ -3897,3 +3981,4 @@
+ #endif
+     exit(0);
+ }
++#endif /* CLEARCAST_IN_PROCESS */
+--- a/winui_video_host.h
++++ b/winui_video_host.h
+@@ -52,7 +52,8 @@
+ 
+     HWND window = nullptr;
+     RECT rect;
+-    if (GetClientRect(parent, &rect) && RegisterClassW(&window_class)) {
++    if (GetClientRect(parent, &rect) &&
++        (RegisterClassW(&window_class) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS)) {
+         window = CreateWindowExW(WS_EX_NOPARENTNOTIFY, class_name, L"",
+                                  WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                                  0, 0, rect.right, rect.bottom, parent, nullptr, instance, nullptr);
+@@ -78,7 +79,7 @@
+     return 0;
+ }
+ 
+-static HWND create_winui_video_host(HWND parent) {
++static HWND create_winui_video_host(HWND parent, HANDLE* owner_thread = nullptr) {
+     HANDLE ready = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+     if (!ready) {
+         return nullptr;
+@@ -92,7 +93,11 @@
+         return nullptr;
+     }
+     WaitForSingleObject(ready, INFINITE);
+-    CloseHandle(thread);
++    if (owner_thread && start.child) {
++        *owner_thread = thread;
++    } else {
++        CloseHandle(thread);
++    }
+     CloseHandle(ready);
+     SetLastError(start.error);
+     return start.child;
+--- a/renderers/audio_renderer.h
++++ b/renderers/audio_renderer.h
+@@ -33,7 +33,7 @@
+ #include "../lib/logger.h"
+ 
+ bool gstreamer_init();
+-void audio_renderer_init(logger_t *logger, const char* audiosink, const bool *audio_sync, const bool *video_sync, const char *artp_pipeline);
++bool audio_renderer_init(logger_t *logger, const char* audiosink, const bool *audio_sync, const bool *video_sync, const char *artp_pipeline);
+ void audio_renderer_start(unsigned char* compression_type);
+ void audio_renderer_stop();
+ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time);
+--- a/renderers/video_renderer.h
++++ b/renderers/video_renderer.h
+@@ -56,7 +56,7 @@
+ 
+ typedef struct video_renderer_s video_renderer_t;
+ 
+-void video_renderer_init (logger_t *logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char *rtp_pipeline,
++bool video_renderer_init (logger_t *logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char *rtp_pipeline,
+                           const char *decoder, const char *converter, const char *videosink, const char *videosink_options,
+                           bool initial_fullscreen, bool video_sync, bool h265_support, bool coverart_support,
+                           guint playbin_version,  const char *uri);
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -126,7 +126,7 @@
+     return (bool) check_plugins ();
+ }
+ 
+-void audio_renderer_init(logger_t *render_logger, const char* audiosink, const bool* audio_sync, const bool* video_sync, const char *artp_pipeline) {
++bool audio_renderer_init(logger_t *render_logger, const char* audiosink, const bool* audio_sync, const bool* video_sync, const char *artp_pipeline) {
+     GError *error = NULL;
+     GstCaps *caps = NULL;
+     GstClock *clock = gst_system_clock_obtain();
+@@ -144,7 +144,10 @@
+ 
+     for (int i = 0; i < NFORMATS ; i++) {
+         renderer_type[i] = (audio_renderer_t *)  calloc(1,sizeof(audio_renderer_t));
+-        g_assert(renderer_type[i]);
++        if (!renderer_type[i]) {
++            g_object_unref(clock);
++            return false;
++        }
+         GString *launch = g_string_new("appsrc name=audio_source ! ");
+         g_string_append(launch, "queue ! ");
+         switch (i) {
+@@ -196,12 +199,14 @@
+             g_string_append (launch, artp_pipeline);
+         }
+         renderer_type[i]->pipeline  = gst_parse_launch(launch->str, &error);
+-	if (error) {
+-          g_error ("gst_parse_launch error (audio %d):\n %s\n", i+1, error->message);
+-          g_clear_error (&error);
+-        }
+-
+-        g_assert (renderer_type[i]->pipeline);
++        if (error || !renderer_type[i]->pipeline) {
++            logger_log(logger, LOGGER_ERR, "Could not build audio renderer %d: %s",
++                       i + 1, error ? error->message : "no pipeline");
++            g_clear_error(&error);
++            g_string_free(launch, TRUE);
++            g_object_unref(clock);
++            return false;
++        }
+         gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
+         renderer_type[i]->bus = gst_element_get_bus(renderer_type[i]->pipeline);
+         renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "audio_source");
+@@ -240,6 +245,7 @@
+         gst_caps_unref(caps);
+     }
+     g_object_unref(clock);
++    return true;
+ }
+ 
+ void audio_renderer_stop() {
+@@ -395,15 +401,15 @@
+ void audio_renderer_destroy() {
+     audio_renderer_stop();
+     for (int i = 0; i < NFORMATS ; i++ ) {
+-        gst_object_unref (renderer_type[i]->bus);
+-        renderer_type[i]->bus = NULL;
+-        gst_object_unref (renderer_type[i]->volume);
+-        renderer_type[i]->volume = NULL;
+-        gst_object_unref (renderer_type[i]->appsrc);
+-        renderer_type[i]->appsrc = NULL;
+-        gst_object_unref (renderer_type[i]->pipeline);
+-        renderer_type[i]->pipeline = NULL;
+-        free(renderer_type[i]);
++        audio_renderer_t *instance = renderer_type[i];
++        if (instance) {
++            if (instance->bus) gst_object_unref(instance->bus);
++            if (instance->volume) gst_object_unref(instance->volume);
++            if (instance->appsrc) gst_object_unref(instance->appsrc);
++            if (instance->pipeline) gst_object_unref(instance->pipeline);
++            free(instance);
++            renderer_type[i] = NULL;
++        }
+     }
+ }
+ 
+@@ -416,11 +422,11 @@
+         logger_log(logger, LOGGER_INFO, "GStreamer error (audio): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
+         g_error_free(err);
+         g_free(debug);
+-        if (renderer->appsrc) {
++        if (renderer && renderer->appsrc) {
+             gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
+         }
+         gst_bus_set_flushing(bus, TRUE);
+-        gst_element_set_state (renderer->pipeline, GST_STATE_READY);
++        if (renderer) gst_element_set_state (renderer->pipeline, GST_STATE_READY);
+         g_main_loop_quit( (GMainLoop *) loop);
+ 	break;
+     }
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -26,6 +26,9 @@
+ #include <gst/video/videooverlay.h>
+ 
+ static uintptr_t external_window_handle = 0;
++#ifdef CLEARCAST_IN_PROCESS
++extern void clearcast_pipeline_error(void);
++#endif
+ 
+ static GstBusSyncReply
+ window_handle_bus_sync_handler(GstBus *bus, GstMessage *message, gpointer user_data) {
+@@ -264,7 +267,7 @@
+ }
+ #endif
+ 
+-void video_renderer_init(logger_t *render_logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char * rtp_pipeline,
++bool video_renderer_init(logger_t *render_logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char * rtp_pipeline,
+                           const char *decoder, const char *converter, const char *videosink, const char *videosink_options, 
+                           bool initial_fullscreen, bool video_sync, bool h265_support, bool coverart_support, guint playbin_version, const char *uri) {
+     GError *error = NULL;
+@@ -315,7 +318,7 @@
+     for (int i = 0; i < n_renderers; i++) {
+         g_assert (i < 3);
+         renderer_type[i] = (video_renderer_t *) calloc(1, sizeof(video_renderer_t));
+-        g_assert(renderer_type[i]);
++        if (!renderer_type[i]) return false;
+         renderer_type[i]->id = i;
+         renderer_type[i]->bus = NULL;
+         renderer_type[i]->appsrc = NULL;
+@@ -435,8 +438,15 @@
+                                "           or some requested part of GStreamer is not installed\n");
+                 }
+                 g_clear_error (&error);
+-            }
+-            g_assert (renderer_type[i]->pipeline);
++                g_string_free(launch, TRUE);
++                gst_caps_unref(caps);
++                return false;
++            }
++            if (!renderer_type[i]->pipeline) {
++                g_string_free(launch, TRUE);
++                gst_caps_unref(caps);
++                return false;
++            }
+             GstClock *clock = gst_system_clock_obtain();
+             g_object_set(clock, "clock-type", GST_CLOCK_TYPE_REALTIME, NULL);
+             gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
+@@ -494,9 +504,10 @@
+                        "\nor your choices of video options (-vs -vd -vc -fs etc.) are incompatible on"
+                        "\nthis computer architecture.  (An example: kmssink with fullscreen option -fs"
+                        "\nmay work on some systems, but fail on others)");
+-            exit(1);
+-        }
+-    }
++            return false;
++        }
++    }
++    return true;
+ }
+ 
+ void video_renderer_pause() {
+@@ -736,19 +747,15 @@
+ static void video_renderer_destroy_instance(video_renderer_t *renderer) {
+     if (renderer) {
+         logger_log(logger, LOGGER_DEBUG,"destroying renderer instance %p codec=%s ", renderer, renderer->codec);
+-        GstState state;
+-        GstStateChangeReturn ret;
+-        gst_element_get_state(renderer->pipeline, &state, NULL, 100 * GST_MSECOND);
+-        logger_log(logger, LOGGER_DEBUG, "pipeline state is %s", gst_element_state_get_name(state));
+-        if (state != GST_STATE_NULL) {
+-            if (!hls_video) {
+-                gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
+-            }
+-            ret = gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+-            logger_log(logger, LOGGER_DEBUG, "pipeline_state_change_return: %s",
+-                       gst_element_state_change_return_get_name(ret));
+-            gst_element_get_state(renderer->pipeline, &state, NULL, 1000 * GST_MSECOND);
+-            logger_log(logger, LOGGER_DEBUG, "pipeline state is %s", gst_element_state_get_name(state));
++        if (renderer->pipeline) {
++            GstState state;
++            gst_element_get_state(renderer->pipeline, &state, NULL, 100 * GST_MSECOND);
++            if (state != GST_STATE_NULL) {
++                if (!hls_video && renderer->appsrc) {
++                    gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
++                }
++                gst_element_set_state(renderer->pipeline, GST_STATE_NULL);
++            }
+         }
+         if (renderer->appsrc) {
+             gst_object_unref (renderer->appsrc);
+@@ -762,8 +769,8 @@
+             gst_object_unref (renderer->textsrc);
+             renderer->textsrc = NULL;
+         }	
+-        gst_object_unref(renderer->bus);
+-        gst_object_unref(renderer->pipeline);
++        if (renderer->bus) gst_object_unref(renderer->bus);
++        if (renderer->pipeline) gst_object_unref(renderer->pipeline);
+ 
+ #ifdef X_DISPLAY_FIX
+         if (renderer->gst_window) {
+@@ -935,6 +942,9 @@
+         gboolean closed_window = FALSE;
+         gst_message_parse_error (message, &err, &debug);
+         logger_log(logger, LOGGER_INFO, "GStreamer error (video): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_pipeline_error();
++#endif
+         if (strstr(err->message, "Output window was closed")) {
+             closed_window = TRUE;
+         }
+@@ -1109,7 +1119,7 @@
+     gst_element_set_state (renderer->pipeline, GST_STATE_PLAYING);
+     GstState old_state, new_state;
+     if (gst_element_get_state(renderer->pipeline, &old_state, &new_state, 100 * GST_MSECOND) == GST_STATE_CHANGE_FAILURE) {
+-        g_error("video pipeline failed to go into playing state");
++        logger_log(logger, LOGGER_ERR, "video pipeline failed to go into playing state");
+         return -1;
+     }
+     logger_log(logger, LOGGER_DEBUG, "video_pipeline state change from %s to %s\n",
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -442,7 +442,7 @@
+         } else {
+             http_response_init(*response, protocol, 501, "Not Implemented");
+         }
+-    } else if (!hls_request && !strcmp(protocol, "HTTP/1.1")) {
++    } else if (raop->hls_support && !hls_request && !strcmp(protocol, "HTTP/1.1")) {
+         if (!strcmp(method, "POST")) {
+             if (!strcmp(url, "/reverse")) {
+                 handler = &http_handler_reverse;
+@@ -551,10 +551,6 @@
+     raop_t *raop = conn->raop;
+     logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");
+ 
+-    if (raop->callbacks.conn_destroy) {
+-        raop->callbacks.conn_destroy(raop->callbacks.cls);
+-    }
+-
+     if (conn->raop_rtp) {
+         /* This is done in case TEARDOWN was not called */
+         raop_rtp_destroy(conn->raop_rtp);
+@@ -569,6 +565,9 @@
+ 
+     if (raop->callbacks.video_flush) {
+         raop->callbacks.video_flush(raop->callbacks.cls);
++    }
++    if (raop->callbacks.conn_destroy) {
++        raop->callbacks.conn_destroy(raop->callbacks.cls);
+     }
+ 
+     free(conn->local);
+@@ -700,10 +699,12 @@
+ void
+ raop_destroy(raop_t *raop) {
+     if (raop) {
+-        raop_destroy_airplay_video(raop, -1);
+-        raop_stop_httpd(raop);
+-        pairing_destroy(raop->pairing);
+-        httpd_destroy(raop->httpd);
++        if (raop->httpd) {
++            raop_destroy_airplay_video(raop, -1);
++            raop_stop_httpd(raop);
++            httpd_destroy(raop->httpd);
++        }
++        if (raop->pairing) pairing_destroy(raop->pairing);
+         logger_destroy(raop->logger);
+         if (raop->nonce) {
+             free(raop->nonce);
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -250,14 +250,18 @@
+                 break;
+             }
+ 
+-            // We're calling recv for a certain amount of data, so we need a timeout
+-            struct timeval tv;
+-            tv.tv_sec = 0;
+-            tv.tv_usec = 5000;
+-            if (setsockopt(stream_fd, SOL_SOCKET, SO_RCVTIMEO, CAST &tv, sizeof(tv)) < 0) {
++            // Do not leave a sender's partial frame blocking receiver shutdown.
++#ifdef _WIN32
++            u_long nonblocking = 1;
++            int result = ioctlsocket(stream_fd, FIONBIO, &nonblocking);
++#else
++            struct timeval recv_timeout = {0, 5000};
++            int result = setsockopt(stream_fd, SOL_SOCKET, SO_RCVTIMEO, CAST &recv_timeout, sizeof(recv_timeout));
++#endif
++            if (result < 0) {
+                 int sock_err = SOCKET_GET_ERROR();
+                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR,
+-                           "raop_rtp_mirror could not set stream socket timeout %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
++                           "raop_rtp_mirror could not configure stream socket %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
+                 break;
+             }
+ 
+@@ -304,8 +308,9 @@
+             if (payload == NULL && ret == 0) {
+                 logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
+                            "raop_rtp_mirror tcp socket was closed by client (recv returned 0); got %d bytes of 128 byte header",readstart);
+-                FD_CLR(stream_fd, &rfds);
++                CLOSESOCKET(stream_fd);
+                 stream_fd = -1;
++                readstart = 0;
+                 continue;
+             } else if (payload == NULL && ret == -1) {
+                 int sock_err = SOCKET_GET_ERROR();
+@@ -318,6 +323,11 @@
+ 
+             /*packet[0:3] contains the payload size */
+             int payload_size = byteutils_get_int(packet, 0);
++            if (payload_size < 0 || payload_size > 64 * 1024 * 1024) {
++                logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "Invalid mirror packet length %d", payload_size);
++                conn_reset = true;
++                break;
++            }
+             char packet_description[13] = {0};
+             char *p = packet_description;
+             int n = sizeof(packet_description);
+@@ -362,12 +372,13 @@
+             /* "streaming report" packets have no timestamp in packet[8:15] */
+ 
+             if (payload == NULL) {
+-                payload = malloc(payload_size);
++                payload = malloc(payload_size ? payload_size : 1);
+                 if (!payload) {
+                     logger_log(raop_rtp_mirror->logger, LOGGER_ERR,"raop_rtp_mirror: Memory allocation failed (payload_out)");
+-                    exit(1);
+-                }
+-		
++                    conn_reset = true;
++                    break;
++                }
++
+                 readstart = 0;
+             }
+ 
+@@ -393,6 +404,7 @@
+             switch (packet[4]) {
+             case  0x00:
+                 // Normal video data (VCL NAL)
++                if (!payload_size) break;
+ 
+                 // Conveniently, the video data is already stamped with the remote wall clock time,
+                 // so no additional clock syncing needed. The only thing odd here is that the video
+@@ -436,7 +448,8 @@
+                 payload_out = (unsigned char*) malloc(payload_size + sps_pps_len);
+                 if (!payload_out) {
+                     logger_log(raop_rtp_mirror->logger, LOGGER_ERR,"raop_rtp_mirror: Memory allocation failed (payload_out)");
+-                    exit(1);
++                    conn_reset = true;
++                    break;
+                 }
+                 if (sps_pps_len) {
+                     memcpy(payload_out, sps_pps, sps_pps_len);
+@@ -614,7 +627,15 @@
+                 /* test for a H265 VPS/SPS/PPS */
+                 unsigned char hvc1[] = { 0x68, 0x76, 0x63, 0x31 };
+ 
++                if (payload_size < 11) {
++                    logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "Truncated mirror codec configuration");
++                    break;
++                }
+                 if (!memcmp(payload + 4, hvc1, 4)) {
++                    if (payload_size < 0x75 + 15) {
++                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "Truncated HEVC configuration");
++                        break;
++                    }
+                     /* hvc1 HECV detected */
+                     if (codec == VIDEO_CODEC_UNKNOWN) {
+                         codec = VIDEO_CODEC_H265;
+@@ -638,15 +659,17 @@
+                     unsigned char sps_start_code[] = { 0xa1, 0x00, 0x01, 0x00 };
+                     unsigned char pps_start_code[] = { 0xa2, 0x00, 0x01, 0x00 };
+ 
+-                    unsigned char * ptr = payload + 0x75;
++                    unsigned char *ptr = payload + 0x75;
++                    unsigned char *end = payload + payload_size;
+  
+-                    if (memcmp(ptr, vps_start_code, 4)) {
++                    if (end - ptr < 5 || memcmp(ptr, vps_start_code, 4)) {
+                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (VPS)");
+                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                         break;
+                     }
+-                    short vps_size = byteutils_get_short_be(ptr, 3);
++                    unsigned int vps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (end - ptr < vps_size) break;
+                     unsigned char *vps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(vps, vps_size, 16);
+@@ -654,13 +677,14 @@
+                         free(str);
+                     }
+                     ptr += vps_size;
+-                    if (memcmp(ptr, sps_start_code, 4)) {
++                    if (end - ptr < 5 || memcmp(ptr, sps_start_code, 4)) {
+                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (SPS)");
+                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                         break;
+                     }
+-                    short sps_size = byteutils_get_short_be(ptr, 3);
++                    unsigned int sps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (end - ptr < sps_size) break;
+                     unsigned char *sps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(sps, sps_size, 16);
+@@ -668,13 +692,14 @@
+                         free(str);
+                     }
+                     ptr += sps_size;
+-                    if (memcmp(ptr, pps_start_code, 4)) {
++                    if (end - ptr < 5 || memcmp(ptr, pps_start_code, 4)) {
+                        logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "non-conforming HEVC VPS/SPS/PPS payload (PPS)");			
+                         raop_rtp_mirror->callbacks.video_pause(raop_rtp_mirror->callbacks.cls);
+                         break;
+                     }
+-                    short pps_size = byteutils_get_short_be(ptr, 3);
++                    unsigned int pps_size = byteutils_get_short_be(ptr, 3);
+                     ptr += 5;
++                    if (end - ptr < pps_size) break;
+                     unsigned char *pps = ptr;
+                     if (logger_debug) {
+                         char *str = utils_data_to_string(pps, pps_size, 16);
+@@ -723,9 +748,11 @@
+                         conn_reset = true;
+                         break;
+                     }
+-                    short sps_size = byteutils_get_short_be(payload,6);
++                    unsigned int sps_size = byteutils_get_short_be(payload, 6);
++                    if (sps_size > payload_size - 11) break;
+                     unsigned char *sequence_parameter_set = payload + 8;
+-                    short pps_size = byteutils_get_short_be(payload, sps_size + 9);
++                    unsigned int pps_size = byteutils_get_short_be(payload, sps_size + 9);
++                    if (pps_size > payload_size - 11 - sps_size) break;
+                     unsigned char *picture_parameter_set = payload + sps_size + 11;
+                     int data_size = 6;
+                     if (logger_debug) {
+@@ -864,8 +891,6 @@
+     }
+ 
+     if (unsupported_codec) {
+-        CLOSESOCKET(raop_rtp_mirror->mirror_data_sock);
+-        raop_rtp_mirror_stop(raop_rtp_mirror);
+         raop_rtp_mirror->callbacks.video_reset(raop_rtp_mirror->callbacks.cls, RESET_TYPE_RTP_SHUTDOWN);
+     }
+ 
+@@ -949,7 +974,7 @@
+     /* Check that we are running and thread is not
+      * joined (should never be while still running) */
+     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+-    if (!raop_rtp_mirror->running || raop_rtp_mirror->joined) {
++    if (raop_rtp_mirror->joined) {
+         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+         return;
+     }
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -496,15 +496,13 @@
+             logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+             return;
+         }
+-        /* We can fall through these errors, the result will just be garbage... */
+-        if (pairing_session_handshake(conn->session, data + 4, data + 4 + X25519_KEY_SIZE)) {
++        if (pairing_session_handshake(conn->session, data + 4, data + 4 + X25519_KEY_SIZE)
++            || pairing_session_get_public_key(conn->session, public_key)
++            || pairing_session_get_signature(conn->session, signature)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error initializing pair-verify handshake");
+-        }
+-        if (pairing_session_get_public_key(conn->session, public_key)) {
+-            logger_log(raop->logger, LOGGER_ERR, "Error getting ECDH public key");
+-        }
+-        if (pairing_session_get_signature(conn->session, signature)) {
+-            logger_log(raop->logger, LOGGER_ERR, "Error getting ED25519 signature");
++            http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
++            http_response_set_disconnect(response, 1);
++            return;
+         }
+         if (register_check) {
+             bool registered_client = true;
+@@ -1330,17 +1328,17 @@
+                 raop->callbacks.audio_stop_coverart_rendering(raop->callbacks.cls);
+             }
+         }
+-    } else if (teardown_110) {
++    }
++    if (teardown_110) {
++        if (conn->raop_rtp_mirror) {
++            raop_rtp_mirror_stop(conn->raop_rtp_mirror);
++        }
+         if (raop->hls_pending) {
+             raop->callbacks.video_reset(raop->callbacks.cls, RESET_TYPE_RTP_TO_HLS_TEARDOWN);
+         } else {
+             raop->callbacks.video_reset(raop->callbacks.cls, RESET_TYPE_RTP_SHUTDOWN);
+         }
+-        if (conn->raop_rtp_mirror) {
+-        /* Stop our video RTP session */
+-            raop_rtp_mirror_stop(conn->raop_rtp_mirror);
+-        }
+-    } else {
++    } else if (!teardown_96) {
+         /* Destroy our sessions */
+         if (conn->raop_rtp) {
+             raop_rtp_destroy(conn->raop_rtp);
+--- a/lib/crypto.h
++++ b/lib/crypto.h
+@@ -30,6 +30,7 @@
+ 
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -69,7 +70,7 @@
+ int get_random_bytes(unsigned char *buf, int num);
+ void pk_to_base64(const unsigned char *pk, int pk_len, char *pk_base64, int len);
+   
+-void x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs);
++bool x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs);
+ 
+ // GCM AES 128
+ 
+--- a/lib/crypto.c
++++ b/lib/crypto.c
+@@ -34,6 +34,9 @@
+ #include <stdbool.h>
+ 
+ #include "utils.h"
++#ifdef CLEARCAST_IN_PROCESS
++#include <windows.h>
++#endif
+ 
+ #define SALT_PK "UxPlay-Persistent-Not-Secure-Public-Key"
+ 
+@@ -242,26 +245,15 @@
+     }
+ }
+ 
+-void x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs) {
+-    EVP_PKEY_CTX *pctx;
+-
+-    assert(ours);
+-    assert(theirs);
+-
+-    pctx = EVP_PKEY_CTX_new(ours->pkey, NULL);
+-    if (!pctx) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive_init(pctx)) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive_set_peer(pctx, theirs->pkey)) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive(pctx, secret, &(size_t) {X25519_KEY_SIZE})) {
+-        handle_error(__func__);
+-    }
+-    EVP_PKEY_CTX_free(pctx);
++bool x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs) {
++    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(ours->pkey, NULL);
++    size_t size = X25519_KEY_SIZE;
++    bool ok = ctx && EVP_PKEY_derive_init(ctx) > 0
++        && EVP_PKEY_derive_set_peer(ctx, theirs->pkey) > 0
++        && EVP_PKEY_derive(ctx, secret, &size) > 0;
++    EVP_PKEY_CTX_free(ctx);
++    if (!ok) ERR_clear_error();
++    return ok;
+ }
+ 
+ // GCM AES 128
+@@ -348,6 +340,23 @@
+     EVP_PKEY *pkey;
+ };
+ 
++static FILE *open_keyfile(const char *filename, bool write) {
++#ifdef CLEARCAST_IN_PROCESS
++    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, filename, -1, NULL, 0);
++    if (!length) return NULL;
++    wchar_t *path = malloc(sizeof(wchar_t) * length);
++    if (!path) return NULL;
++    FILE *file = NULL;
++    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, filename, -1, path, length)) {
++        file = _wfopen(path, write ? L"w" : L"r");
++    }
++    free(path);
++    return file;
++#else
++    return fopen(filename, write ? "w" : "r");
++#endif
++}
++
+ ed25519_key_t *ed25519_key_generate(const char *device_id, const char *keyfile, int *result) {
+     EVP_PKEY_CTX *pctx = NULL;
+     BIO *bp = NULL;
+@@ -361,13 +370,15 @@
+     assert(key);
+    
+     if (use_keyfile) {
+-        file = fopen(keyfile, "r");
++        file = open_keyfile(keyfile, false);
+         if (file) {
+             bp = BIO_new_fp(file, BIO_NOCLOSE);
+             key->pkey = PEM_read_PrivateKey(file, NULL, NULL, NULL);
+             BIO_free(bp);
+             fclose(file);
+-            if (!key->pkey) {
++            if (!key->pkey || EVP_PKEY_id(key->pkey) != EVP_PKEY_ED25519) {
++                EVP_PKEY_free(key->pkey);
++                key->pkey = NULL;
+                 new_pk = true;
+             }
+         } else {
+@@ -398,7 +409,7 @@
+         }
+         EVP_PKEY_CTX_free(pctx);
+         if (use_keyfile) {
+-            file = fopen(keyfile, "w");
++            file = open_keyfile(keyfile, true);
+             if (file) {
+                 bp = BIO_new_fp(file, BIO_NOCLOSE);
+                 PEM_write_bio_PrivateKey(bp, key->pkey, NULL, NULL, 0, NULL, NULL);
+--- a/lib/pairing.c
++++ b/lib/pairing.c
+@@ -168,12 +168,19 @@
+         return -1;
+     }
+ 
+-    session->ecdh_theirs = x25519_key_from_raw(ecdh_key);
++    x25519_key_t *theirs = x25519_key_from_raw(ecdh_key);
++    x25519_key_t *ours = x25519_key_generate();
++    if (!x25519_derive_secret(session->ecdh_secret, ours, theirs)) {
++        x25519_key_destroy(ours);
++        x25519_key_destroy(theirs);
++        return -1;
++    }
++    x25519_key_destroy(session->ecdh_ours);
++    x25519_key_destroy(session->ecdh_theirs);
++    ed25519_key_destroy(session->ed_theirs);
++    session->ecdh_ours = ours;
++    session->ecdh_theirs = theirs;
+     session->ed_theirs = ed25519_key_from_raw(ed_key);
+-
+-    session->ecdh_ours = x25519_key_generate();
+-
+-    x25519_derive_secret(session->ecdh_secret, session->ecdh_ours, session->ecdh_theirs);
+ 
+     session->status = STATUS_HANDSHAKE;
+     return 0;
+--- a/lib/httpd.c
++++ b/lib/httpd.c
+@@ -602,7 +602,7 @@
+                             logger_log(httpd->logger, LOGGER_INFO, "socket %d upgraded to PTTH reverse-HTTP protocol", connection->socket_fd);
+                         } else {
+                             logger_log(httpd->logger, LOGGER_ERR, "failed to allocate memory for reverse-HTTP upgrade");
+-                            exit(1);
++                            http_response_set_disconnect(response, 1);
+                         }
+                     }
+ 
+@@ -732,7 +732,7 @@
+     assert(httpd);
+ 
+     MUTEX_LOCK(httpd->run_mutex);
+-    if (!httpd->running || httpd->joined) {
++    if (httpd->joined) {
+         MUTEX_UNLOCK(httpd->run_mutex);
+         return;
+     }
+--- a/lib/raop_rtp.c
++++ b/lib/raop_rtp.c
+@@ -842,7 +842,7 @@
+     /* Check that we are running and thread is not
+      * joined (should never be while still running) */
+     MUTEX_LOCK(raop_rtp->run_mutex);
+-    if (!raop_rtp->running || raop_rtp->joined) {
++    if (raop_rtp->joined) {
+         MUTEX_UNLOCK(raop_rtp->run_mutex);
+         return;
+     }
+--- a/lib/raop_ntp.c
++++ b/lib/raop_ntp.c
+@@ -908,7 +908,7 @@
+     /* Check that we are running and thread is not
+      * joined (should never be while still running) */
+     MUTEX_LOCK(raop_ntp->run_mutex);
+-    if (!raop_ntp->running || raop_ntp->joined) {
++    if (raop_ntp->joined) {
+         MUTEX_UNLOCK(raop_ntp->run_mutex);
+         return;
+     }
+--- a/lib/mirror_buffer.c
++++ b/lib/mirror_buffer.c
+@@ -96,16 +96,12 @@
+     if (mirror_buffer->nextDecryptCount > 0) {//mirror_buffer->nextDecryptCount = 10
+         int n = mirror_buffer->nextDecryptCount;
+         int m = (n < inputLen ? n :inputLen);
+-        for (int i = 0; i < mirror_buffer->nextDecryptCount; i++) {
++        for (int i = 0; i < m; i++) {
+             output[i] = (input[i] ^ mirror_buffer->og[(16 - n) + i]);
+-            // if less than one full frame has arrived, place data in buffer, and wait
+-            // for rest to come without starting decryption.
+-            // not usual with real Apple clients, but needed for
+-            // some third-party clients. 
+-            if (m < n) {
+-                mirror_buffer->nextDecryptCount = n - m;
+-                return;
+-            }
++        }
++        if (m < n) {
++            mirror_buffer->nextDecryptCount = n - m;
++            return;
+         }
+     }
+     // Handling encrypted bytes

@@ -1,0 +1,213 @@
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -127,6 +127,10 @@
+ static char h265[] = "h265";
+ static char hls[]  = "hls";
+ static char jpeg[] = "jpeg";
++
++#ifdef CLEARCAST_IN_PROCESS
++#include "clearcast_decoder_impl.h"
++#endif
+ 
+ static void append_videoflip (GString *launch, const videoflip_t *flip, const videoflip_t *rot) {
+     /* videoflip image transform */
+@@ -386,6 +390,9 @@
+                 g_string_append(launch, " ! ");
+                 if (!rtp) {
+                     g_string_append(launch, decoder);
++#ifdef CLEARCAST_IN_PROCESS
++                    g_string_append(launch, " ! identity name=clearcast_decoded");
++#endif
+                 } else {
+                     g_string_append(launch, "rtph264pay ");
+                     g_string_append(launch, rtp_pipeline);
+@@ -457,6 +464,12 @@
+             g_string_free(launch, TRUE);
+             gst_caps_unref(caps);
+             gst_object_unref(clock);
++#ifdef CLEARCAST_IN_PROCESS
++            if (!clearcast_decoder_link_pipeline(renderer_type[i]) ||
++                !clearcast_decoder_configure(renderer_type[i], clearcast_decoder_current)) {
++                return false;
++            }
++#endif
+             if (jpeg_pipeline) {
+                  renderer_type[i]->textsrc = gst_bin_get_by_name(GST_BIN(renderer_type[i]->pipeline), "metadata_overlay");
+                  g_object_set(G_OBJECT(renderer_type[i]->textsrc), "text", "", "shaded-background", TRUE, "font-desc", "Sans, 16",  NULL);
+@@ -512,6 +525,9 @@
+ }
+ 
+ void video_renderer_pause() {
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++#endif
+     if (!renderer) {
+         return;
+     }
+@@ -520,6 +536,9 @@
+ }
+ 
+ void video_renderer_resume() {
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++#endif
+     if (!renderer) {
+         return;
+     }
+@@ -638,10 +657,23 @@
+ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *nal_count, uint64_t *ntp_time) {
+     GstBuffer *buffer = NULL;
+     GstClockTime pts = (GstClockTime) *ntp_time; /*now in nsecs */
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++    if (!renderer || !renderer->appsrc || !data_len || *data_len <= 0) {
++        return 0;
++    }
++    g_autoptr(GstBuffer) keyframe = clearcast_decoder_inspect_packet(data, *data_len, pts);
++#endif
+     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
+     if (sync) {
+         if (pts >= gst_video_pipeline_base_time) {
+             pts -= gst_video_pipeline_base_time;
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_video_rebased = false;
++        } else if (clearcast_video_rebased) {
++            // Keep AirPlay's audio clock offset intact while the video pipeline catches up.
++            pts = 0;
++#endif
+         } else {
+             // adjust timestamps to be >= gst_video_pipeline_base time
+             logger_log(logger, LOGGER_DEBUG, "*** invalid ntp_time < gst_video_pipeline_base_time\n%8.6f ntp_time\n%8.6f base_time",
+@@ -665,13 +697,19 @@
+             logger_log(logger, LOGGER_DEBUG, "*** no video renderer found");
+             return 0;
+         }
+-        buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+-        g_assert(buffer != NULL);
+-        //g_print("video latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
++#ifdef CLEARCAST_IN_PROCESS
++        buffer = g_steal_pointer(&keyframe);
++#endif
++        if (!buffer) {
++            buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
++            if (!buffer) {
++                return 0;
++            }
++            gst_buffer_fill(buffer, 0, data, *data_len);
++        }
+         if (sync) {
+             GST_BUFFER_PTS(buffer) = pts;
+         }
+-        gst_buffer_fill(buffer, 0, data, *data_len);
+         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
+ #ifdef X_DISPLAY_FIX
+         if (renderer->gst_window && !(renderer->gst_window->window) && renderer->use_x11) {
+@@ -707,6 +745,9 @@
+ }
+ 
+ void video_renderer_stop() {
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++#endif
+     if (renderer) {
+         logger_log(logger, LOGGER_DEBUG,"video_renderer_stop");
+         if (renderer->appsrc) {
+@@ -790,6 +831,10 @@
+ }
+ 
+ void video_renderer_destroy() {
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++    clearcast_decoder_clear_stream();
++#endif
+     for (int i = 0; i < n_renderers; i++) {
+         if (renderer_type[i]) {
+             video_renderer_destroy_instance(renderer_type[i]);
+@@ -853,6 +898,9 @@
+         new_state_name = gst_element_state_get_name (new_state);
+     }
+ 
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++#endif
+     /* identify which pipeline sent the message */ 
+     int type = -1;
+     for (int i = 0 ; i < n_renderers ; i ++ ) {
+@@ -944,6 +992,12 @@
+         gst_message_parse_error (message, &err, &debug);
+         logger_log(logger, LOGGER_INFO, "GStreamer error (video): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
+ #ifdef CLEARCAST_IN_PROCESS
++        if (clearcast_decoder_switching >= 0) {
++            g_error_free(err);
++            g_free(debug);
++            clearcast_decoder_revert(ERROR_NOT_SUPPORTED);
++            break;
++        }
+         clearcast_pipeline_error();
+ #endif
+         if (strstr(err->message, "Output window was closed")) {
+@@ -1079,6 +1133,9 @@
+ }
+ 
+ int video_renderer_choose_codec_and_size (bool video_is_jpeg, bool video_is_h265, video_geometry_t *video_geometry) {
++#ifdef CLEARCAST_IN_PROCESS
++    CLEARCAST_DECODER_LOCK();
++#endif
+     video_renderer_t *renderer_used = NULL;
+     g_assert(!hls_video);
+     if (video_is_jpeg) {
+--- a/renderers/video_renderer.h
++++ b/renderers/video_renderer.h
+@@ -61,6 +61,18 @@
+                           bool initial_fullscreen, bool video_sync, bool h265_support, bool coverart_support,
+                           guint playbin_version,  const char *uri);
+ void video_renderer_start ();
++#ifdef CLEARCAST_IN_PROCESS
++enum {
++    CLEARCAST_DECODER_AUTOMATIC,
++    CLEARCAST_DECODER_SOFTWARE,
++    CLEARCAST_DECODER_HARDWARE
++};
++
++bool clearcast_video_has_hardware_decoder(bool hevc);
++void clearcast_video_initialize_decoder(int decoder);
++bool clearcast_video_request_decoder(int decoder);
++void clearcast_video_poll_decoder(void);
++#endif
+ void video_renderer_stop ();
+ void video_renderer_set_device_model(const char *model, const char *name);
+ void video_renderer_set_track_metadata(const char *title, const char *artist, const char *album);
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -56,6 +56,7 @@
+ #include <glib/gstdio.h>
+ static std::atomic<bool> clearcast_stopping(false);
+ static void clearcast_mirror_running(bool running);
++static void clearcast_poll_video_rotation();
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+ extern "C" void clearcast_pipeline_error();
+ extern "C" void clearcast_pairing_status(int rejected);
+@@ -745,6 +746,11 @@
+ #endif
+     if (reset_loop) {
+         g_main_loop_quit((GMainLoop *) loop);
++#ifdef CLEARCAST_IN_PROCESS
++    } else {
++        clearcast_video_poll_decoder();
++        clearcast_poll_video_rotation();
++#endif
+     }
+     return TRUE;
+ }
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -427,6 +427,9 @@
+             logger_log(raop->logger, LOGGER_DEBUG, "pair-pin-setup success\n");
+         }
+         pairing_session_set_setup_status(conn->session);
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_pairing_status(2);
++#endif
+         plist_t res_root_node = plist_new_dict();
+         plist_t res_epk_node = plist_new_data((const char *) epk, 32);
+         plist_t res_authtag_node = plist_new_data((const char *) authtag, 16);

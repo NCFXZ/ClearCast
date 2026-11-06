@@ -1,0 +1,184 @@
+--- a/lib/mdnsd/mdnsd.h
++++ b/lib/mdnsd/mdnsd.h
+@@ -44,6 +44,15 @@
+ int mdnsd_start(mdnsd_t *mdnsd);
+ void mdnsd_stop(mdnsd_t *mdnsd);
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++void mdnsd_set_ipv4_override(uint32_t address);
++uint32_t mdnsd_get_active_ipv4(void);
++#ifdef __cplusplus
++}
++#endif
++
+ void mdnsd_set_services(mdnsd_t *mdnsd, const mdnsd_service_t *airplay,
+                         const mdnsd_service_t *raop);
+ void mdnsd_announce(mdnsd_t *mdnsd, uint32_t ttl);
+--- a/lib/mdnsd/mdnsd.c
++++ b/lib/mdnsd/mdnsd.c
+@@ -69,6 +69,21 @@
+     mutex_handle_t mutex;
+ };
+ 
++/* ClearCast owns one receiver per process and configures discovery before starting it. */
++static uint32_t ipv4_override;
++static uint32_t active_ipv4;
++
++void mdnsd_set_ipv4_override(uint32_t address)
++{
++    ipv4_override = address;
++    active_ipv4 = 0;
++}
++
++uint32_t mdnsd_get_active_ipv4(void)
++{
++    return active_ipv4;
++}
++
+ static int mdns_put_u8(mdns_packet_t *packet, unsigned int value)
+ {
+     if (packet->length + 1 > sizeof(packet->bytes)) {
+@@ -368,24 +383,39 @@
+     }
+     
+     if (dwRetVal == NO_ERROR) {
+-        PIP_ADAPTER_ADDRESSES pCurr = pAddresses;
+-        while (pCurr) {
+-            // Precise target filters to bypass the Hyper-V virtual adapter loopback capture
+-            if (pCurr->OperStatus == IfOperStatusUp && 
+-                pCurr->IfType != IF_TYPE_SOFTWARE_LOOPBACK &&
+-                pCurr->FirstGatewayAddress != NULL && 
+-                wcsstr(pCurr->Description, L"Hyper-V") == NULL &&
+-                wcsstr(pCurr->Description, L"Virtual") == NULL &&
+-                wcsstr(pCurr->Description, L"WSL") == NULL &&
+-                wcsstr(pCurr->Description, L"vEthernet") == NULL) {
+-                
+-                if (pCurr->FirstUnicastAddress != NULL) {
+-                    struct sockaddr_in *sockaddr_ipv4 = (struct sockaddr_in *)pCurr->FirstUnicastAddress->Address.lpSockaddr;
+-                    addr = sockaddr_ipv4->sin_addr.s_addr;
+-                    break; 
++        uint32_t fallback = 0;
++        for (PIP_ADAPTER_ADDRESSES adapter = pAddresses; adapter; adapter = adapter->Next) {
++            if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
++                (adapter->Flags & IP_ADAPTER_NO_MULTICAST) ||
++                wcsstr(adapter->Description, L"Hyper-V") || wcsstr(adapter->Description, L"Virtual") ||
++                wcsstr(adapter->Description, L"WSL") || wcsstr(adapter->Description, L"vEthernet")) {
++                continue;
++            }
++
++            for (PIP_ADAPTER_UNICAST_ADDRESS unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
++                struct sockaddr *address = unicast->Address.lpSockaddr;
++                if (address->sa_family != AF_INET || (unicast->DadState != IpDadStatePreferred &&
++                    unicast->DadState != IpDadStateDeprecated)) {
++                    continue;
+                 }
+-            }
+-            pCurr = pCurr->Next;
++                uint32_t candidate = ((struct sockaddr_in *) address)->sin_addr.s_addr;
++                if (!candidate) {
++                    continue;
++                }
++                if (!fallback) {
++                    fallback = candidate;
++                }
++                if (adapter->FirstGatewayAddress) {
++                    addr = candidate;
++                }
++                break;
++            }
++            if (addr) {
++                break;
++            }
++        }
++        if (!addr) {
++            addr = fallback;
+         }
+     }
+     free(pAddresses);
+@@ -476,12 +506,18 @@
+ #endif
+ }
+ 
+-static int mdns_open_socket4(uint32_t iface_addr)
++static int mdns_open_socket4(uint32_t *iface_address, int strict_interface)
+ {
+     int fd;
+     int one = 1;
++    uint32_t iface_addr = *iface_address;
++#ifdef _WIN32
++    DWORD ttl = 255;
++    DWORD loop = 1;
++#else
+     unsigned char ttl = 255;
+     unsigned char loop = 1;
++#endif
+     struct sockaddr_in addr;
+     struct ip_mreq mreq;
+ 
+@@ -500,7 +536,15 @@
+     if (iface_addr) {
+         struct in_addr iface;
+         iface.s_addr = iface_addr;
+-        setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, (const char *) &iface, sizeof(iface));
++        if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, (const char *) &iface, sizeof(iface)) == -1) {
++            if (strict_interface) {
++                int error = SOCKET_GET_ERROR();
++                CLOSESOCKET(fd);
++                return -error;
++            }
++            iface_addr = 0;
++            *iface_address = 0;
++        }
+     }
+ 
+     memset(&addr, 0, sizeof(addr));
+@@ -520,10 +564,12 @@
+     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                    (const char *) &mreq, sizeof(mreq)) == -1) {
+         int error = SOCKET_GET_ERROR();
+-        if (iface_addr) {
++        if (iface_addr && !strict_interface) {
+             mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+-            if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+-                           (const char *) &mreq, sizeof(mreq)) == 0) {
++            if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, (const char *) &mreq.imr_interface,
++                           sizeof(mreq.imr_interface)) == 0 &&
++                setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char *) &mreq, sizeof(mreq)) == 0) {
++                *iface_address = 0;
+                 return fd;
+             }
+         }
+@@ -1035,10 +1081,11 @@
+     int error4 = 0;
+     int error6 = 0;
+ 
+-    mdnsd->ipv4_addr = mdns_get_default_ipv4();
++    active_ipv4 = 0;
++    mdnsd->ipv4_addr = ipv4_override ? ipv4_override : mdns_get_default_ipv4();
+     mdns_get_default_ipv6(mdnsd->ipv6_addr, &mdnsd->ipv6_scope_id);
+ 
+-    mdnsd->sock_fd4 = mdns_open_socket4(mdnsd->ipv4_addr);
++    mdnsd->sock_fd4 = mdns_open_socket4(&mdnsd->ipv4_addr, ipv4_override != 0);
+     if (mdnsd->sock_fd4 < 0) {
+         error4 = mdnsd->sock_fd4;
+         mdnsd->sock_fd4 = -1;
+@@ -1071,6 +1118,9 @@
+         return -1;
+     }
+ 
++    if (mdnsd->sock_fd4 != -1) {
++        active_ipv4 = mdnsd->ipv4_addr;
++    }
+     MUTEX_UNLOCK(mdnsd->mutex);
+     return 0;
+ }
+@@ -1088,6 +1138,7 @@
+     MUTEX_LOCK(mdnsd->mutex);
+     if (mdnsd->running) {
+         mdnsd->running = 0;
++        active_ipv4 = 0;
+         fd4 = mdnsd->sock_fd4;
+         fd6 = mdnsd->sock_fd6;
+         thread = mdnsd->thread;

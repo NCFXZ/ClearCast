@@ -1,0 +1,208 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -48,6 +48,9 @@
+ #include <io.h>
+ #include <fcntl.h>
+ #include <pthread.h>   //for pthreads in MSYS2 UCRT
++#include <cerrno>
++#include <cstdlib>
++#include "winui_video_host.h"
+ #else
+ #include <csignal>
+ #include <glib-unix.h>
+@@ -112,6 +115,9 @@
+ static unsigned int open_connections= 0;
+ static std::string videosink = "autovideosink";
+ static std::string videosink_options = "";
++#ifdef _WIN32
++static HWND video_host_parent = nullptr;
++#endif
+ static videoflip_t videoflip[2] = { NONE , NONE };
+ static bool use_video = true;
+ static unsigned char compression_type = 0;
+@@ -1151,6 +1157,9 @@
+     printf("          choices: avdec_h264,vaapih264dec,nvdec,nvh264dec,v4l2h264dec\n");
+     printf("-vc ...   Choose the GStreamer videoconverter; default \"videoconvert\"\n");
+     printf("          another choice when using v4l2h264dec: v4l2convert\n");
++#ifdef _WIN32
++    printf("-win-hwnd <decimal>   Embed video in a Windows host window\n");
++#endif
+     printf("-vs ...   Choose the GStreamer videosink; default \"autovideosink\"\n");
+     printf("          some choices: ximagesink,xvimagesink,vaapisink,glimagesink,\n");
+     printf("          gtksink,waylandsink,kmssink,fbdevsink,osxvideosink,\n");
+@@ -1844,6 +1853,20 @@
+             if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
+             video_converter.erase();
+             video_converter.append(argv[++i]);
++#ifdef _WIN32
++        } else if (arg == "-win-hwnd") {
++            if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
++            const char *value = argv[++i];
++            char *end = nullptr;
++            errno = 0;
++            const unsigned long long hwnd = std::strtoull(value, &end, 10);
++            if (*value < '0' || *value > '9' || *end || errno == ERANGE ||
++                hwnd == 0 || hwnd > UINTPTR_MAX) {
++                fprintf(stderr, "ClearCast: -win-hwnd requires a decimal Windows window handle\n");
++                exit(1);
++            }
++            video_host_parent = reinterpret_cast<HWND>(static_cast<uintptr_t>(hwnd));
++#endif
+         } else if (arg == "-vs") {
+             if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
+             videosink.erase();
+@@ -2627,6 +2650,11 @@
+         LOGD("video_reset: type = RTP_to_HLS_Shutdown");
+         preserve_connections = true;
+     case RESET_TYPE_RTP_SHUTDOWN:
++#ifdef _WIN32
++        if (video_host_parent && !preserve_connections) {
++            LOGI("ClearCast: mirror ended");
++        }
++#endif
+         LOGD("video_reset: type = RTP_Shutdown");      
+         if (use_video) {
+             video_renderer_stop();
+@@ -3383,6 +3411,7 @@
+ 
+ #ifdef _WIN32
+     /* initialise Windows kernel qpc frequency for recv timestamping */
++    setvbuf(stdout, NULL, _IONBF, 0);
+     ntp_global_init();
+ #endif
+ 
+@@ -3560,6 +3589,27 @@
+     /* warn about default  use of -nc option on macOS */
+     if (!new_window_closing_behavior) {
+         LOGI("UxPlay on macOS is using -nc option as workaround for GStreamer problem: use \"-nc no\" to omit workaround");
++    }
++#endif
++
++#ifdef _WIN32
++    if (video_host_parent) {
++        if (videosink == "0" || !rtp_pipeline.empty()) {
++            LOGE("ClearCast: embedded video needs local playback");
++            exit(1);
++        }
++        HWND host = create_winui_video_host(video_host_parent);
++        if (!host) {
++            LOGE("ClearCast: unable to create the embedded video host (Windows error %lu)",
++                 static_cast<unsigned long>(GetLastError()));
++            exit(1);
++        }
++        // D3D11 subclasses its target HWND, so only pass the window owned by this process.
++        video_renderer_set_window_handle(reinterpret_cast<uintptr_t>(host));
++        videosink = "d3d11videosink";
++        videosink_options = " force-aspect-ratio=true";
++        fullscreen = false;
++        LOGI("ClearCast: embedded host ready");
+     }
+ #endif
+ 
+--- /dev/null
++++ b/winui_video_host.h
+@@ -0,0 +1,104 @@
++/*
++ * Windows video host for the UxPlay ClearCast integration.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#pragma once
++
++#include <windows.h>
++
++struct WinUiVideoHostStart {
++    HWND parent;
++    HANDLE ready;
++    HWND child;
++    DWORD error;
++};
++
++static LRESULT CALLBACK winui_video_host_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
++    switch (message) {
++    case WM_TIMER: {
++        RECT parent_rect;
++        RECT child_rect;
++        if (!GetClientRect(GetParent(window), &parent_rect)) {
++            DestroyWindow(window);
++        } else if (GetClientRect(window, &child_rect) &&
++                   (child_rect.right != parent_rect.right || child_rect.bottom != parent_rect.bottom)) {
++            SetWindowPos(window, nullptr, 0, 0, parent_rect.right, parent_rect.bottom,
++                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
++        }
++        return 0;
++    }
++    case WM_DESTROY:
++        PostQuitMessage(0);
++        return 0;
++    case WM_SETCURSOR:
++        if (LOWORD(lparam) == HTCLIENT) {
++            SetCursor(LoadCursor(nullptr, IDC_ARROW));
++            return TRUE;
++        }
++        break;
++    }
++    return DefWindowProcW(window, message, wparam, lparam);
++}
++
++static DWORD WINAPI winui_video_host_thread(void *data) {
++    auto *start = static_cast<WinUiVideoHostStart *>(data);
++    const HWND parent = start->parent;
++    const auto parent_dpi = GetWindowDpiAwarenessContext(parent);
++    if (parent_dpi) {
++        SetThreadDpiAwarenessContext(parent_dpi);
++    }
++    const HINSTANCE instance = GetModuleHandleW(nullptr);
++    const wchar_t *class_name = L"ClearCastVideoHost";
++    WNDCLASSW window_class = {};
++    window_class.lpfnWndProc = winui_video_host_proc;
++    window_class.hInstance = instance;
++    window_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
++    window_class.lpszClassName = class_name;
++
++    HWND window = nullptr;
++    RECT rect;
++    if (GetClientRect(parent, &rect) && RegisterClassW(&window_class)) {
++        window = CreateWindowExW(WS_EX_NOPARENTNOTIFY, class_name, L"",
++                                 WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
++                                 0, 0, rect.right, rect.bottom, parent, nullptr, instance, nullptr);
++    }
++    DWORD error = window ? ERROR_SUCCESS : GetLastError();
++    if (window && !SetTimer(window, 1, 50, nullptr)) {
++        error = GetLastError();
++        DestroyWindow(window);
++        window = nullptr;
++    }
++    start->child = window;
++    start->error = error;
++    SetEvent(start->ready);
++    if (!window) {
++        return 0;
++    }
++
++    MSG message;
++    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
++        TranslateMessage(&message);
++        DispatchMessageW(&message);
++    }
++    return 0;
++}
++
++static HWND create_winui_video_host(HWND parent) {
++    HANDLE ready = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++    if (!ready) {
++        return nullptr;
++    }
++    WinUiVideoHostStart start = { parent, ready, nullptr, ERROR_SUCCESS };
++    HANDLE thread = CreateThread(nullptr, 0, winui_video_host_thread, &start, 0, nullptr);
++    if (!thread) {
++        const DWORD error = GetLastError();
++        CloseHandle(ready);
++        SetLastError(error);
++        return nullptr;
++    }
++    WaitForSingleObject(ready, INFINITE);
++    CloseHandle(thread);
++    CloseHandle(ready);
++    SetLastError(start.error);
++    return start.child;
++}
