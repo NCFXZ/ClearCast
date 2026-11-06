@@ -2,6 +2,8 @@
 
 ClearCast 是 Windows 上的局域网屏幕镜像工具。iPhone、iPad 和 Mac 使用系统 AirPlay 投到 ClearCast 窗口。
 
+[下载 Windows x64 安装包](https://github.com/NCFXZ/ClearCast/releases/latest)
+
 ## 架构
 
 - **桌面界面**由 C#、.NET 10 和 WinUI 3 原生 XAML 实现。标题栏、侧栏和正文共用 Mica 底色，页面以 Windows 设置为参考，使用居中的内容列和原生主题卡片。收到来流后，投屏页展开播放器。 [微软 Mica 分层指南](https://learn.microsoft.com/en-us/windows/apps/design/style/mica#app-layering-with-mica) · [微软设置页指南](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings#layout)

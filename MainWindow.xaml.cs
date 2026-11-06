@@ -761,6 +761,6 @@ public sealed partial class MainWindow : Window
             if (File.Exists(Path.Combine(dir.FullName, "ClearCast.csproj")))
                 return dir.FullName;
         }
-        return AppContext.BaseDirectory;
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClearCast");
     }
 }

@@ -1,0 +1,14 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="ClearCast" Manufacturer="NCFX" Version="$(var.ReleaseVersion)"
+          UpgradeCode="{1D962854-2559-4E88-A9C5-CC43B9635F74}"
+          IconSourceFile="!(bindpath.Payload)\Assets\ClearCast.ico">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+                                              LicenseUrl="https://github.com/NCFXZ/ClearCast/blob/v$(var.ReleaseVersion)/LICENSE" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiPath)" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

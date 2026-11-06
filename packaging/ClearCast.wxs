@@ -1,0 +1,25 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="ClearCast" Manufacturer="NCFX" Version="$(var.ReleaseVersion)"
+           UpgradeCode="{6D6518A0-43F2-4C14-BD46-36C04820B3F1}" Scope="perUserOrMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ClearCast is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="ClearCast.ico" SourceFile="!(bindpath.Payload)\Assets\ClearCast.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ClearCast.ico" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/NCFXZ/ClearCast/issues" />
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="ClearCast" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="{BDA4BA07-86B2-4B3B-AF9C-4CFC55EAF247}">
+        <Shortcut Id="ClearCastShortcut" Name="ClearCast" Target="[INSTALLFOLDER]ClearCast.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKMU" Key="Software\NCFX\ClearCast" Name="Installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="ClearCast" Title="ClearCast" Level="1">
+      <Files Directory="INSTALLFOLDER" Include="!(bindpath.Payload)\**" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>
