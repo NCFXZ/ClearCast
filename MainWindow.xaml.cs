@@ -16,6 +16,9 @@ namespace ClearCast;
 
 public sealed partial class MainWindow : Window
 {
+    private const int MinimumWindowWidth = 640;
+    private const int MinimumWindowHeight = 480;
+    private const double WindowWorkAreaRatio = 0.90;
     private readonly string _root = FindRoot();
     private readonly DispatcherQueueTimer _receiverTimer;
     private readonly DispatcherQueueTimer _pairingTimer;
@@ -94,6 +97,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            AppWindow.Changed -= WindowChanged;
             CancelPlayerPresenterTransition();
             StopPageEntrance();
             if (_captionThemeSettings is not null)
@@ -135,11 +139,41 @@ public sealed partial class MainWindow : Window
         var root = VideoHostSlot.XamlRoot;
         double scale = root.RasterizationScale;
         var display = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
+        UpdateMinimumWindowSize(scale, display.WorkArea);
         AppWindow.Resize(new SizeInt32(
-            Math.Min((int)Math.Round(1120 * scale), (int)(display.WorkArea.Width * 0.90)),
-            Math.Min((int)Math.Round(760 * scale), (int)(display.WorkArea.Height * 0.90))));
-        root.Changed += (_, _) => UpdateVideoHost();
+            Math.Min((int)Math.Round(1120 * scale), (int)(display.WorkArea.Width * WindowWorkAreaRatio)),
+            Math.Min((int)Math.Round(760 * scale), (int)(display.WorkArea.Height * WindowWorkAreaRatio))));
+        AppWindow.Changed += WindowChanged;
+        root.Changed += (_, _) =>
+        {
+            if (scale != root.RasterizationScale)
+            {
+                scale = root.RasterizationScale;
+                UpdateMinimumWindowSize(scale, DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea);
+            }
+            UpdateVideoHost();
+        };
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, StartAirPlay);
+    }
+
+    private void WindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if ((args.DidPositionChange || args.DidPresenterChange) && WindowLayout.XamlRoot is { } root)
+            UpdateMinimumWindowSize(root.RasterizationScale, DisplayArea.GetFromWindowId(sender.Id, DisplayAreaFallback.Nearest).WorkArea);
+    }
+
+    private void UpdateMinimumWindowSize(double scale, RectInt32 workArea)
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter presenter)
+            return;
+
+        // The presenter expects physical pixels. Keep the minimum within the startup work area cap.
+        int width = Math.Min((int)Math.Round(MinimumWindowWidth * scale), (int)(workArea.Width * WindowWorkAreaRatio));
+        int height = Math.Min((int)Math.Round(MinimumWindowHeight * scale), (int)(workArea.Height * WindowWorkAreaRatio));
+        if (presenter.PreferredMinimumWidth != width)
+            presenter.PreferredMinimumWidth = width;
+        if (presenter.PreferredMinimumHeight != height)
+            presenter.PreferredMinimumHeight = height;
     }
 
     private void UpdateNavigationInsets(NavigationViewDisplayMode mode)
@@ -158,6 +192,24 @@ public sealed partial class MainWindow : Window
             : MirrorLayout;
         layout.Margin = ReferenceEquals(sender, MirrorPage) && _playerFullScreen
             ? new Thickness(0) : new Thickness(gutter, 16, gutter, 24);
+        if (ReferenceEquals(sender, SettingsPage) && args.NewSize.Width != args.PreviousSize.Width)
+            UpdateSettingsCardLayout(args.NewSize.Width - 2 * gutter);
+    }
+
+    private void UpdateSettingsCardLayout(double width)
+    {
+        bool stackControls = width < 440;
+        // Account for the two card borders, horizontal padding, and the leading icon column and gap.
+        double availableControlWidth = Math.Max(0, width - (2 + 32 + 24 + 16));
+        foreach (var control in new[] { ThemeButton, LanguageButton, DecoderButton, DisplaySizeButton })
+        {
+            Grid.SetRow(control, stackControls ? 1 : 0);
+            Grid.SetColumn(control, stackControls ? 1 : 2);
+            Grid.SetColumnSpan(control, stackControls ? 2 : 1);
+            control.HorizontalAlignment = stackControls ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+            control.Margin = stackControls ? new Thickness(0, 8, 0, 0) : new Thickness(0);
+            control.MaxWidth = stackControls ? availableControlWidth : double.PositiveInfinity;
+        }
     }
 
     private void LandingViewportChanged(object sender, SizeChangedEventArgs args)
@@ -420,6 +472,7 @@ public sealed partial class MainWindow : Window
             else
                 _videoHost.Update(new RectInt32(0, 0, Math.Max(320, AppWindow.Size.Width), Math.Max(240, AppWindow.Size.Height)), false);
             var adapter = ReceiverNetwork.FindPreferredAdapter();
+            Texts.SetReceiverName(NativeReceiver.AdvertisedName);
             _receiver = AirPlayReceiver.Start(_root, _preferences.Decoder, _videoHost.Handle, adapter);
             SetRunning(true);
         }
@@ -585,8 +638,8 @@ public sealed partial class MainWindow : Window
                         ShowReceiveError(ReceiverNetwork.GetFailureMessage(update.ErrorCode, _preferences.Decoder), update.ErrorCode);
                     return;
                 case ReceiverEventKind.PairingRequired:
-                    if (!_hasVideo)
-                        ShowPairingCode(receiver.Pin);
+                    if (!_hasVideo && update.Width is >= 1 and <= 9999)
+                        ShowPairingCode(update.Width.ToString("0000", System.Globalization.CultureInfo.InvariantCulture));
                     break;
                 case ReceiverEventKind.PairingRejected:
                     if (!_hasVideo && WaitingPairing.Visibility == Visibility.Visible)

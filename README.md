@@ -10,7 +10,7 @@ ClearCast 是 Windows 上的局域网屏幕镜像工具。iPhone、iPad 和 Mac 
 
 ## 构建界面
 
-原型为 Windows x64，采用免安装的文件夹发布，输出内包含 .NET、Windows App SDK 和接收组件。已有 `.runtime\app\ClearCast.exe` 时可直接使用。需要从源码构建时，先按下文准备接收组件，再在项目目录用 .NET 10 SDK 执行以下命令。 [Windows App SDK 自包含发布](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
+ClearCast 支持 Windows x64，采用免安装的文件夹发布，输出内包含 .NET、Windows App SDK 和接收组件。已有 `.runtime\app\ClearCast.exe` 时可直接使用。需要从源码构建时，先按下文准备接收组件，再在项目目录用 .NET 10 SDK 执行以下命令。 [Windows App SDK 自包含发布](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 
 ```powershell
 dotnet publish .\ClearCast.csproj -c Release -r win-x64 -o .\.runtime\app
@@ -22,11 +22,11 @@ dotnet publish .\ClearCast.csproj -c Release -r win-x64 -o .\.runtime\app
 
 1. 将苹果设备和 Windows 电脑接入同一个允许设备互访的局域网。Windows 可通过网线接入同一路由器。
 2. 双击 `Launch-ClearCast.cmd`，应用打开后自动等待投屏。ClearCast 根据当前网卡的链路速率和解码方式选择初始画质。Windows 防火墙询问时，可为可信的专用网络允许 `ClearCast.exe`。
-3. 在苹果设备的「屏幕镜像」列表中选择「ClearCast (电脑名称)」。新设备请求配对时，电脑会显示四位验证码。在苹果设备上输入后，画面会在「投屏」页播放。
+3. 在苹果设备的「屏幕镜像」列表中选择投屏页显示的名称，例如 `ClearCast DESKTOP-1234`。新设备请求配对时，电脑会显示四位验证码。在苹果设备上输入后，画面会在「投屏」页播放。
 4. 在画面上移动鼠标会显示右下角的控件，可向左或向右旋转 90°，也可切换全屏。双击画面可切换全屏，按 Esc 可退出全屏。可在「设置 → 播放显示」选择默认显示大小。点「断开投屏」后，应用会继续等待下一次连接。
 5. 投屏时可以在「设置 → 接收」中切换解码方式。ClearCast 会保持 AirPlay 连接，画面可能在切换时短暂停顿。
 
-验证码在新设备发起配对时显示。等待超时后，提示会自动隐藏。接收器密钥、配对记录和显示偏好保存在 `.clearcast-state` 中。
+新设备发起配对时，ClearCast 会显示新的四位验证码，有效期为一分钟。验证多次失败后，新配对会短暂暂停，已配对设备仍可连接。接收器密钥、配对记录和显示偏好保存在 `.clearcast-state` 中。
 
 侧栏底部的「设置」按接收、播放显示和设备配对分组。在「设备配对」中展开「已保存的配对」，即可逐台删除设备的配对记录，也可一次删除全部。配对记录被删除的设备下次连接时需要重新验证。发生接收错误时，可在投屏页复制错误详情并重试。
 
@@ -54,7 +54,7 @@ Invoke-WebRequest 'https://codeload.github.com/FDH2/UxPlay/tar.gz/d4b7373cb6107b
 pwsh -File .\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
 
-构建完成后执行上面的发布命令。若 1080p 模式出现解码兼容问题，可试用 **软件解码（H.264）**。
+构建完成后执行上面的发布命令。若遇到解码兼容问题，可在「设置 → 接收」中切换到软件解码。
 
 ## 清晰度与真机验收
 
@@ -71,7 +71,7 @@ pwsh -File .\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ## 排查
 
 - **AirPlay 列表里没有 ClearCast。** 检查两台设备是否位于同一局域网，访客网络的设备隔离是否挡住发现，Windows 防火墙是否允许 `ClearCast.exe`。AirPlay 发现使用 UDP 5353，接收端使用 TCP 和 UDP 47000–47002。
-- **有声音但画面黑屏。** 先用设置界面或本地照片检查镜像。若只有受保护的视频黑屏，换用普通本地视频验证。若一般内容也黑屏，切换自动渲染或在 1080p 下试用软件 H.264 解码。
+- **有声音但画面黑屏。** 先镜像发送设备的设置界面或本地照片。若只有受保护的视频黑屏，换用普通本地视频验证。若一般内容也黑屏，在「设置 → 接收」中试用自动或软件解码。
 - **画面尺寸偏低或卡顿。** 查看实际画面尺寸和播放帧率，检查 AirPlay 设备是否支持 HEVC，以及两台设备的网络连接。改善连接后重新开始接收可更新画质请求。
 
 ## 开源许可证

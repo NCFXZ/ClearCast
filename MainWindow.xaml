@@ -136,7 +136,7 @@
                                             Text="{x:Bind Texts.LandingHeading, Mode=OneWay}"
                                             TextAlignment="Center"
                                             TextWrapping="Wrap" />
-                                        <TextBlock
+                                        <TextBlock x:Name="LandingDescription"
                                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                             Text="{x:Bind Texts.LandingDescription, Mode=OneWay}"
                                             TextAlignment="Center"
@@ -209,24 +209,27 @@
                             <StackPanel x:Name="PlayerOverlay" Orientation="Horizontal" Spacing="6" Margin="0,0,10,10"
                                 HorizontalAlignment="Right" VerticalAlignment="Bottom" RequestedTheme="Dark"
                                 GotFocus="PlayerOverlayGotFocus" Opacity="0" IsHitTestVisible="False" Visibility="Collapsed">
-                                <Button x:Name="RotateLeftButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
+                                <StackPanel.Resources>
+                                    <Style TargetType="local:PlayerOverlayButton" BasedOn="{StaticResource DefaultButtonStyle}" />
+                                </StackPanel.Resources>
+                                <local:PlayerOverlayButton x:Name="RotateLeftButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
                                     AutomationProperties.Name="{x:Bind Texts.RotateLeft, Mode=OneWay}"
                                     ToolTipService.ToolTip="{x:Bind Texts.RotateLeft, Mode=OneWay}" Click="RotateLeftClicked">
                                     <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateLeftButton}"
                                         StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                         Data="M 4.5,12 A 7.5,7.5 0 1 1 12,19.5 M 2,10.5 L 4.5,13 L 7,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
-                                </Button>
-                                <Button x:Name="RotateRightButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
+                                </local:PlayerOverlayButton>
+                                <local:PlayerOverlayButton x:Name="RotateRightButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
                                     AutomationProperties.Name="{x:Bind Texts.RotateRight, Mode=OneWay}"
                                     ToolTipService.ToolTip="{x:Bind Texts.RotateRight, Mode=OneWay}" Click="RotateRightClicked">
                                     <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateRightButton}"
                                         StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                         Data="M 19.5,12 A 7.5,7.5 0 1 0 12,19.5 M 17,10.5 L 19.5,13 L 22,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
-                                </Button>
-                                <Button x:Name="FullScreenButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
+                                </local:PlayerOverlayButton>
+                                <local:PlayerOverlayButton x:Name="FullScreenButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
                                     Click="PlayerFullScreenClicked">
                                     <SymbolIcon x:Name="FullScreenIcon" Symbol="FullScreen" />
-                                </Button>
+                                </local:PlayerOverlayButton>
                             </StackPanel>
                         </Grid>
                         <Grid x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" ColumnSpacing="12" Visibility="Collapsed">
@@ -262,10 +265,10 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto">
+                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE790;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind Texts.ThemeLabel, Mode=OneWay}" />
+                                                <TextBlock Text="{x:Bind Texts.ThemeLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                     Text="{x:Bind Texts.ThemeDescription, Mode=OneWay}" TextWrapping="Wrap" />
                                             </StackPanel>
@@ -281,10 +284,10 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto">
+                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE774;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind Texts.LanguageLabel, Mode=OneWay}" />
+                                                <TextBlock Text="{x:Bind Texts.LanguageLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                     Text="{x:Bind Texts.LanguageDescription, Mode=OneWay}" TextWrapping="Wrap" />
                                             </StackPanel>
@@ -302,7 +305,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16">
+                                        <Grid ColumnSpacing="16" RowDefinitions="Auto,Auto">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="24" />
                                                 <ColumnDefinition Width="*" />
@@ -310,7 +313,7 @@
                                             </Grid.ColumnDefinitions>
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7F8;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind Texts.DecoderLabel, Mode=OneWay}" />
+                                                <TextBlock Text="{x:Bind Texts.DecoderLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                     Text="{x:Bind Texts.DecoderDescription, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock x:Name="DecoderFeedback" Style="{StaticResource CaptionTextBlockStyle}"
@@ -332,7 +335,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16">
+                                        <Grid ColumnSpacing="16" RowDefinitions="Auto,Auto">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="24" />
                                                 <ColumnDefinition Width="*" />
@@ -340,7 +343,7 @@
                                             </Grid.ColumnDefinitions>
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE740;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{x:Bind Texts.DisplaySizeLabel, Mode=OneWay}" />
+                                                <TextBlock Text="{x:Bind Texts.DisplaySizeLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                     Text="{x:Bind Texts.DisplaySizeDescription, Mode=OneWay}" TextWrapping="Wrap" />
                                             </StackPanel>

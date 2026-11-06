@@ -11,12 +11,23 @@ internal static class NativeReceiver
     private const uint SearchSystem32 = 0x00000800;
     private const uint SearchDefaultDirectories = 0x00001000;
 
-    private static readonly Lazy<nint> Module = new(LoadModule);
+    private static readonly object ModuleLock = new();
+    private static nint _module;
 
     static NativeReceiver()
     {
         NativeLibrary.SetDllImportResolver(typeof(NativeReceiver).Assembly,
-            (name, _, _) => name == LibraryName ? Module.Value : 0);
+            (name, _, _) => name == LibraryName ? GetModule() : 0);
+    }
+
+    private static nint GetModule()
+    {
+        lock (ModuleLock)
+        {
+            if (_module == 0)
+                _module = LoadModule();
+            return _module;
+        }
     }
 
     private static nint LoadModule()
@@ -42,7 +53,9 @@ internal static class NativeReceiver
         }
 
         if (!NativeLibrary.TryGetExport(module, "clearcast_receiver_start_v2", out _) ||
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_get_name", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_stop", out _) ||
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_set_decoder", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_event", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_stats", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_set_video_rotation", out _))
@@ -54,6 +67,11 @@ internal static class NativeReceiver
 
         return module;
     }
+
+    internal static string AdvertisedName => Marshal.PtrToStringUTF8(GetName()) ?? "ClearCast";
+
+    [DllImport(LibraryName, EntryPoint = "clearcast_receiver_get_name", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern nint GetName();
 
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_start_v2", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Start(

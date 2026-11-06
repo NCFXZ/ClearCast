@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $runtime = Join-Path (Split-Path -Parent $PSScriptRoot) '.runtime'
 $commit = 'd4b7373cb6107b2d8d6c5838991c19d39e2b96ae'
+$expectedArchiveHash = 'D85E077EC7B20D487A2F68BDE7FEBCD1C9941D0F6C83FE740BB10BE3268F47BD'
 if (-not $ArchivePath) { $ArchivePath = Join-Path $runtime 'uxplay-d4b7373.tar.gz' }
 if (-not $Ucrt64Directory) { $Ucrt64Directory = Join-Path $runtime 'msys64\ucrt64' }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $runtime 'uxplay-receiver-build' }
@@ -16,15 +17,20 @@ if (-not $OutputDirectory) { $OutputDirectory = Join-Path $runtime 'receiver' }
 
 $ArchivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
 $Ucrt64Directory = (Resolve-Path -LiteralPath $Ucrt64Directory).Path
+$archiveHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash
+if ($archiveHash -ne $expectedArchiveHash) {
+    throw "The UxPlay archive hash does not match the pinned download ($commit). Re-download it using the command in README.md."
+}
 $patches = @(
     (Join-Path $PSScriptRoot 'uxplay-winui.patch'),
     (Join-Path $PSScriptRoot 'uxplay-receiver.patch'),
     (Join-Path $PSScriptRoot 'uxplay-renderer-stats.patch'),
     (Join-Path $PSScriptRoot 'uxplay-live-decoder.patch'),
-    (Join-Path $PSScriptRoot 'uxplay-mdns.patch')
+    (Join-Path $PSScriptRoot 'uxplay-mdns.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-network-guards.patch')
 )
-# Use a fresh source tree when a patch changes. This also leaves the CLI source tree alone.
-$hashes = (Get-FileHash -LiteralPath (@($ArchivePath) + $patches)).Hash -join ''
+# Use a fresh source tree when a patch changes.
+$hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '')
 $sha = [Security.Cryptography.SHA256]::Create()
 try {
     $key = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($hashes))).Replace('-', '').Substring(0, 16)
@@ -71,6 +77,7 @@ try {
     $receiverInfo = & $objdump -p $receiver
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the receiver DLL.' }
     foreach ($export in 'clearcast_receiver_start', 'clearcast_receiver_start_v2', 'clearcast_receiver_stop',
+                         'clearcast_receiver_get_name',
                          'clearcast_receiver_read_event', 'clearcast_receiver_read_stats',
                          'clearcast_receiver_set_decoder', 'clearcast_receiver_set_video_rotation') {
         if (-not ($receiverInfo -match "^\s*\[\s*\d+\].*\s$export\s*$")) {

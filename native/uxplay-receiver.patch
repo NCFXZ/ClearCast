@@ -194,18 +194,47 @@
      if (open_connections == 0) {
          remote_clock_offset = 0;
          if (use_audio) {
-@@ -3082,7 +3153,11 @@
+@@ -3082,13 +3153,40 @@
      LOGI("registered new client: %s DeviceID = %s PK = \n%s", client_name, device_id, client_pk);
      registered_keys.push_back(client_pk);
      if (strlen(pairing_register.c_str())) {
 +#ifdef CLEARCAST_IN_PROCESS
-+        FILE *fp = g_fopen(pairing_register.c_str(), "a");
++        FILE *fp = g_fopen(pairing_register.c_str(), "a+b");
 +#else
          FILE *fp = fopen600(pairing_register.c_str(), "a");
 +#endif
          if (fp) {
              time_t raw_time = time(NULL);
              struct tm *tm_info = localtime(&raw_time);
+             char time_str[20];
+             strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
++#ifdef CLEARCAST_IN_PROCESS
++            char saved_id[257], saved_name[513];
++            const auto copy_field = [](char* output, size_t size, const char* input, bool allow_comma) {
++                const char* end;
++                g_utf8_validate(input, std::min(strlen(input), size - 1), &end);
++                for (; input != end; ++input) {
++                    const unsigned char c = *input;
++                    *output++ = c < ' ' || c == 0x7f || (!allow_comma && c == ',') ? ' ' : *input;
++                }
++                *output = '\0';
++            };
++            copy_field(saved_id, sizeof(saved_id), device_id, false);
++            copy_field(saved_name, sizeof(saved_name), client_name, true);
++            // An older key-only record may end at EOF without a line break.
++            if (fseek(fp, -1, SEEK_END) == 0) {
++                const bool needs_separator = fgetc(fp) != '\n';
++                if (fseek(fp, 0, SEEK_END) == 0 && needs_separator) {
++                    fputc('\n', fp);
++                }
++            }
++            fprintf(fp, "%s,%s,%s,%s\n", client_pk, time_str, saved_id, saved_name);
++#else
+             fprintf(fp, "%s,%s,%s,%s\n", client_pk, time_str, device_id, client_name);
++#endif
+             fclose(fp);
+         }
+     }
 @@ -3238,7 +3313,9 @@
      raop_cbs.video_reset = video_reset;
      raop_cbs.video_set_codec_and_size = video_set_codec_and_size;
@@ -362,7 +391,55 @@
  }
  
  void audio_renderer_stop() {
-@@ -395,15 +401,15 @@
+@@ -309,9 +315,7 @@
+ }
+ 
+ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time) {
+-    GstBuffer *buffer = NULL;
+-
+-    if (!render_audio) return;    /* do nothing unless render_audio == TRUE */
++    if (!render_audio || !renderer || !data || !data_len || *data_len <= 0 || !ntp_time) return;
+ 
+     GstClockTime pts = (GstClockTime) *ntp_time ;    /* now in nsecs */
+     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
+@@ -324,22 +328,13 @@
+             return;
+         }
+     }
+-    if (data_len == 0 || renderer == NULL) return;
+ 
+     /* all audio received seems to be either ct = 8 (AAC_ELD 44100/2 spf 460 ) AirPlay Mirror protocol *
+      * or ct = 2 (ALAC 44100/16/2 spf 352) AirPlay protocol.                                           *
+      * first byte data[0] of ALAC frame is 0x20,                                                       *
+      * first byte of AAC_ELD is 0x8c, 0x8d or 0x8e: 0x100011(00,01,10) in modern devices               *
+      *                   but is 0x80, 0x81 or 0x82: 0x100000(00,01,10) in ios9, ios10 devices          *
+      * first byte of AAC_LC should be 0xff (ADTS) (but has never been  seen).                          */
+-    
+-    buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+-    g_assert(buffer != NULL);
+-    //g_print("audio latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
+-    if (sync) {
+-        GST_BUFFER_PTS(buffer) = pts;
+-    }
+-    gst_buffer_fill(buffer, 0, data, *data_len);
+     bool valid = false;
+     switch (renderer->ct){
+     case 8: /*AAC-ELD*/
+@@ -368,6 +363,13 @@
+         break;
+     }
+     if (valid) {
++        GstBuffer *buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
++        if (!buffer) return;
++        if (sync) {
++            GST_BUFFER_PTS(buffer) = pts;
++        }
++        gst_buffer_fill(buffer, 0, data, *data_len);
++
+         gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);
+     } else {
+         logger_log(logger, LOGGER_ERR, "*** ERROR invalid  audio frame (compression_type %d) skipped ", renderer->ct);
+@@ -395,15 +397,15 @@
  void audio_renderer_destroy() {
      audio_renderer_stop();
      for (int i = 0; i < NFORMATS ; i++ ) {
@@ -387,7 +464,7 @@
      }
  }
  
-@@ -416,11 +422,11 @@
+@@ -416,11 +418,11 @@
          logger_log(logger, LOGGER_INFO, "GStreamer error (audio): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
          g_error_free(err);
          g_free(debug);

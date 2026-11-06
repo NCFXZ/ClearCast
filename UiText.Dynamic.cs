@@ -9,7 +9,7 @@ internal sealed partial class UiText
         ["正在打开投屏画面…"] = "Opening the mirrored screen…",
         ["已连接"] = "Connected",
         ["无法旋转投屏画面，请重试。"] = "Couldn't rotate the mirrored screen. Try again.",
-        ["暂时无法接收投屏"] = "Unable to receive screen mirroring",
+        ["暂时无法接收投屏"] = "Screen mirroring unavailable",
         ["在设备上输入这四位数字。"] = "Enter these four digits on your device.",
         ["配对未通过，请在设备上重试。"] = "Pairing failed. Try again on your device.",
         ["正在切换解码方式…"] = "Switching decoding mode…",
@@ -23,12 +23,14 @@ internal sealed partial class UiText
             "Hardware decoding is unavailable. Choose Automatic or Software decoding in Settings and try again.",
         ["无法读取已保存的配对记录。"] = "Couldn't read saved pairings.",
         ["已删除全部配对记录。设备下次投屏时需要重新验证。"] =
-            "All pairings removed. Devices will need to verify the next time they connect.",
+            "All pairings removed. Devices will need a pairing code the next time they connect.",
         ["已删除该设备的配对记录。该设备下次投屏时需要重新验证。"] =
-            "Pairing removed. The device will need to verify the next time it connects.",
-        ["无法删除配对记录，请重试。"] = "Couldn't remove the pairing records. Try again.",
+            "Pairing removed. The device will need a pairing code the next time it connects.",
+        ["无法删除配对记录，请重试。"] = "Couldn't remove the saved pairings. Try again.",
         ["无法启动接收，请重试。"] = "Couldn't start the receiver. Try again.",
         ["无法停止接收，请重试。"] = "Couldn't stop the receiver. Try again.",
+        ["另一个 ClearCast 窗口正在使用接收器。请关闭它后重试。"] =
+            "Another ClearCast window is using the receiver. Close it and try again.",
         ["复制错误详情"] = "Copy error details",
         ["已复制"] = "Copied",
         ["重试复制"] = "Try copying again",

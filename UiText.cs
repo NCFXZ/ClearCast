@@ -7,6 +7,7 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public bool IsEnglish { get; private set; }
+    private string _receiverName = "ClearCast";
 
     public void SetEnglish(bool english)
     {
@@ -19,6 +20,15 @@ internal sealed partial class UiText : INotifyPropertyChanged
 
     public string Get(string chinese, string english) => IsEnglish ? english : chinese;
 
+    public void SetReceiverName(string name)
+    {
+        if (_receiverName == name)
+            return;
+
+        _receiverName = name;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LandingDescription)));
+    }
+
     public string Mirroring => Get("投屏", "Screen mirroring");
     public string Settings => Get("设置", "Settings");
     public string About => Get("关于", "About");
@@ -28,10 +38,10 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string AboutReportIssue => Get("问题反馈", "Report an issue");
 
     public string PairingCode => Get("投屏验证码", "Mirroring code");
-    public string ReceiverError => Get("接收遇到问题", "Couldn't receive the stream");
+    public string ReceiverError => Get("接收遇到问题", "Receiver error");
     public string LandingHeading => Get("将屏幕投到这台电脑", "Mirror your screen to this PC");
-    public string LandingDescription => Get("在同一局域网的 iPhone、iPad 或 Mac 上打开「屏幕镜像」，然后选择「ClearCast (电脑名称)」。",
-        "On an iPhone, iPad, or Mac on the same network, open Screen Mirroring and choose “ClearCast (computer name)”.");
+    public string LandingDescription => Get($"在同一局域网的 iPhone、iPad 或 Mac 上打开「屏幕镜像」，然后选择 {_receiverName}。",
+        $"On an iPhone, iPad, or Mac on the same network, open Screen Mirroring and choose {_receiverName}.");
     public string RetryReceiver => Get("重试接收", "Try again");
 
     public string Disconnect => Get("断开投屏", "Disconnect");
@@ -69,7 +79,7 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string PairingHeading => Get("设备配对", "Device pairing");
     public string SavedPairings => Get("已保存的配对", "Saved pairings");
     public string SavedPairingsDescription => Get("删除配对后，设备下次投屏时需要输入验证码。",
-        "After removal, the device will need a code the next time it connects.");
+        "A removed device will need a pairing code the next time it connects.");
     public string NoSavedPairings => Get("暂无已配对设备", "No paired devices");
     public string AllSavedPairings => Get("全部配对记录", "All saved pairings");
     public string UnnamedPairing => Get("未命名设备", "Unnamed device");

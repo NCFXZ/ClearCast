@@ -79,9 +79,9 @@ public sealed partial class MainWindow
                     TextWrapping = TextWrapping.Wrap,
                     Text = id is null
                         ? Texts.Get("删除后，所有设备下次投屏时都需要重新验证。",
-                            "All devices will need to verify the next time they connect.")
+                            "All saved devices will need a pairing code the next time they connect.")
                         : Texts.Get($"删除「{name}」的配对记录后，该设备下次投屏时需要重新验证。",
-                            $"“{name}” will need to verify the next time it connects.")
+                            $"“{name}” will need a pairing code the next time it connects.")
                 },
                 PrimaryButtonText = Texts.RemovePairing,
                 CloseButtonText = Texts.Get("取消", "Cancel"),

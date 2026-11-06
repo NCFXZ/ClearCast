@@ -1,1 +1,2 @@
-native/*.patch text eol=lf
+# Unified diff context preserves the upstream indentation after a leading space.
+native/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab

@@ -33,7 +33,6 @@ struct ReceiverOptions {
     unsigned short width;
     unsigned short height;
     unsigned short fps;
-    unsigned short pairing_pin;
     int decoder;
     bool hevc;
     HWND parent;
@@ -177,7 +176,7 @@ int initialize_gstreamer(const std::string& state_directory) {
     return 0;
 }
 
-std::string receiver_display_name() {
+std::string make_receiver_display_name() {
     wchar_t computer_name[64];
     DWORD length = ARRAYSIZE(computer_name);
     if (!GetComputerNameExW(ComputerNamePhysicalDnsHostname, computer_name, &length) || !length) {
@@ -195,8 +194,8 @@ std::string receiver_display_name() {
     }
 
     // RAOP prepends MAC@ inside the same 63-byte DNS label.
-    constexpr char prefix[] = "ClearCast (";
-    constexpr size_t max_hostname_bytes = 63 - (2 * MAX_HWADDR_LEN + 1) - (sizeof(prefix) - 1) - 1;
+    constexpr char prefix[] = "ClearCast ";
+    constexpr size_t max_hostname_bytes = 63 - (2 * MAX_HWADDR_LEN + 1) - (sizeof(prefix) - 1);
     const size_t count = std::min(strcspn(hostname.get(), "."), max_hostname_bytes);
     const char* end;
     // If the byte limit splits a UTF-8 code point, keep only the complete prefix.
@@ -204,7 +203,54 @@ std::string receiver_display_name() {
     if (end == hostname.get()) {
         return "ClearCast";
     }
-    return std::string(prefix) + std::string(hostname.get(), end - hostname.get()) + ')';
+    return std::string(prefix) + std::string(hostname.get(), end - hostname.get());
+}
+
+const char* receiver_display_name() noexcept {
+    try {
+        static const std::string name = make_receiver_display_name();
+        return name.c_str();
+    } catch (const std::bad_alloc&) {
+        return "ClearCast";
+    }
+}
+
+void load_pairing_keys() {
+    registered_keys.clear();
+    const std::unique_ptr<FILE, decltype(&fclose)> file(g_fopen(pairing_register.c_str(), "rb"), &fclose);
+    if (!file) {
+        return;
+    }
+
+    // Only the key and its delimiter are needed. Read past oversized metadata without
+    // mistaking a continuation of the same line for a second paired device.
+    constexpr size_t key_length = 44;
+    char prefix[key_length + 2];
+    size_t length = 0;
+    const auto add_key = [&](bool ended_with_newline) {
+        if (ended_with_newline && length == key_length + 1 && prefix[key_length] == '\r') {
+            --length;
+        }
+        if (length < key_length || (length > key_length && prefix[key_length] != ',') ||
+            prefix[key_length - 1] != '=') {
+            return;
+        }
+        if (std::all_of(prefix, prefix + key_length - 1, [](unsigned char c) {
+            return g_ascii_isalnum(c) || c == '+' || c == '/';
+        })) {
+            registered_keys.emplace_back(prefix, key_length);
+        }
+    };
+
+    for (int ch; (ch = fgetc(file.get())) != EOF;) {
+        if (ch == '\n') {
+            add_key(true);
+            length = 0;
+        } else if (length < sizeof(prefix)) {
+            prefix[length++] = static_cast<char>(ch);
+        }
+    }
+    add_key(false);
 }
 
 void configure_receiver(const ReceiverOptions& options) {
@@ -224,20 +270,11 @@ void configure_receiver(const ReceiverOptions& options) {
     nofreeze = true;
     setup_legacy_pairing = true;
     pin_pw = 1;
-    pin = options.pairing_pin + 10000;
+    pin = 1; // Enable PIN pairing. Each control connection generates its own challenge.
     keyfile = options.state_directory + "/receiver.pem";
     pairing_register = options.state_directory + "/clients.txt";
     registration_list = true;
-    registered_keys.clear();
-    if (FILE* file = g_fopen(pairing_register.c_str(), "r")) {
-        char line[4096];
-        while (fgets(line, sizeof(line), file)) {
-            if (strlen(line) >= 44) {
-                registered_keys.emplace_back(line, 44);
-            }
-        }
-        fclose(file);
-    }
+    load_pairing_keys();
     audio_type = previous_audio_type = compression_type = 0;
     current_volume = initial_volume;
     remote_clock_offset = 0;
@@ -432,9 +469,15 @@ extern "C" void clearcast_set_video_sink(GstElement* sink) {
     set_stats_sink(sink);
 }
 
+static void clearcast_display_pairing_pin(const char* pin) {
+    if (!mirror_active) {
+        enqueue_event({PairingRequired, std::atoi(pin), 0, 0, 0});
+    }
+}
+
 extern "C" void clearcast_pairing_status(int status) {
     if (!mirror_active) {
-        enqueue_event({status == 2 ? PairingCompleted : status == 1 ? PairingRejected : PairingRequired, 0, 0, 0, 0});
+        enqueue_event({status == 2 ? PairingCompleted : PairingRejected, 0, 0, 0, 0});
     }
 }
 
@@ -446,6 +489,10 @@ extern "C" void clearcast_pipeline_error() {
     if (mirror_active) {
         receiver_failure = ERROR_NOT_SUPPORTED;
     }
+}
+
+extern "C" __declspec(dllexport) const char* clearcast_receiver_get_name() {
+    return receiver_display_name();
 }
 
 extern "C" __declspec(dllexport) int clearcast_receiver_start_v2(
@@ -477,7 +524,7 @@ extern "C" __declspec(dllexport) int clearcast_receiver_start_v2(
     }
     try {
         std::unique_ptr<ReceiverOptions> options(new ReceiverOptions{
-            state_dir_utf8, width, height, static_cast<unsigned short>(fps), pairing_pin,
+            state_dir_utf8, width, height, static_cast<unsigned short>(fps),
             decoder, hevc == 1, reinterpret_cast<HWND>(hwnd), mdns_address});
         clear_events();
         clearcast_stopping = false;

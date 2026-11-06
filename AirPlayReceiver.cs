@@ -1,7 +1,7 @@
+using System.Buffers.Text;
 using System.ComponentModel;
-using System.Globalization;
 using System.IO;
-using System.Security.Cryptography;
+using System.Text;
 
 namespace ClearCast;
 
@@ -30,10 +30,11 @@ internal sealed record SavedPairing(string Id, string? Name);
 internal sealed class AirPlayReceiver
 {
     private const int PairingKeyLength = 44;
+    private const int SharingViolation = 32;
 
-    public string Pin { get; }
+    private readonly FileStream _stateLock;
 
-    private AirPlayReceiver(string pin) => Pin = pin;
+    private AirPlayReceiver(FileStream stateLock) => _stateLock = stateLock;
 
     public static AirPlayReceiver Start(string root, DecoderMode decoder, nint videoHost, ReceiverAdapter? adapter)
     {
@@ -41,12 +42,31 @@ internal sealed class AirPlayReceiver
 
         string state = StateDirectory(root);
         Directory.CreateDirectory(state);
-        string pin = RandomNumberGenerator.GetInt32(1, 10_000).ToString("0000", CultureInfo.InvariantCulture);
-        int result = NativeReceiver.Start(state, size, 30, (int)decoder, hevc ? 1 : 0, pin, videoHost,
-            adapter?.NativeAddress ?? 0);
-        if (result != 0)
-            throw new Win32Exception(result, ReceiverNetwork.GetFailureMessage(result, decoder));
-        return new AirPlayReceiver(pin);
+        FileStream stateLock;
+        try
+        {
+            stateLock = AcquireStateLock(state);
+        }
+        catch (IOException error) when (error.HResult == unchecked((int)0x80070000) + SharingViolation)
+        {
+            throw new Win32Exception(SharingViolation, "另一个 ClearCast 窗口正在使用接收器。请关闭它后重试。");
+        }
+
+        try
+        {
+            var receiver = new AirPlayReceiver(stateLock);
+            // The receiver generates a fresh PIN per challenge. The start ABI still accepts a PIN argument.
+            int result = NativeReceiver.Start(state, size, 30, (int)decoder, hevc ? 1 : 0, "0001", videoHost,
+                adapter?.NativeAddress ?? 0);
+            if (result != 0)
+                throw new Win32Exception(result, ReceiverNetwork.GetFailureMessage(result, decoder));
+            return receiver;
+        }
+        catch
+        {
+            stateLock.Dispose();
+            throw;
+        }
     }
 
     private static (string Size, bool Hevc) SelectPictureQuality(ReceiverAdapter? adapter, DecoderMode decoder)
@@ -65,30 +85,22 @@ internal sealed class AirPlayReceiver
 
     public static void ClearPairings(string root)
     {
-        try
-        {
+        using var stateLock = AcquirePairingLock(root);
+        if (stateLock is not null)
             File.Delete(PairingPath(root));
-        }
-        catch (DirectoryNotFoundException)
-        {
-        }
     }
 
     public static IReadOnlyList<SavedPairing> GetSavedPairings(string root)
     {
         var pairings = new Dictionary<string, SavedPairing>(StringComparer.Ordinal);
-        Span<byte> decodedKey = stackalloc byte[32];
-        foreach (string line in ReadPairingLines(PairingPath(root)))
+        foreach (var row in ReadPairingRows(PairingPath(root)))
         {
-            if (line.Length < PairingKeyLength ||
-                !Convert.TryFromBase64Chars(line.AsSpan(0, PairingKeyLength), decodedKey, out int bytes) ||
-                bytes != decodedKey.Length)
+            if (GetPairingKey(row.Span) is not { } id)
                 continue;
 
             // UxPlay writes key, timestamp, device ID, and name. Older records can have only the key.
-            string id = line[..PairingKeyLength];
-            string[] fields = line.Split(',', 4);
-            string? name = fields.Length == 4 && fields[0].Length == PairingKeyLength ? fields[3].Trim() : null;
+            string[] fields = Encoding.UTF8.GetString(row.Span).Split(',', 4);
+            string? name = fields.Length == 4 ? fields[3].Trim().Replace('\r', ' ') : null;
             if (!string.IsNullOrEmpty(name))
                 pairings[id] = new(id, name);
             else
@@ -100,16 +112,23 @@ internal sealed class AirPlayReceiver
     // The receiver must be stopped before replacing the file it appends to and caches in memory.
     public static void RemovePairing(string root, string id)
     {
+        using var stateLock = AcquirePairingLock(root);
+        if (stateLock is null)
+            return;
+
         string path = PairingPath(root);
-        List<string> lines = ReadPairingLines(path);
-        if (lines.RemoveAll(line => line.Length >= PairingKeyLength &&
-            line.AsSpan(0, PairingKeyLength).SequenceEqual(id)) == 0)
+        var rows = ReadPairingRows(path).ToList();
+        if (rows.RemoveAll(row => GetPairingKey(row.Span) == id) == 0)
             return;
 
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllLines(temporary, lines);
+            using (var stream = new FileStream(temporary, FileMode.CreateNew))
+            {
+                foreach (var row in rows)
+                    stream.Write(row.Span);
+            }
             File.Move(temporary, path, overwrite: true);
         }
         finally
@@ -118,25 +137,65 @@ internal sealed class AirPlayReceiver
         }
     }
 
-    private static List<string> ReadPairingLines(string path)
+    private static string? GetPairingKey(ReadOnlySpan<byte> row)
     {
-        var lines = new List<string>();
+        // Keep the same LF-delimited record and key boundary as the native receiver.
+        if (row.EndsWith("\r\n"u8))
+            row = row[..^2];
+        else if (row.EndsWith("\n"u8))
+            row = row[..^1];
+
+        if (row.Length < PairingKeyLength ||
+            (row.Length > PairingKeyLength && row[PairingKeyLength] != (byte)',') ||
+            row[PairingKeyLength - 1] != (byte)'=' ||
+            !Base64.IsValid(row[..PairingKeyLength], out int decodedLength) || decodedLength != 32)
+            return null;
+
+        return Encoding.ASCII.GetString(row[..PairingKeyLength]);
+    }
+
+    private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path)
+    {
+        byte[] bytes;
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            while (reader.ReadLine() is string line)
-                lines.Add(line);
+            using var snapshot = new MemoryStream();
+            stream.CopyTo(snapshot);
+            bytes = snapshot.ToArray();
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {
+            yield break;
         }
-        return lines;
+        for (int offset = 0; offset < bytes.Length;)
+        {
+            int end = Array.IndexOf(bytes, (byte)'\n', offset);
+            int next = end == -1 ? bytes.Length : end + 1;
+            yield return bytes.AsMemory(offset, next - offset);
+            offset = next;
+        }
     }
 
     private static string PairingPath(string root) => Path.Combine(StateDirectory(root), "clients.txt");
 
     private static string StateDirectory(string root) => Path.Combine(root, ".clearcast-state");
+
+    // A second ClearCast process can browse saved devices, but cannot change keys cached by an active receiver.
+    private static FileStream AcquireStateLock(string state) => new(Path.Combine(state, "receiver.lock"),
+        FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+
+    private static FileStream? AcquirePairingLock(string root)
+    {
+        try
+        {
+            return AcquireStateLock(StateDirectory(root));
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+    }
 
     public bool TryReadEvent(out ReceiverEvent receiverEvent)
     {
@@ -172,5 +231,6 @@ internal sealed class AirPlayReceiver
         int result = NativeReceiver.Stop();
         if (result != 0)
             throw new Win32Exception(result, "无法停止接收，请重试。");
+        _stateLock.Dispose();
     });
 }
