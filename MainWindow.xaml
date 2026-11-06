@@ -435,13 +435,15 @@
                                                 <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                     <TextBlock Text="{x:Bind Texts.AboutRepository, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
                                                     <HyperlinkButton x:Name="AboutRepositoryLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
-                                                        HorizontalAlignment="Right" Content="NCFXZ/ClearCast" NavigateUri="https://github.com/NCFXZ/ClearCast" />
+                                                        HorizontalAlignment="Right" Content="{x:Bind Texts.AboutRepositoryLinkText, Mode=OneWay}"
+                                                        NavigateUri="https://github.com/NCFXZ/ClearCast" />
                                                 </Grid>
                                             </Border>
                                             <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                 <TextBlock Text="{x:Bind Texts.AboutLicense, Mode=OneWay}" TextWrapping="Wrap" VerticalAlignment="Center" />
                                                 <HyperlinkButton x:Name="AboutLicenseLink" Grid.Column="1" Padding="0" VerticalAlignment="Center"
-                                                    HorizontalAlignment="Right" Content="GPL-3.0-or-later" NavigateUri="https://github.com/NCFXZ/ClearCast/blob/main/LICENSE" />
+                                                    HorizontalAlignment="Right" Content="{x:Bind Texts.AboutLicenseLinkText, Mode=OneWay}"
+                                                    NavigateUri="https://github.com/NCFXZ/ClearCast/blob/main/LICENSE" />
                                             </Grid>
                                         </StackPanel>
                                     </local:SettingsExpander>
