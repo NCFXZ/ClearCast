@@ -24,13 +24,14 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string About => Get("关于", "About");
     public string AboutVersion { get; } = typeof(UiText).Assembly.GetName().Version?.ToString() ?? "—";
     public string AboutLicense => Get("GNU GPL v3 或更高版本", "GNU GPL v3 or later");
+    public string AboutRepositoryLinkText => Get("查看 GitHub 仓库", "View GitHub repository");
     public string AboutReportIssue => Get("问题反馈", "Report an issue");
 
     public string PairingCode => Get("投屏验证码", "Mirroring code");
     public string ReceiverError => Get("接收遇到问题", "Couldn't receive the stream");
     public string LandingHeading => Get("将屏幕投到这台电脑", "Mirror your screen to this PC");
-    public string LandingDescription => Get("在同一局域网的 iPhone、iPad 或 Mac 上打开「屏幕镜像」，然后选择 ClearCast。",
-        "On an iPhone, iPad, or Mac on the same network, open Screen Mirroring and choose ClearCast.");
+    public string LandingDescription => Get("在同一局域网的 iPhone、iPad 或 Mac 上打开「屏幕镜像」，然后选择「ClearCast (电脑名称)」。",
+        "On an iPhone, iPad, or Mac on the same network, open Screen Mirroring and choose “ClearCast (computer name)”.");
     public string RetryReceiver => Get("重试接收", "Try again");
 
     public string Disconnect => Get("断开投屏", "Disconnect");

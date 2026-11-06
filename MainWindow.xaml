@@ -34,8 +34,8 @@
 
         <TitleBar x:Name="AppTitleBar" Title="ClearCast">
             <TitleBar.Resources>
-                <x:Double x:Key="TitleBarIconMaxWidth">26</x:Double>
-                <x:Double x:Key="TitleBarIconMaxHeight">26</x:Double>
+                <x:Double x:Key="TitleBarIconMaxWidth">22</x:Double>
+                <x:Double x:Key="TitleBarIconMaxHeight">22</x:Double>
                 <Thickness x:Key="TitleBarIconMargin">0,0,8,0</Thickness>
             </TitleBar.Resources>
             <TitleBar.IconSource>
@@ -208,7 +208,7 @@
                             </ScrollViewer>
                             <StackPanel x:Name="PlayerOverlay" Orientation="Horizontal" Spacing="6" Margin="0,0,10,10"
                                 HorizontalAlignment="Right" VerticalAlignment="Bottom" RequestedTheme="Dark"
-                                GotFocus="PlayerOverlayGotFocus" Visibility="Collapsed">
+                                GotFocus="PlayerOverlayGotFocus" Opacity="0" IsHitTestVisible="False" Visibility="Collapsed">
                                 <Button x:Name="RotateLeftButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
                                     AutomationProperties.Name="{x:Bind Texts.RotateLeft, Mode=OneWay}"
                                     ToolTipService.ToolTip="{x:Bind Texts.RotateLeft, Mode=OneWay}" Click="RotateLeftClicked">
@@ -419,11 +419,12 @@
                                         HeaderBackground="{ThemeResource ExpanderHeaderBackground}"
                                         HeaderPointerOverBackground="{ThemeResource ControlFillColorSecondaryBrush}">
                                         <local:SettingsExpander.Resources>
+                                            <Thickness x:Key="ExpanderChevronMargin">0,0,8,0</Thickness>
                                             <SolidColorBrush x:Key="ExpanderChevronPointerOverBackground" Color="Transparent" />
                                             <SolidColorBrush x:Key="ExpanderChevronPressedBackground" Color="Transparent" />
                                         </local:SettingsExpander.Resources>
                                         <local:SettingsExpander.Header>
-                                            <Grid Margin="0,12,12,12" ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
+                                            <Grid Margin="0,12,0,12" ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
                                                 <Image Width="28" Height="28" VerticalAlignment="Center" Source="ms-appx:///Assets/ClearCast.png" />
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                                                     <TextBlock x:Name="AboutAppName" Text="ClearCast" TextWrapping="Wrap" />
@@ -436,7 +437,8 @@
                                             </Grid>
                                         </local:SettingsExpander.Header>
                                         <HyperlinkButton x:Name="AboutRepositoryLink" Margin="48,8,44,8" Padding="12,6"
-                                            HorizontalAlignment="Left" Content="GitHub" NavigateUri="https://github.com/NCFXZ/ClearCast" />
+                                            HorizontalAlignment="Left" Content="{x:Bind Texts.AboutRepositoryLinkText, Mode=OneWay}"
+                                            NavigateUri="https://github.com/NCFXZ/ClearCast" />
                                     </local:SettingsExpander>
                                     <HyperlinkButton x:Name="AboutIssueLink" Padding="0" HorizontalAlignment="Right"
                                         AutomationProperties.Name="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" NavigateUri="https://github.com/NCFXZ/ClearCast/issues/new">

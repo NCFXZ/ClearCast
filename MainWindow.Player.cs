@@ -28,6 +28,10 @@ public sealed partial class MainWindow
     private int _playerRotation;
     private PointInt32? _lastPlayerPointer;
     private long _playerOverlayActivity;
+    private bool _playerOverlayTargetVisible;
+    private double _playerOverlayFadeFrom;
+    private long _playerOverlayFadeStarted;
+    private DispatcherQueueTimer? _playerOverlayFadeTimer;
 
     private NativeVideoHost CreatePlayerVideoHost()
     {
@@ -83,7 +87,7 @@ public sealed partial class MainWindow
 
     private RectInt32? GetPlayerOverlayBounds(double scale)
     {
-        if (PlayerOverlay.Opacity == 0 || PlayerOverlay.ActualWidth <= 0 || PlayerOverlay.ActualHeight <= 0)
+        if (!PlayerOverlay.IsHitTestVisible || PlayerOverlay.ActualWidth <= 0 || PlayerOverlay.ActualHeight <= 0)
             return null;
 
         Rect bounds = PlayerOverlay.TransformToVisual(null).TransformBounds(
@@ -109,7 +113,7 @@ public sealed partial class MainWindow
                 ShowPlayerOverlay();
         }
 
-        if (PlayerOverlay.Opacity != 0 && Stopwatch.GetElapsedTime(_playerOverlayActivity) >= TimeSpan.FromSeconds(3) &&
+        if (_playerOverlayTargetVisible && Stopwatch.GetElapsedTime(_playerOverlayActivity) >= TimeSpan.FromSeconds(3) &&
             RotateLeftButton.FocusState != FocusState.Keyboard && RotateRightButton.FocusState != FocusState.Keyboard &&
             FullScreenButton.FocusState != FocusState.Keyboard)
         {
@@ -140,15 +144,70 @@ public sealed partial class MainWindow
         SetPlayerOverlayVisible(true);
     }
 
-    private void SetPlayerOverlayVisible(bool visible)
+    private void SetPlayerOverlayVisible(bool visible, bool animate = true)
     {
-        double opacity = visible ? 1 : 0;
-        if (PlayerOverlay.Opacity == opacity)
+        if (animate && _playerOverlayTargetVisible == visible)
             return;
 
-        PlayerOverlay.Opacity = opacity;
-        PlayerOverlay.IsHitTestVisible = visible;
-        UpdateVideoHost();
+        _playerOverlayTargetVisible = visible;
+        double targetOpacity = visible ? 1 : 0;
+        if (!animate || !_motionSettings.AnimationsEnabled || !IsMirrorPageSelected || PlayerOverlay.Opacity == targetOpacity)
+        {
+            StopPlayerOverlayFade();
+            ApplyPlayerOverlayOpacity(targetOpacity);
+            return;
+        }
+
+        _playerOverlayFadeFrom = PlayerOverlay.Opacity;
+        _playerOverlayFadeStarted = Stopwatch.GetTimestamp();
+        if (_playerOverlayFadeTimer is null)
+        {
+            // The XAML compositor can be idle while the independent video HWND is playing.
+            _playerOverlayFadeTimer = DispatcherQueue.CreateTimer();
+            _playerOverlayFadeTimer.Interval = TimeSpan.FromMilliseconds(16);
+            _playerOverlayFadeTimer.Tick += AdvancePlayerOverlayFade;
+        }
+        if (!_playerOverlayFadeTimer.IsRunning)
+            _playerOverlayFadeTimer.Start();
+    }
+
+    private void AdvancePlayerOverlayFade(DispatcherQueueTimer sender, object args)
+    {
+        if (!sender.IsRunning)
+            return;
+
+        const double durationMilliseconds = 150;
+        double targetOpacity = _playerOverlayTargetVisible ? 1 : 0;
+        double progress = Stopwatch.GetElapsedTime(_playerOverlayFadeStarted).TotalMilliseconds / durationMilliseconds;
+        if (progress >= 1)
+        {
+            StopPlayerOverlayFade();
+            ApplyPlayerOverlayOpacity(targetOpacity);
+            return;
+        }
+
+        double remaining = 1 - progress;
+        double easedProgress = 1 - remaining * remaining * remaining;
+        ApplyPlayerOverlayOpacity(_playerOverlayFadeFrom + (targetOpacity - _playerOverlayFadeFrom) * easedProgress);
+    }
+
+    private void StopPlayerOverlayFade() => _playerOverlayFadeTimer?.Stop();
+
+    private void ApplyPlayerOverlayOpacity(double opacity)
+    {
+        bool visible = opacity > 0;
+        if (!visible)
+            PlayerOverlay.Opacity = 0;
+
+        // The native video overlaps XAML. Reserve the hole before showing the first frame and remove it after the last.
+        if (PlayerOverlay.IsHitTestVisible != visible)
+        {
+            PlayerOverlay.IsHitTestVisible = visible;
+            UpdateVideoHost();
+        }
+
+        if (visible)
+            PlayerOverlay.Opacity = opacity;
     }
 
     private void RotateLeftClicked(object sender, RoutedEventArgs args) => RotatePlayer(-1);

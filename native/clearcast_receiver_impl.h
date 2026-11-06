@@ -10,6 +10,7 @@
 #include <gst/video/video.h>
 #include <glib/gstdio.h>
 #include <new>
+#include "lib/global.h"
 #include "lib/mdnsd/mdnsd.h"
 
 namespace {
@@ -176,8 +177,38 @@ int initialize_gstreamer(const std::string& state_directory) {
     return 0;
 }
 
+std::string receiver_display_name() {
+    wchar_t computer_name[64];
+    DWORD length = ARRAYSIZE(computer_name);
+    if (!GetComputerNameExW(ComputerNamePhysicalDnsHostname, computer_name, &length) || !length) {
+        length = ARRAYSIZE(computer_name);
+        if (!GetComputerNameExW(ComputerNamePhysicalNetBIOS, computer_name, &length) || !length) {
+            return "ClearCast";
+        }
+    }
+
+    auto converted = g_utf16_to_utf8(reinterpret_cast<const gunichar2*>(computer_name), length,
+                                     nullptr, nullptr, nullptr);
+    std::unique_ptr<gchar, decltype(&g_free)> hostname(converted, &g_free);
+    if (!hostname) {
+        return "ClearCast";
+    }
+
+    // RAOP prepends MAC@ inside the same 63-byte DNS label.
+    constexpr char prefix[] = "ClearCast (";
+    constexpr size_t max_hostname_bytes = 63 - (2 * MAX_HWADDR_LEN + 1) - (sizeof(prefix) - 1) - 1;
+    const size_t count = std::min(strcspn(hostname.get(), "."), max_hostname_bytes);
+    const char* end;
+    // If the byte limit splits a UTF-8 code point, keep only the complete prefix.
+    g_utf8_validate(hostname.get(), count, &end);
+    if (end == hostname.get()) {
+        return "ClearCast";
+    }
+    return std::string(prefix) + std::string(hostname.get(), end - hostname.get()) + ')';
+}
+
 void configure_receiver(const ReceiverOptions& options) {
-    server_name = "ClearCast";
+    server_name = receiver_display_name();
     videosink = "d3d11videosink";
     // Mirroring does not send input back to the device. Avoid locking D3D11 on mouse moves.
     videosink_options = " force-aspect-ratio=true enable-navigation-events=false";

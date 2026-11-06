@@ -101,6 +101,7 @@ public sealed partial class MainWindow : Window
             _receiverTimer.Stop();
             _pairingTimer.Stop();
             _playerOverlayTimer.Stop();
+            StopPlayerOverlayFade();
             _videoHost?.Dispose();
         };
     }
@@ -355,6 +356,7 @@ public sealed partial class MainWindow : Window
         {
             _playerOverlayTimer.Stop();
             _lastPlayerPointer = null;
+            SetPlayerOverlayVisible(false, animate: false);
             SetPlayerFullScreen(false);
             _playerFrameSize = default;
             _playerRotation = 0;
