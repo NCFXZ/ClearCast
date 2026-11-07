@@ -8,7 +8,7 @@
             Version="1.1.0.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>ClearCast</DisplayName>
-    <PublisherDisplayName>NCFX</PublisherDisplayName>
+    <PublisherDisplayName>F. Zhu</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>
