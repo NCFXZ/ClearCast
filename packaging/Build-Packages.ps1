@@ -144,7 +144,7 @@ function Copy-Payload([string] $Source, [string] $Destination) {
     [void] [IO.Directory]::CreateDirectory($Destination)
     Get-ChildItem -LiteralPath $Source -Force | Where-Object Name -ne 'ClearCast.pdb' |
         Copy-Item -Destination $Destination -Recurse
-    Get-ChildItem -LiteralPath $compliance -Force | Copy-Item -Destination $Destination -Recurse
+    Get-ChildItem -LiteralPath $compliance -Force | Copy-Item -Destination $Destination -Recurse -Force
 }
 
 try {
