@@ -94,9 +94,9 @@ function Check-InstalledPayload([string] $Directory, $Files, [string] $Name) {
         if (-not $path.StartsWith($payloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw "$Name validation path escaped its installation directory."
         }
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
-            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $file.sha256) {
-            throw "$Name installed file does not match its published payload: $relative"
+        $actualHash = if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash } else { 'missing' }
+        if ($actualHash -ne $file.sha256) {
+            throw "$Name installed file does not match its published payload: $relative (expected $($file.sha256), actual $actualHash)"
         }
     }
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payloadRoot 'ClearCast.dll')).FileVersion

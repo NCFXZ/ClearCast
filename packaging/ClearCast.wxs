@@ -1,8 +1,13 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="ClearCast" Manufacturer="NCFX" Version="$(var.ReleaseVersion)"
            UpgradeCode="{6D6518A0-43F2-4C14-BD46-36C04820B3F1}" Scope="perUser">
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of ClearCast is already installed." />
+    <!-- This private, self-contained payload can move to a lower-numbered
+         supported dependency branch. Override Burn's muso before costing so
+         component version rules cannot omit the exact validated binaries. -->
+    <SetProperty Id="REINSTALLMODE" Value="amus" Before="CostInitialize"
+                 Sequence="both" Condition="NOT Installed" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <Icon Id="ClearCast.ico" SourceFile="!(bindpath.Payload)\Assets\ClearCast.ico" />
     <Property Id="ARPPRODUCTICON" Value="ClearCast.ico" />
