@@ -19,9 +19,21 @@ internal enum ReceiverEventKind
     DecoderChanged,
     DecoderChangeFailed,
     PairingCompleted,
-    ConnectionRejected
+    ConnectionRejected,
+    PairingAuthenticationRequired = 12
 }
 
+internal enum PairingRejectionReason
+{
+    InvalidSetupData = 1,
+    ProofRejected,
+    PinUnavailableOrExpired,
+    RateLimited,
+    VerifyRejected
+}
+
+// Pairing events use Height for the challenge generation; zero is unassociated.
+// PairingRequired carries the PIN in Width, and PairingRejected carries its reason in ErrorCode.
 internal readonly record struct ReceiverEvent(ReceiverEventKind Kind, int Width, int Height, int Codec, int ErrorCode);
 
 internal readonly record struct PlaybackStats(ulong Rendered, ulong Dropped, int Width, int Height);
@@ -346,7 +358,7 @@ internal sealed class AirPlayReceiver
     {
         int result = NativeReceiver.SetVideoRotation(quarterTurnsClockwise);
         if (result != 0)
-            throw new Win32Exception(result, "无法旋转投屏画面。");
+            throw new Win32Exception(result, "无法旋转屏幕镜像画面。");
     }
 
     // Shutdown can wait for GStreamer and a Win32 message pump. Keep the UI thread available.

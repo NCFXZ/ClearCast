@@ -4,7 +4,9 @@ param(
     [string] $Ucrt64Directory,
     [string] $BuildDirectory,
     [string] $OutputDirectory,
-    [string] $SecurityRuntimeDirectory
+    [string] $SecurityRuntimeDirectory,
+    [string] $LibplistSecurityDirectory,
+    [string] $OpenSslSecurityDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +18,54 @@ if (-not $Ucrt64Directory) { $Ucrt64Directory = Join-Path $runtime 'msys64\ucrt6
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $runtime 'uxplay-receiver-build' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $runtime 'receiver' }
 if (-not $SecurityRuntimeDirectory) { $SecurityRuntimeDirectory = Join-Path $runtime 'gstreamer-security' }
+if (-not $LibplistSecurityDirectory) { $LibplistSecurityDirectory = Join-Path $runtime 'libplist-security' }
+if (-not $OpenSslSecurityDirectory) { $OpenSslSecurityDirectory = Join-Path $runtime 'openssl-security' }
+
+function Resolve-ComponentFile([string] $Root, [string] $RelativePath) {
+    if ([IO.Path]::IsPathRooted($RelativePath)) { throw 'A dependency manifest contains an absolute path.' }
+    $resolved = [IO.Path]::GetFullPath((Join-Path $Root $RelativePath))
+    $boundary = $Root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolved.StartsWith($boundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'A dependency manifest path escapes its component directory.'
+    }
+    return $resolved
+}
+
+function Read-SecurityComponent([string] $Directory, [string] $Name, [string] $Version, [string] $SourceHash) {
+    $componentRoot = [IO.Path]::GetFullPath($Directory)
+    $manifestPath = Join-Path $componentRoot 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Build the controlled $Name runtime before building the receiver."
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $componentName = if ($manifest.component) { $manifest.component } else { $manifest.name }
+    if ($manifest.schemaVersion -ne 1 -or $componentName -ne $Name -or $manifest.version -ne $Version -or
+        $manifest.sourceSha256 -ne $SourceHash -or -not $manifest.sourceUrl) {
+        throw "The controlled $Name manifest does not match the pinned release."
+    }
+    foreach ($record in @($manifest.files) + @($manifest.buildFiles)) {
+        $file = Resolve-ComponentFile $componentRoot $record.relativePath
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $record.sha256) {
+            throw "The controlled $Name file hash is invalid: $($record.relativePath)"
+        }
+    }
+    if (-not $manifest.files -or -not $manifest.buildFiles) { throw "The controlled $Name manifest is incomplete." }
+    foreach ($record in $manifest.files) {
+        if ([IO.Path]::GetFileName($record.relativePath) -ne $record.relativePath -or
+            $record.relativePath -notin @('libplist-2.0.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll')) {
+            throw "Unexpected runtime file in the controlled $Name manifest."
+        }
+    }
+    $prefix = Resolve-ComponentFile $componentRoot $manifest.prefixRelativePath
+    if (-not (Test-Path -LiteralPath $prefix -PathType Container)) { throw "The controlled $Name build prefix is missing." }
+    return [pscustomobject]@{ Name = $Name; Root = $componentRoot; ManifestPath = $manifestPath; Manifest = $manifest; Prefix = $prefix }
+}
+
+$components = @(
+    (Read-SecurityComponent $LibplistSecurityDirectory 'libplist' '2.8.0' 'B1F59F7634C58B2481325A23FF4E3BF51574A42D868CBE466D2B39B04550752A'),
+    (Read-SecurityComponent $OpenSslSecurityDirectory 'openssl' '3.5.9' '603F5602E2EEF00D77FBD429D34DCD5822BB301757A1BC9CDB24C670F1EB859A')
+)
 
 # UCRT64 currently supplies GStreamer 1.28.8. Ship the ABI-compatible 1.28.9
 # parser components to include the H.264/H.265/MPEG parser security fixes.
@@ -39,6 +89,11 @@ foreach ($relativePath in 'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/lib
     }
     $securityOverrides[[IO.Path]::GetFileName($file)] = $file
 }
+foreach ($component in $components) {
+    foreach ($record in $component.Manifest.files) {
+        $securityOverrides[$record.relativePath] = Resolve-ComponentFile $component.Root $record.relativePath
+    }
+}
 
 $ArchivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
 $Ucrt64Directory = (Resolve-Path -LiteralPath $Ucrt64Directory).Path
@@ -56,10 +111,13 @@ $patches = @(
     (Join-Path $PSScriptRoot 'uxplay-http-headers.patch'),
     (Join-Path $PSScriptRoot 'uxplay-diagnostics.patch'),
     (Join-Path $PSScriptRoot 'uxplay-pairing-recovery.patch'),
-    (Join-Path $PSScriptRoot 'uxplay-release-hardening.patch')
+    (Join-Path $PSScriptRoot 'uxplay-release-hardening.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-pairing-feedback.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-srp-salt.patch')
 )
 # Use a fresh source tree when a patch changes.
-$hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '')
+$hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '') +
+    ((Get-FileHash -LiteralPath @($components.ManifestPath)).Hash -join '')
 $sha = [Security.Cryptography.SHA256]::Create()
 try {
     $key = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($hashes))).Replace('-', '').Substring(0, 16)
@@ -94,10 +152,25 @@ $bin = Join-Path $Ucrt64Directory 'bin'
 $cmake = Join-Path $bin 'cmake.exe'
 $objdump = Join-Path $bin 'objdump.exe'
 $binaryDir = Join-Path $build 'build'
+$testPython = (Get-Command python -ErrorAction SilentlyContinue).Source
 $originalPath = $env:PATH
+$originalPkgConfigPath = $env:PKG_CONFIG_PATH
 try {
-    $env:PATH = "$bin;$originalPath"
-    & $cmake -S $PSScriptRoot -B $binaryDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DNO_MARCH_NATIVE=ON "-DUXPLAY_SOURCE_DIR=$source"
+    $libplistPrefix = $components[0].Prefix
+    $opensslPrefix = $components[1].Prefix
+    $plistImportLibrary = Join-Path $libplistPrefix 'lib\libplist-2.0.dll.a'
+    if (-not (Test-Path -LiteralPath $plistImportLibrary -PathType Leaf)) { throw 'The controlled libplist import library is missing.' }
+    $cryptoLibraries = @(Get-ChildItem -LiteralPath $opensslPrefix -Recurse -Filter 'libcrypto.dll.a' -File)
+    $sslLibraries = @(Get-ChildItem -LiteralPath $opensslPrefix -Recurse -Filter 'libssl.dll.a' -File)
+    if ($cryptoLibraries.Count -ne 1 -or $sslLibraries.Count -ne 1) { throw 'The controlled OpenSSL import libraries are missing or ambiguous.' }
+    $env:PATH = "$($components[0].Root);$($components[1].Root);$bin;$originalPath"
+    $env:PKG_CONFIG_PATH = (Join-Path $libplistPrefix 'lib\pkgconfig') + $(if ($originalPkgConfigPath) { ";$originalPkgConfigPath" })
+    $testOptions = @()
+    if ($testPython) { $testOptions += "-DPython3_EXECUTABLE=$testPython" }
+    & $cmake -S $PSScriptRoot -B $binaryDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DNO_MARCH_NATIVE=ON "-DUXPLAY_SOURCE_DIR=$source" `
+        "-DLIBPLIST=$plistImportLibrary" `
+        "-DOPENSSL_ROOT_DIR=$opensslPrefix" "-DOPENSSL_INCLUDE_DIR=$(Join-Path $opensslPrefix 'include')" `
+        "-DOPENSSL_CRYPTO_LIBRARY=$($cryptoLibraries[0].FullName)" "-DOPENSSL_SSL_LIBRARY=$($sslLibraries[0].FullName)" @testOptions
     if ($LASTEXITCODE -ne 0) { throw 'Receiver configuration failed.' }
     & $cmake --build $binaryDir --target clearcast_receiver --parallel
     if ($LASTEXITCODE -ne 0) { throw 'Receiver build failed.' }
@@ -115,6 +188,7 @@ try {
     }
 
     $pluginDir = Join-Path $Ucrt64Directory 'lib\gstreamer-1.0'
+    $scanner = Join-Path $Ucrt64Directory 'libexec\gstreamer-1.0\gst-plugin-scanner.exe'
     # Include the playback graphs, H.264/HEVC hardware and software decode, and Windows audio output.
     $pluginNames = @(
         'app', 'coreelements', 'playback', 'autodetect', 'typefindfunctions',
@@ -127,7 +201,7 @@ try {
         else { Join-Path $pluginDir $name }
     })
     $pending = [Collections.Generic.Queue[string]]::new()
-    foreach ($binary in @($receiver) + $plugins) { $pending.Enqueue($binary) }
+    foreach ($binary in @($receiver, $scanner) + $plugins) { $pending.Enqueue($binary) }
 
     $dependencies = @{}
     while ($pending.Count) {
@@ -158,9 +232,40 @@ try {
     Copy-Item -LiteralPath $plugins -Destination $outputPlugins -Force
     Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $output 'LICENSE-UxPlay.txt') -Force
     Copy-Item -LiteralPath $receiver -Destination $output -Force
+    Copy-Item -LiteralPath $scanner -Destination $output -Force
     Copy-Item -LiteralPath $securityManifestPath -Destination (Join-Path $output 'gstreamer-security-manifest.json') -Force
     Copy-Item -LiteralPath (Join-Path $securityRuntime 'COPYING') -Destination (Join-Path $output 'LICENSE-GStreamerSecurity.txt') -Force
+    $publishedComponents = @($components | ForEach-Object {
+        $component = $_
+        $publishedFiles = @($component.Manifest.files | Where-Object { $dependencies.ContainsKey($_.relativePath) })
+        if (-not $publishedFiles) { throw 'A controlled dependency was not used by the receiver build.' }
+        [ordered]@{
+            name = $component.Name
+            version = $component.Manifest.version
+            sourceUrl = $component.Manifest.sourceUrl
+            sourceSha256 = $component.Manifest.sourceSha256
+            files = $publishedFiles
+            build = $component.Manifest.build
+        }
+    })
+    [IO.File]::WriteAllText((Join-Path $output 'security-dependencies-manifest.json'),
+        ([ordered]@{ schemaVersion = 1; components = $publishedComponents } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    Copy-Item -LiteralPath (Join-Path $components[0].Root 'COPYING.LESSER') -Destination (Join-Path $output 'LICENSE-Libplist.txt') -Force
+    $opensslLicense = @('LICENSE.txt', 'LICENSE') | ForEach-Object { Join-Path $components[1].Root $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $opensslLicense) { throw 'The controlled OpenSSL license is missing.' }
+    Copy-Item -LiteralPath $opensslLicense -Destination (Join-Path $output 'LICENSE-OpenSSL.txt') -Force
+    # Check every consumer in the completed PE closure against the exact new
+    # crypto exports. A first dependency build may only have checked itself.
+    $opensslVerifier = Join-Path $components[1].Root 'verify-imports.py'
+    $pePython = Join-Path $bin 'python.exe'
+    if (-not (Test-Path -LiteralPath $opensslVerifier -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $pePython -PathType Leaf)) {
+        throw 'The controlled OpenSSL PE compatibility verifier and UCRT64 Python are required.'
+    }
+    & $pePython -I -S $opensslVerifier $output $components[1].Root (Join-Path $build 'openssl-compatibility.json')
+    if ($LASTEXITCODE -ne 0) { throw 'The completed receiver runtime is incompatible with the controlled OpenSSL DLL.' }
     Write-Output (Join-Path $output 'clearcast_receiver.dll')
 } finally {
     $env:PATH = $originalPath
+    $env:PKG_CONFIG_PATH = $originalPkgConfigPath
 }

@@ -2,6 +2,9 @@
 
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+from receiver_test_bootstrap import ensure_controlled_dependencies, loaded_dependency_evidence
+ensure_controlled_dependencies()
+
 import base64
 import hashlib
 import socket
@@ -18,6 +21,7 @@ for port in (47000, 47001, 47002):
         raise SystemExit(f'Close ClearCast and other AirPlay receivers first (TCP {port} is busy).') from error
 
 receiver = Receiver()
+print('Controlled dependencies:', loaded_dependency_evidence(), flush=True)
 print('Disposable test state:', receiver.state, flush=True)
 
 def identity_hash():

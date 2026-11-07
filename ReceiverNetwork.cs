@@ -69,7 +69,7 @@ internal static class ReceiverNetwork
     public static string GetFailureMessage(int errorCode, DecoderMode decoder) => errorCode switch
     {
         50 when decoder == DecoderMode.Hardware => "硬件解码不可用。请在设置中选择自动或软件解码后重试。",
-        10048 => "AirPlay 接收端口已被占用。请关闭其他投屏程序或 ClearCast 窗口后重试。",
+        10048 => "AirPlay 接收端口已被占用。请关闭其他屏幕镜像程序或 ClearCast 窗口后重试。",
         10049 or 10051 or 1231 => "当前网络不可用。请检查 Wi-Fi 或网线连接后重试。",
         1062 => "无法在局域网发布 AirPlay。请检查网络连接和 Windows 防火墙后重试。",
         10013 => "Windows 拒绝监听。请检查当前网络的防火墙和访问策略。",

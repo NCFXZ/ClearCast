@@ -44,7 +44,7 @@ internal sealed class NativeVideoHost : IDisposable
         Handle = CreateWindowExW(0, "STATIC", "ClearCastVideoHost", ChildStyle | BlackRectangle,
             0, 0, 1, 1, parent, 0, 0, 0);
         if (Handle == 0)
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建投屏画面区域。");
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建屏幕镜像画面区域。");
     }
 
     public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null)

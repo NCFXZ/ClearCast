@@ -16,7 +16,7 @@ namespace ClearCast;
 
 public sealed partial class MainWindow
 {
-    private const string PlayerRotationError = "无法旋转投屏画面，请重试。";
+    private const string PlayerRotationError = "无法旋转屏幕镜像画面，请重试。";
     private bool _playerFullScreen;
     private bool _restoreNavigationPane;
     private Visibility _restoreTitleBar;

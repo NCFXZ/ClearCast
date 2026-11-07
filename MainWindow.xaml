@@ -22,6 +22,16 @@
                         <Color x:Key="WindowBackdropTintColor">Transparent</Color>
                     </ResourceDictionary>
                 </ResourceDictionary.ThemeDictionaries>
+                <x:Double x:Key="ActionControlMinWidth">130</x:Double>
+                <x:Double x:Key="ActionControlMinHeight">32</x:Double>
+                <Style x:Key="TextActionButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                    <Setter Property="MinWidth" Value="{StaticResource ActionControlMinWidth}" />
+                    <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
+                </Style>
+                <Style x:Key="AccentTextActionButtonStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
+                    <Setter Property="MinWidth" Value="{StaticResource ActionControlMinWidth}" />
+                    <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
+                </Style>
             </ResourceDictionary>
         </Grid.Resources>
         <Grid.Background>
@@ -93,13 +103,22 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel VerticalAlignment="Center" Spacing="4">
                             <TextBlock Text="{x:Bind Texts.PairingCode, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
                             <TextBlock x:Name="PairingPrompt" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                         </StackPanel>
-                        <TextBlock x:Name="PinText" Grid.Column="1" VerticalAlignment="Center" FontSize="32"
+                        <TextBlock x:Name="PinText" Grid.Column="1" VerticalAlignment="Center" FontSize="32" TextLineBounds="Tight"
                             FontWeight="SemiBold" AutomationProperties.LiveSetting="Assertive" />
+                        <Button x:Name="PairingCloseButton" Grid.Column="2" Width="32" Height="32" Padding="0"
+                            VerticalAlignment="Center" Style="{StaticResource SubtleButtonStyle}"
+                            AutomationProperties.Name="{x:Bind Texts.DismissPairingCode, Mode=OneWay}"
+                            ToolTipService.ToolTip="{x:Bind Texts.DismissPairingCode, Mode=OneWay}" Click="PairingCloseClicked">
+                            <Viewbox Width="16" Height="16">
+                                <SymbolIcon Symbol="Cancel" />
+                            </Viewbox>
+                        </Button>
                     </Grid>
                 </Border>
                 <Frame x:Name="NavigationFrame" Grid.Row="1" IsNavigationStackEnabled="False"
@@ -220,7 +239,8 @@
                                 </ControlTemplate>
                             </InfoBar.Template>
                             <InfoBar.ActionButton>
-                                <Button x:Name="CopyErrorButton" Width="112" Height="{StaticResource ReceiverActionSize}" Padding="12,5" Click="CopyErrorClicked" />
+                                <Button x:Name="CopyErrorButton" Style="{StaticResource TextActionButtonStyle}"
+                                    Height="{StaticResource ReceiverActionSize}" Padding="12,5" Click="CopyErrorClicked" />
                             </InfoBar.ActionButton>
                         </InfoBar>
                         <Grid Grid.Row="1">
@@ -248,60 +268,9 @@
                                             Text="{x:Bind Texts.LandingDescription, Mode=OneWay}"
                                             TextAlignment="Center"
                                             TextWrapping="Wrap" />
-                                        <Viewbox MaxWidth="412" Margin="0,24,0,20" HorizontalAlignment="Center" Stretch="Uniform"
-                                            IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
-                                            <Canvas Width="412" Height="244">
-                                                <Ellipse Canvas.Left="35" Canvas.Top="222" Width="350" Height="16"
-                                                    Fill="{ThemeResource SubtleFillColorSecondaryBrush}" />
-                                                <Border Canvas.Left="137" Canvas.Top="174" Width="56" Height="42" CornerRadius="5"
-                                                    Background="{ThemeResource ControlStrongFillColorDefaultBrush}" />
-                                                <Border Canvas.Left="109" Canvas.Top="214" Width="112" Height="9" CornerRadius="5"
-                                                    Background="{ThemeResource ControlStrongFillColorDefaultBrush}" />
-                                                <Border Canvas.Left="26" Canvas.Top="26" Width="278" Height="168" Padding="8"
-                                                    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
-                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="18">
-                                                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="11">
-                                                        <Canvas Width="260" Height="150">
-                                                            <Border Width="260" Height="150" CornerRadius="11" Opacity="0.24"
-                                                                Background="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Ellipse Canvas.Left="171" Canvas.Top="25" Width="32" Height="32" Opacity="0.72"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Path Data="M 15,132 L 92,56 L 158,120 L 201,82 L 245,132 Z" Opacity="0.47"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Path Data="M 15,132 L 65,91 L 101,117 L 143,79 L 207,132 Z" Opacity="0.76"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Border Canvas.Left="108" Canvas.Top="11" Width="44" Height="4" CornerRadius="2"
-                                                                Background="{ThemeResource AccentTextFillColorPrimaryBrush}" Opacity="0.42" />
-                                                        </Canvas>
-                                                    </Border>
-                                                </Border>
-                                                <Path Canvas.Left="331" Canvas.Top="38" Data="M 1,16 C 13,4 31,4 43,16 M 8,24 C 16,16 28,16 36,24 M 15,32 C 19,28 25,28 29,32"
-                                                    Stroke="{ThemeResource AccentTextFillColorPrimaryBrush}" StrokeThickness="4"
-                                                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-                                                <Ellipse Canvas.Left="350" Canvas.Top="76" Width="6" Height="6"
-                                                    Fill="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                                                <Border Canvas.Left="282" Canvas.Top="88" Width="90" Height="140" Padding="7"
-                                                    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
-                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="20">
-                                                    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" CornerRadius="12">
-                                                        <Canvas Width="74" Height="124">
-                                                            <Border Width="74" Height="124" CornerRadius="12" Opacity="0.24"
-                                                                Background="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Ellipse Canvas.Left="45" Canvas.Top="32" Width="13" Height="13" Opacity="0.72"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Path Data="M 7,101 L 31,61 L 47,83 L 56,72 L 67,101 Z" Opacity="0.47"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Path Data="M 7,101 L 20,82 L 33,94 L 47,76 L 64,101 Z" Opacity="0.76"
-                                                                Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                            <Border Canvas.Left="26" Canvas.Top="6" Width="22" Height="5" CornerRadius="3"
-                                                                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" />
-                                                            <Border Canvas.Left="24" Canvas.Top="112" Width="26" Height="3" CornerRadius="2" Opacity="0.72"
-                                                                Background="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                                                        </Canvas>
-                                                    </Border>
-                                                </Border>
-                                            </Canvas>
-                                        </Viewbox>
+                                        <local:SvgFrameAnimation x:Name="LandingAnimation" MaxWidth="480" Margin="0,8,0,8"
+                                            HorizontalAlignment="Center" IsHitTestVisible="False"
+                                            AutomationProperties.AccessibilityView="Raw" />
                                         <TextBlock
                                             x:Name="LandingTitle"
                                             AutomationProperties.LiveSetting="Polite"
@@ -309,7 +278,7 @@
                                             TextAlignment="Center"
                                             TextWrapping="Wrap" />
                                         <Button x:Name="RetryReceiveButton" Content="{x:Bind Texts.RetryReceiver, Mode=OneWay}" HorizontalAlignment="Center"
-                                            Click="RetryReceiveClicked" Style="{StaticResource AccentButtonStyle}" Visibility="Collapsed" />
+                                            Click="RetryReceiveClicked" Style="{StaticResource AccentTextActionButtonStyle}" Visibility="Collapsed" />
                                     </StackPanel>
                                 </Grid>
                             </ScrollViewer>
@@ -349,6 +318,7 @@
                                 <TextBlock x:Name="StreamText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                             </StackPanel>
                             <Button x:Name="PlayerStopButton" Grid.Column="1" VerticalAlignment="Center" Click="DisconnectClicked"
+                                Style="{StaticResource TextActionButtonStyle}"
                                 Content="{x:Bind Texts.Disconnect, Mode=OneWay}" />
                         </Grid>
                     </Grid>
@@ -357,7 +327,8 @@
                 <Grid x:Name="SettingsPage" Grid.Row="1" SizeChanged="PageSizeChanged">
                     <Grid.Resources>
                         <Style TargetType="local:SettingsComboBox" BasedOn="{StaticResource DefaultComboBoxStyle}">
-                            <Setter Property="Width" Value="176" />
+                            <Setter Property="MinWidth" Value="{StaticResource ActionControlMinWidth}" />
+                            <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
                             <Setter Property="HorizontalAlignment" Value="Right" />
                             <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                         </Style>
@@ -372,7 +343,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
+                                        <Grid VerticalAlignment="Center" ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE790;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.ThemeLabel, Mode=OneWay}" TextWrapping="Wrap" />
@@ -391,7 +362,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
+                                        <Grid VerticalAlignment="Center" ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
                                             <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE774;" FontSize="20" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.LanguageLabel, Mode=OneWay}" TextWrapping="Wrap" />
@@ -412,7 +383,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" RowDefinitions="Auto,Auto">
+                                        <Grid VerticalAlignment="Center" ColumnSpacing="16" RowDefinitions="Auto,Auto">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="24" />
                                                 <ColumnDefinition Width="*" />
@@ -442,7 +413,7 @@
                                     <Border Padding="16,12" MinHeight="68" CornerRadius="4"
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                                        <Grid ColumnSpacing="16" RowDefinitions="Auto,Auto">
+                                        <Grid VerticalAlignment="Center" ColumnSpacing="16" RowDefinitions="Auto,Auto">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="24" />
                                                 <ColumnDefinition Width="*" />
@@ -493,7 +464,7 @@
                                                         <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
                                                             <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                                 <TextBlock Text="{x:Bind Name}" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                                                <Button Grid.Column="1" MinWidth="120" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                                <Button Grid.Column="1" Style="{StaticResource TextActionButtonStyle}" HorizontalAlignment="Right" VerticalAlignment="Center"
                                                                     Content="{x:Bind RemoveText}" AutomationProperties.Name="{x:Bind RemoveAutomationName}"
                                                                     Click="RemoveDevicePairingClicked" />
                                                             </Grid>
@@ -504,7 +475,7 @@
                                             <Grid Padding="56,8,44,8" MinHeight="52" ColumnDefinitions="*,Auto" ColumnSpacing="12">
                                                 <TextBlock x:Name="PairingListFooter" TextWrapping="Wrap"
                                                     VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                <Button x:Name="RepairPairingButton" Grid.Column="1" MinWidth="120" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                <Button x:Name="RepairPairingButton" Grid.Column="1" Style="{StaticResource TextActionButtonStyle}" HorizontalAlignment="Right" VerticalAlignment="Center"
                                                     Content="{x:Bind Texts.ClearPairings, Mode=OneWay}" IsEnabled="False" Click="RepairPairingClicked" />
                                             </Grid>
                                         </StackPanel>

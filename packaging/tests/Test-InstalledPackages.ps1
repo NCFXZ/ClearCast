@@ -81,6 +81,32 @@ public static class ClearCastInstalledProducts
 function Add-Check([string] $Name, $Detail) {
     $script:results.checks += [pscustomobject]@{ name = $Name; passed = $true; detail = $Detail }
 }
+function Check-InstalledPayload([string] $Directory, $Files, [string] $Name) {
+    $payloadRoot = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    $payloadPrefix = $payloadRoot + '\'
+    if (@($Files).Count -lt 91 -or @($Files).Count -gt 92) { throw "$Name requires the complete application and controlled-dependency validation manifest." }
+    foreach ($file in @($Files)) {
+        $relative = [string]$file.relativePath
+        if (-not $relative -or [IO.Path]::IsPathRooted($relative) -or $file.sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "$Name has an invalid validation manifest entry."
+        }
+        $path = [IO.Path]::GetFullPath((Join-Path $payloadRoot $relative))
+        if (-not $path.StartsWith($payloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Name validation path escaped its installation directory."
+        }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $file.sha256) {
+            throw "$Name installed file does not match its published payload: $relative"
+        }
+    }
+    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payloadRoot 'ClearCast.dll')).FileVersion
+    if ($version -ne $configuration.packageVersion) { throw "$Name application file version does not match the release." }
+    $frameCount = @(Get-ChildItem -LiteralPath (Join-Path $payloadRoot 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count
+    if ($frameCount -ne 80) { throw "$Name must install exactly 80 SVG animation frames." }
+    Add-Check $Name @{ directory = $payloadRoot; verifiedFileCount = @($Files).Count; animationFrameCount = $frameCount;
+        applicationFileVersion = $version; receiverSha256 = ($Files | Where-Object relativePath -eq 'receiver\clearcast_receiver.dll').sha256;
+        scannerSha256 = ($Files | Where-Object relativePath -eq 'receiver\gst-plugin-scanner.exe').sha256 }
+}
 function Run-Setup([string] $File, [string] $Operation, [string] $Log) {
     $arguments = @('/quiet', '/norestart', '/log', ('"' + (Join-Path $outputDirectory $Log) + '"'))
     if ($Operation -eq 'uninstall') { $arguments = @('/uninstall') + $arguments }
@@ -150,6 +176,7 @@ function Check-Application([Diagnostics.Process] $Process, [string] $Name) {
 }
 
 try {
+    if ($configuration.schemaVersion -ne 2) { throw 'The Sandbox validation configuration requires schema version 2.' }
     if (Get-Process ClearCast -ErrorAction SilentlyContinue) { throw 'The disposable VM already has an unexpected ClearCast process.' }
     $previousSetup = Join-Path $inputDirectory 'Previous-Setup.exe'
     $setup = Join-Path $inputDirectory 'Setup.exe'
@@ -160,18 +187,20 @@ try {
     $previousHash = (Get-FileHash -LiteralPath ([IO.Path]::ChangeExtension($previousApp, '.dll')) -Algorithm SHA256).Hash
     Add-Check 'Install previous 1.0.0' @{ exitCode = $exitCode; app = $previousApp; sha256 = $previousHash }
 
-    $exitCode = Run-Setup $setup 'install' 'upgrade-same-version.log'
-    $snapshot = Record-InstallerSnapshot 'Replacement same-version upgrade'
+    $exitCode = Run-Setup $setup 'install' 'upgrade-version.log'
+    $snapshot = Record-InstallerSnapshot 'Release version upgrade'
     $app = Find-DesktopApp
     $appHash = (Get-FileHash -LiteralPath ([IO.Path]::ChangeExtension($app, '.dll')) -Algorithm SHA256).Hash
-    if ($appHash -ne $configuration.expectedDesktopAppSha256) { throw 'Same-version upgrade did not install the exact new application assembly.' }
+    if ($appHash -ne $configuration.expectedDesktopAppSha256) { throw 'Version upgrade did not install the exact new application assembly.' }
     if ($appHash -eq $previousHash) { throw 'Previous and replacement application hashes unexpectedly match.' }
-    if ($snapshot.msiProductCount -ne 1) { throw 'Same-version upgrade left a missing or duplicate Windows Installer product.' }
-    if ($snapshot.products[0].Scope -ne 'perUser') { throw 'Same-version upgrade did not install in the per-user Windows Installer context.' }
+    if ($snapshot.msiProductCount -ne 1) { throw 'Version upgrade left a missing or duplicate Windows Installer product.' }
+    if ($snapshot.products[0].Scope -ne 'perUser') { throw 'Version upgrade did not install in the per-user Windows Installer context.' }
     $msiArp = @($snapshot.arpRegistrations | Where-Object kind -eq 'msi')
     $visibleBundles = @($snapshot.arpRegistrations | Where-Object { $_.kind -eq 'bundle' -and $_.systemComponent -ne 1 })
-    if ($msiArp.Count -ne 1 -or $msiArp[0].productCode -ne $snapshot.products[0].ProductCode -or $visibleBundles.Count -ne 1 -or $snapshot.arpRegistrationCount -ne 2) { throw 'Same-version upgrade left a missing, duplicate or stale MSI/bundle ARP registration.' }
-    Add-Check 'Replace previous 1.0.0 with corrected 1.0.0' @{ exitCode = $exitCode; app = $app; sha256 = $appHash; msiProductCount = $snapshot.msiProductCount; scope = $snapshot.products[0].Scope; context = $snapshot.products[0].Context; arpRegistrationCount = $snapshot.arpRegistrationCount }
+    if ($msiArp.Count -ne 1 -or $msiArp[0].productCode -ne $snapshot.products[0].ProductCode -or $visibleBundles.Count -ne 1 -or $snapshot.arpRegistrationCount -ne 2) { throw 'Version upgrade left a missing, duplicate or stale MSI/bundle ARP registration.' }
+    if ($msiArp[0].version -ne ([Version]$configuration.packageVersion).ToString(3)) { throw 'The installed MSI version does not match the release.' }
+    Check-InstalledPayload (Split-Path -Parent $app) $configuration.desktopFiles 'Installed desktop payload hashes and version'
+    Add-Check ('Upgrade previous 1.0.0 to ' + $configuration.packageVersion) @{ exitCode = $exitCode; app = $app; sha256 = $appHash; msiProductCount = $snapshot.msiProductCount; scope = $snapshot.products[0].Scope; context = $snapshot.products[0].Context; arpRegistrationCount = $snapshot.arpRegistrationCount }
     # A visible window is required for the UI startup/close smoke test inside this VM.
     Check-Application (Start-Process -FilePath $app -PassThru -WindowStyle Normal) 'Installed desktop application startup and close'
     $exitCode = Run-Setup $setup 'uninstall' 'uninstall-desktop.log'
@@ -198,6 +227,7 @@ try {
     Add-AppxPackage -Path $signed
     $installedPackage = Get-AppxPackage -Name $configuration.packageName
     if (-not $installedPackage -or $installedPackage.Version.ToString() -ne $configuration.packageVersion -or $installedPackage.Publisher -ne $configuration.publisher) { throw 'MSIX package identity/version does not match the manifest.' }
+    Check-InstalledPayload $installedPackage.InstallLocation $configuration.storeFiles 'Installed MSIX payload hashes and version'
     Add-Check 'MSIX isolated signing and installation' @{ name = $installedPackage.Name; version = $installedPackage.Version.ToString(); publisher = $installedPackage.Publisher; testCertificateScope = 'Sandbox only: user signing key and VM local-machine public trust' }
     Start-Process -FilePath explorer.exe -ArgumentList ('shell:AppsFolder\' + $installedPackage.PackageFamilyName + '!ClearCast')
     $limit = (Get-Date).AddSeconds(30)

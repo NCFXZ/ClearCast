@@ -3,6 +3,9 @@
 Uses disposable state and localhost only. Close the desktop receiver first.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+from receiver_test_bootstrap import ensure_controlled_dependencies, loaded_dependency_evidence
+ensure_controlled_dependencies()
+
 import base64
 import ctypes as c
 from ctypes import wintypes as w
@@ -21,6 +24,7 @@ from receiver_test_support import (ROOT, Receiver, connect, plist_request,
 results = {'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
            'cases': [], 'limitations': ['Local protocol tests do not replace real-device audiovisual testing.',
            'Bounded deterministic mutations are not exhaustive fuzzing or a formal security proof.']}
+results['loadedDependencies'] = loaded_dependency_evidence()
 receiver = Receiver()
 results['state'] = str(receiver.state)
 started = time.monotonic()

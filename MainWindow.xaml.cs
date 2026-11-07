@@ -32,11 +32,19 @@ public sealed partial class MainWindow : Window
     private bool _hasVideo;
     private bool _closing;
     private bool _closed;
+    private bool _startingReceiver;
     private bool _receiverReady;
+#if CLEARCAST_UI_TESTS
+    private double _uiStartupPollHooksMaxMilliseconds;
+    private double _uiStartupPollReadEventMaxMilliseconds;
+    private int _uiStartupPollCount;
+#endif
     private bool _settingsReady;
     private bool _updatingSettingsSelection;
     private DecoderMode? _pendingDecoder;
     private int _receiveErrorCode;
+    private int _pairingGeneration;
+    private int _latestPairingGeneration;
     private int _streamWidth;
     private int _streamHeight;
     private long _sampledAt;
@@ -107,6 +115,7 @@ public sealed partial class MainWindow : Window
             _pairingTimer.Stop();
             _playerOverlayTimer.Stop();
             StopPlayerOverlayFade();
+            LandingAnimation.Dispose();
             _videoHost?.Dispose();
         };
     }
@@ -121,6 +130,7 @@ public sealed partial class MainWindow : Window
             return;
 
         _closing = true;
+        UpdateLandingAnimationState();
         try
         {
             if (await StopReceiverAsync())
@@ -130,7 +140,10 @@ public sealed partial class MainWindow : Window
         {
             _closing = false;
             if (!_closed)
+            {
                 UpdateReceiverButtons();
+                UpdateLandingAnimationState();
+            }
         }
     }
 
@@ -153,12 +166,15 @@ public sealed partial class MainWindow : Window
                 UpdateMinimumWindowSize(scale, DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea);
             }
             UpdateVideoHost();
+            UpdateLandingAnimationState();
         };
+        UpdateLandingAnimationState();
         DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, StartAirPlay);
     }
 
     private void WindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
+        UpdateLandingAnimationState();
         if ((args.DidPositionChange || args.DidPresenterChange) && WindowLayout.XamlRoot is { } root)
             UpdateMinimumWindowSize(root.RasterizationScale, DisplayArea.GetFromWindowId(sender.Id, DisplayAreaFallback.Nearest).WorkArea);
     }
@@ -345,7 +361,7 @@ public sealed partial class MainWindow : Window
         ShowDecoderFeedback(succeeded ? "" : errorCode switch
         {
             50 when requested == DecoderMode.Hardware => "当前设备或画面不支持硬件解码，已保留原解码方式。",
-            1460 => "画面没有及时更新。请在苹果设备上滑动或切换画面后重试。",
+            1460 => "画面没有及时更新。请在设备上滑动或切换画面后重试。",
             _ => "暂时无法切换，继续使用当前解码方式。"
         });
         UpdateReceiverButtons();
@@ -396,6 +412,7 @@ public sealed partial class MainWindow : Window
 
         _hasVideo = available;
         VideoPlaceholder.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
+        UpdateLandingAnimationState();
         PlayerFrame.Visibility = PlayerControls.Visibility = PlayerOverlay.Visibility =
             available ? Visibility.Visible : Visibility.Collapsed;
         UpdateReceiverButtons();
@@ -459,31 +476,48 @@ public sealed partial class MainWindow : Window
             StartAirPlay();
     }
 
-    private void StartAirPlay()
+    private async void StartAirPlay()
     {
-        if (_receiver is not null || _closing || _closed)
+        if (_receiver is not null || _startingReceiver || _closing || _closed)
             return;
+        _startingReceiver = true;
+        UpdateReceiverButtons();
         ReceiverInfoBar.IsOpen = false;
         RetryReceiveButton.Visibility = Visibility.Collapsed;
         try
         {
+            // Loading the native module and enumerating adapters can be slow on
+            // a cold launch. Let the first frame and landing animation render.
+            var startup = await Task.Run(() => (
+                Adapter: ReceiverNetwork.FindPreferredAdapter(),
+                Name: NativeReceiver.AdvertisedName));
+            if (_closing || _closed)
+                return;
+
             _videoHost ??= CreatePlayerVideoHost();
             if (IsMirrorPageSelected && VideoHostSlot.ActualWidth > 0 && VideoHostSlot.ActualHeight > 0)
                 UpdateVideoHost();
             else
                 _videoHost.Update(new RectInt32(0, 0, Math.Max(320, AppWindow.Size.Width), Math.Max(240, AppWindow.Size.Height)), false);
-            var adapter = ReceiverNetwork.FindPreferredAdapter();
-            Texts.SetReceiverName(NativeReceiver.AdvertisedName);
-            _receiver = AirPlayReceiver.Start(_root, _preferences.Decoder, _videoHost.Handle, adapter);
+            Texts.SetReceiverName(startup.Name);
+            _receiver = AirPlayReceiver.Start(_root, _preferences.Decoder, _videoHost.Handle, startup.Adapter);
             SetRunning(true);
         }
         catch (Exception error)
         {
+            if (_closing || _closed)
+                return;
             SetRunning(false);
             string message = error is FileNotFoundException or InvalidOperationException or Win32Exception
                 ? error.Message
                 : "无法启动接收，请重试。";
             ShowReceiveError(message, ErrorCode(error));
+        }
+        finally
+        {
+            _startingReceiver = false;
+            if (!_closed)
+                UpdateReceiverButtons();
         }
     }
 
@@ -550,7 +584,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateReceiverButtons()
     {
-        bool busy = _resettingPairings || _closing || _stopTask is not null;
+        bool busy = _resettingPairings || _startingReceiver || _closing || _stopTask is not null;
         PlayerStopButton.IsEnabled = !busy && _receiver is not null;
         RotateLeftButton.IsEnabled = RotateRightButton.IsEnabled = !busy && _hasVideo && _receiver is not null;
         RetryReceiveButton.IsEnabled = !busy;
@@ -558,8 +592,11 @@ public sealed partial class MainWindow : Window
         UpdateSavedPairingButtons(busy);
     }
 
-    private void ShowPairingCode(string pin)
+    private void ShowPairingCode(string pin, int generation = 0)
     {
+        _pairingGeneration = generation;
+        if (generation > 0)
+            _latestPairingGeneration = generation;
         SetPairingPrompt("在设备上输入这四位数字。");
         PinText.Text = pin;
         WaitingPairing.Visibility = Visibility.Visible;
@@ -567,11 +604,77 @@ public sealed partial class MainWindow : Window
         _pairingTimer.Start();
     }
 
+    private void PairingCloseClicked(object sender, RoutedEventArgs e) => HidePairingCode();
+
     private void HidePairingCode()
     {
         _pairingTimer.Stop();
+        _pairingGeneration = 0;
         WaitingPairing.Visibility = Visibility.Collapsed;
         PinText.Text = "";
+    }
+
+    private void HandlePairingEvent(ReceiverEvent update)
+    {
+        if (_hasVideo)
+            return;
+
+        switch (update.Kind)
+        {
+            case ReceiverEventKind.PairingAuthenticationRequired:
+                // An unknown saved identity can be probed before the device asks
+                // for a PIN. It does not establish a failed pairing attempt.
+                break;
+            case ReceiverEventKind.PairingRequired:
+                if (update.Width is >= 1 and <= 9999 && update.Height > 0)
+                {
+                    ReceiverInfoBar.IsOpen = false;
+                    ShowPairingCode(update.Width.ToString("0000", System.Globalization.CultureInfo.InvariantCulture),
+                        update.Height);
+                }
+                break;
+            case ReceiverEventKind.PairingRejected:
+                bool codeVisible = WaitingPairing.Visibility == Visibility.Visible;
+                if (codeVisible)
+                {
+                    // A different connection or an older challenge must not
+                    // replace the instruction for the code currently displayed.
+                    if (update.Height != _pairingGeneration)
+                        break;
+                    SetPairingPrompt((PairingRejectionReason)update.ErrorCode switch
+                    {
+                        PairingRejectionReason.InvalidSetupData => "配对请求未完成，请在设备上重试。",
+                        PairingRejectionReason.PinUnavailableOrExpired => "验证码已失效，请在设备上重新选择 ClearCast 后重试。",
+                        PairingRejectionReason.RateLimited => "配对尝试较多，请稍后在设备上重试。",
+                        PairingRejectionReason.VerifyRejected => "设备验证未通过，请在设备上重新选择 ClearCast 后重试。",
+                        _ => "配对验证未通过，请在设备上重试。"
+                    });
+                }
+                else if (update.ErrorCode == (int)PairingRejectionReason.VerifyRejected &&
+                    (update.Height == 0 || update.Height == _latestPairingGeneration))
+                {
+                    ShowReceiveError("设备验证未通过，请在设备上重新选择 ClearCast 后重试。", 470);
+                }
+                break;
+            case ReceiverEventKind.PairingCompleted:
+                if (WaitingPairing.Visibility == Visibility.Visible && update.Height == _pairingGeneration)
+                {
+                    ReceiverInfoBar.IsOpen = false;
+                    HidePairingCode();
+                }
+                break;
+            case ReceiverEventKind.ConnectionRejected:
+                if (update.Height > 0 && _latestPairingGeneration > 0 && update.Height != _latestPairingGeneration)
+                    break;
+                if (WaitingPairing.Visibility == Visibility.Visible && _pairingGeneration > 0 &&
+                    update.Height != _pairingGeneration)
+                    break;
+                string message = update.ErrorCode is 401 or 470
+                    ? "设备验证未通过，请在设备上重新选择 ClearCast 后重试。"
+                    : "设备连接未完成，请在设备上重试。可复制详情查看连接记录。";
+                ShowReceiveError(message, update.ErrorCode);
+                break;
+        }
     }
 
     private void SetReceiverStatus(string status)
@@ -588,7 +691,7 @@ public sealed partial class MainWindow : Window
 
     private void WaitForMirror()
     {
-        SetReceiverStatus("等待投屏连接");
+        SetReceiverStatus("等待屏幕镜像连接");
         ResetStreamStats();
         SetVideoAvailable(false);
     }
@@ -597,10 +700,34 @@ public sealed partial class MainWindow : Window
     {
         if (_stopTask is not null || _receiver is not { } receiver)
             return;
-        _videoHost?.RefreshInputHooks();
-
-        for (int processed = 0; processed < 160 && receiver.TryReadEvent(out var update); processed++)
+#if CLEARCAST_UI_TESTS
+        bool startupPoll = !_receiverReady;
+        long hooksStarted = Stopwatch.GetTimestamp();
+#endif
+        if (_hasVideo)
+            _videoHost?.RefreshInputHooks();
+#if CLEARCAST_UI_TESTS
+        if (startupPoll)
         {
+            _uiStartupPollCount++;
+            _uiStartupPollHooksMaxMilliseconds = Math.Max(_uiStartupPollHooksMaxMilliseconds,
+                Stopwatch.GetElapsedTime(hooksStarted).TotalMilliseconds);
+        }
+#endif
+
+        for (int processed = 0; processed < 160; processed++)
+        {
+#if CLEARCAST_UI_TESTS
+            long readStarted = Stopwatch.GetTimestamp();
+#endif
+            bool hasEvent = receiver.TryReadEvent(out var update);
+#if CLEARCAST_UI_TESTS
+            if (startupPoll)
+                _uiStartupPollReadEventMaxMilliseconds = Math.Max(_uiStartupPollReadEventMaxMilliseconds,
+                    Stopwatch.GetElapsedTime(readStarted).TotalMilliseconds);
+#endif
+            if (!hasEvent)
+                break;
             switch (update.Kind)
             {
                 case ReceiverEventKind.Ready:
@@ -613,7 +740,7 @@ public sealed partial class MainWindow : Window
                     ReceiverInfoBar.IsOpen = false;
                     HidePairingCode();
                     if (!_hasVideo)
-                        SetReceiverStatus("正在打开投屏画面…");
+                        SetReceiverStatus("正在打开屏幕镜像画面…");
                     break;
                 case ReceiverEventKind.Video:
                     HidePairingCode();
@@ -640,28 +767,11 @@ public sealed partial class MainWindow : Window
                         ShowReceiveError(ReceiverNetwork.GetFailureMessage(update.ErrorCode, _preferences.Decoder), update.ErrorCode);
                     return;
                 case ReceiverEventKind.PairingRequired:
-                    if (!_hasVideo && update.Width is >= 1 and <= 9999)
-                    {
-                        ReceiverInfoBar.IsOpen = false;
-                        ShowPairingCode(update.Width.ToString("0000", System.Globalization.CultureInfo.InvariantCulture));
-                    }
-                    break;
                 case ReceiverEventKind.PairingRejected:
-                    if (!_hasVideo && WaitingPairing.Visibility == Visibility.Visible)
-                        SetPairingPrompt("配对未通过，请在设备上重试。");
-                    break;
                 case ReceiverEventKind.PairingCompleted:
-                    ReceiverInfoBar.IsOpen = false;
-                    HidePairingCode();
-                    break;
+                case ReceiverEventKind.PairingAuthenticationRequired:
                 case ReceiverEventKind.ConnectionRejected:
-                    if (!_hasVideo)
-                    {
-                        string message = update.ErrorCode is 401 or 470
-                            ? "设备验证未通过，请在苹果设备上重新选择 ClearCast 后重试。"
-                            : "设备连接未完成，请在苹果设备上重试。可复制详情查看连接记录。";
-                        ShowReceiveError(message, update.ErrorCode);
-                    }
+                    HandlePairingEvent(update);
                     break;
                 case ReceiverEventKind.DecoderChanged:
                 case ReceiverEventKind.DecoderChangeFailed:
@@ -734,7 +844,7 @@ public sealed partial class MainWindow : Window
         ReceiverInfoBar.IsOpen = true;
         if (_receiver is null)
         {
-            SetReceiverStatus("暂时无法接收投屏");
+            SetReceiverStatus("暂时无法接收屏幕镜像");
             RetryReceiveButton.Visibility = Visibility.Visible;
             if (_resettingPairings)
                 ShowPairingResetFeedback(message);

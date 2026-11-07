@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <Version>1.1.0</Version>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -30,6 +31,7 @@
     <Content Include="Assets\ClearCast.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\ClearCast.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\GitHubMark-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\MirroringAnimation\*.svg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="PRIVACY.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
@@ -40,6 +42,10 @@
   <Target Name="RequireReceiverRuntime" BeforeTargets="ComputeFilesToPublish">
     <Error Condition="!Exists('$(ReceiverRuntimeDirectory)\clearcast_receiver.dll')"
            Text="Build the ClearCast receiver runtime with native\Build-Receiver.ps1 before publishing." />
+    <Error Condition="!Exists('$(ReceiverRuntimeDirectory)\gst-plugin-scanner.exe')"
+           Text="The receiver runtime must include gst-plugin-scanner.exe. Rebuild it with native\Build-Receiver.ps1 before publishing." />
+    <Error Condition="!Exists('$(ReceiverRuntimeDirectory)\security-dependencies-manifest.json')"
+           Text="The receiver runtime must include the controlled dependency manifest. Build the security components and rebuild native\Build-Receiver.ps1 before publishing." />
   </Target>
   <!-- Unpackaged WinUI publish omits the app resource index. See WindowsAppSDK #6720. -->
   <Target Name="PublishWinUIResources"

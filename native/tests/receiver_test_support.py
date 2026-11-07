@@ -1,4 +1,7 @@
 """Disposable, real-DLL AirPlay protocol fixtures. No production state is used."""
+from receiver_test_bootstrap import ensure_controlled_dependencies, loaded_dependency_evidence
+ensure_controlled_dependencies()
+
 import ctypes as c
 from ctypes import wintypes as w
 import hashlib

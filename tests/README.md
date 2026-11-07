@@ -10,7 +10,7 @@ The tests use a newly created temporary directory, never the application's saved
 
 To build the in-app UI integration harness, use `-p:EnableUiTests=true` and a separate publish/intermediate directory. Create an empty `clearcast-ui-test-state.marker` in a disposable `CLEARCAST_HOME`, set `CLEARCAST_UI_TEST_RUN=1`, and launch that test executable after other AirPlay receivers have stopped. It writes `ui-test-output/results.json` and controlled-theme PNG files, then exits. Normal builds exclude the UI test source entirely.
 
-UI captures use `RenderTargetBitmap` with an opaque theme background; they exclude the DWM/Mica backdrop and native video surfaces. Synthetic player tests exercise the application's own HWND geometry, clipping, full-screen presenter and Escape handler. They do not establish decoded video quality, audio synchronization, frame rotation or orientation changes on physical Apple devices.
+UI captures use `RenderTargetBitmap` with an opaque theme background; they exclude the DWM/Mica backdrop and native video surfaces. Synthetic player tests exercise the application's own HWND geometry, clipping, full-screen presenter and Escape handler. They do not establish decoded video quality, audio synchronization, frame rotation or orientation changes on physical devices.
 
 ## Software decoder smoke
 

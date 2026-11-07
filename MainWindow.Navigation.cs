@@ -70,6 +70,7 @@ public sealed partial class MainWindow
         var host = (NavigationContentPage)NavigationFrame.Content;
         host.Content = page;
         _pageHosts[page] = host;
+        UpdateLandingAnimationState();
         if (IsMirrorPageSelected && !animate)
             DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateVideoHost);
     }

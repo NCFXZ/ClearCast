@@ -1,0 +1,13 @@
+--- a/lib/pairing.c
++++ b/lib/pairing.c
+@@ -577,7 +577,9 @@
+         memset(session->srp->verifier, 0, v_offset);
+     }
+ 
+-    *salt = (char *) session->srp->salt;
++    /* Return the generated salt bytes, not a truncated prefix of the padded
++       verifier buffer when the salt's big-endian representation is short. */
++    *salt = (char *) session->srp->salt + s_offset;
+     *len_salt = len_s;
+ 
+     srp_create_server_ephemeral_key(SRP_SHA, SRP_NG,

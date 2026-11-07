@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--app-source", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--version", help="Release version used in the source-bundle title and download link")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compliance-dir", type=Path)
     parser.add_argument("--notice-directory", type=Path,
@@ -44,6 +45,8 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.commit):
         parser.error("--commit must be a full Git commit SHA")
+    if args.version and not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
+        parser.error("--version must have the form major.minor.patch")
     if args.output.resolve() in (args.base.resolve(), args.app_source.resolve()):
         parser.error("--output must differ from both input archives")
 
@@ -126,6 +129,11 @@ def main():
         )
         if substitutions != 1:
             raise ValueError("Base README does not identify exactly one application commit")
+        if args.version:
+            readme, titles = re.subn(r"^ClearCast \d+\.\d+\.\d+ corresponding source", f"ClearCast {args.version} corresponding source", readme, flags=re.MULTILINE)
+            readme, links = re.subn(r"https://github\.com/NCFXZ/ClearCast/releases/tag/v\d+\.\d+\.\d+", f"https://github.com/NCFXZ/ClearCast/releases/tag/v{args.version}", readme)
+            if titles != 1 or links != 1:
+                raise ValueError("Base README does not identify exactly one release title and download link")
         if additional:
             readme += "\nAdditional corresponding source archives for rebuilt components:\n"
             readme += "\n".join("  " + name for name in additional) + "\n"

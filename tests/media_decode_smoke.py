@@ -3,9 +3,13 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 Generated fixtures and registry are temporary; no receiver/device sinks are used.
 """
-import argparse, ctypes as c, hashlib, json, os, pathlib, shutil, subprocess, tempfile, time
+import argparse, ctypes as c, json, os, pathlib, shutil, subprocess, sys, tempfile, time
 
 def run_smoke(RUNTIME, FFMPEG, OUT):
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'native/tests'))
+    from receiver_test_bootstrap import ensure_controlled_dependencies, loaded_dependency_evidence
+    ensure_controlled_dependencies(RUNTIME)
+    import hashlib
     gst = None
     cookie = None
     try:
@@ -137,6 +141,7 @@ def run_smoke(RUNTIME, FFMPEG, OUT):
                 obj_unref(bus);obj_unref(sink);obj_unref(pipeline)
 
         report = {'runtime':str(RUNTIME),'gstreamerVersion':version().decode(),'plugins':plugins,
+                  'loadedDependencies':loaded_dependency_evidence(RUNTIME),
                   'scope':'Synthetic CPU software parser/libav decode to fakesink; no receiver ports, hardware decoder, device video sink or audio output.'}
         try:
             report['cases'] = []

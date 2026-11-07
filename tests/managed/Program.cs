@@ -151,6 +151,30 @@ static object RunTests(string root)
     var texts = new UiText();
     texts.SetReceiverName("Test-PC");
     texts.SetEnglish(true);
+    foreach (var (kind, abi) in new[]
+    {
+        (ReceiverEventKind.Ready, 1), (ReceiverEventKind.Connecting, 2), (ReceiverEventKind.Video, 3),
+        (ReceiverEventKind.MirrorEnded, 4), (ReceiverEventKind.Failed, 5),
+        (ReceiverEventKind.PairingRequired, 6), (ReceiverEventKind.PairingRejected, 7),
+        (ReceiverEventKind.DecoderChanged, 8), (ReceiverEventKind.DecoderChangeFailed, 9),
+        (ReceiverEventKind.PairingCompleted, 10), (ReceiverEventKind.ConnectionRejected, 11),
+        (ReceiverEventKind.PairingAuthenticationRequired, 12)
+    })
+        Check((int)kind == abi, "native receiver event ABI " + kind);
+    foreach (var (reason, abi) in new[]
+    {
+        (PairingRejectionReason.InvalidSetupData, 1), (PairingRejectionReason.ProofRejected, 2),
+        (PairingRejectionReason.PinUnavailableOrExpired, 3), (PairingRejectionReason.RateLimited, 4),
+        (PairingRejectionReason.VerifyRejected, 5)
+    })
+        Check((int)reason == abi, "native pairing reason ABI " + reason);
+    foreach (DecoderMode decoder in Enum.GetValues<DecoderMode>())
+        foreach (int code in new[] { 50, 10048, 10049, 10051, 1231, 1062, 10013, 9999 })
+        {
+            string message = texts.Translate(ReceiverNetwork.GetFailureMessage(code, decoder));
+            Check(!string.IsNullOrWhiteSpace(message) && !Regex.IsMatch(message, "[\\p{IsCJKUnifiedIdeographs}]"),
+                "produced receiver failure translates to English " + decoder + " " + code);
+        }
     var properties = typeof(UiText).GetProperties().Where(p => p.PropertyType == typeof(string)).ToArray();
     foreach (var property in properties)
     {

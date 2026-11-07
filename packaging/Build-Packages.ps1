@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory)] [string] $MakeAppxPath,
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
-    [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version = '1.0.0',
+    [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
+    [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version = '1.1.0',
     [switch] $ValidateOnly
 )
 
@@ -29,7 +30,8 @@ foreach ($source in @($publish, $storePublish, $compliance)) {
 
 $files = 'ClearCast.exe', 'ClearCast.dll', 'Assets\ClearCast.png', 'Assets\ClearCast.ico',
     'LICENSE', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md', 'receiver\clearcast_receiver.dll',
-    'receiver\gstreamer-security-manifest.json'
+    'receiver\gst-plugin-scanner.exe',
+    'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json'
 foreach ($inputFiles in @(
     @{ Folder = $publish; Files = $files + 'ClearCast.pri' },
     @{ Folder = $storePublish; Files = $files + 'resources.pri' },
@@ -39,6 +41,64 @@ foreach ($inputFiles in @(
         if (-not (Test-Path -LiteralPath (Join-Path $inputFiles.Folder $file))) {
             throw "Missing $file in $($inputFiles.Folder)."
         }
+    }
+}
+
+foreach ($folder in @($publish, $storePublish)) {
+    $dependencies = Get-Content -LiteralPath (Join-Path $folder 'receiver\security-dependencies-manifest.json') -Raw | ConvertFrom-Json
+    if ($dependencies.schemaVersion -ne 1 -or $dependencies.components.Count -ne 2 -or
+        @($dependencies.components | Where-Object { $_.name -ieq 'libplist' }).Count -ne 1 -or
+        @($dependencies.components | Where-Object { $_.name -ieq 'openssl' }).Count -ne 1) {
+        throw 'The controlled dependency manifest must identify libplist and OpenSSL exactly once.'
+    }
+    foreach ($component in $dependencies.components) {
+        $name = $component.name.ToLowerInvariant()
+        if (($name -eq 'libplist' -and ($component.version -ne '2.8.0' -or $component.files.Count -ne 1 -or
+            $component.files[0].relativePath -ne 'libplist-2.0.dll')) -or
+            ($name -eq 'openssl' -and ($component.version -ne '3.5.9' -or $component.files.Count -gt 2 -or
+            @($component.files | Where-Object relativePath -eq 'libcrypto-3-x64.dll').Count -ne 1 -or
+            @($component.files | Where-Object { $_.relativePath -notin @('libcrypto-3-x64.dll', 'libssl-3-x64.dll') }).Count -ne 0))) {
+            throw "The controlled dependency version or file set does not match the release requirements: $name"
+        }
+        if ($component.version -notmatch '^\d+\.\d+\.\d+$' -or $component.sourceSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw 'Invalid controlled dependency version or source digest.'
+        }
+        $noticePath = Join-Path $compliance "licenses\$name-$($component.version)\source-build.json"
+        if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf)) { throw "Missing controlled dependency notice: $name" }
+        $dependencyNotice = Get-Content -LiteralPath $noticePath -Raw | ConvertFrom-Json
+        if ($dependencyNotice.version -ne $component.version -or $dependencyNotice.sourceSha256 -ne $component.sourceSha256 -or
+            $dependencyNotice.sourceUrl -ne $component.sourceUrl -or $dependencyNotice.files.Count -ne $component.files.Count -or
+            $component.files.Count -lt 1) { throw "Controlled dependency source/build notice mismatch: $name" }
+        foreach ($file in $component.files) {
+            if ($file.relativePath -notin @('libplist-2.0.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll') -or
+                $file.sha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw "Unexpected controlled dependency file: $name" }
+            $noticeFile = @($dependencyNotice.files | Where-Object relativePath -eq $file.relativePath)
+            if ($noticeFile.Count -ne 1 -or $noticeFile[0].sha256 -ne $file.sha256 -or
+                (Get-FileHash -LiteralPath (Join-Path $folder "receiver\$($file.relativePath)")).Hash -ne $file.sha256) {
+                throw "Controlled dependency file or notice hash does not match: $($file.relativePath)"
+            }
+        }
+    }
+    $assembly = Join-Path $folder 'ClearCast.dll'
+    $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($assembly).FileVersion
+    if ($fileVersion -ne "$Version.0") {
+        throw "The published application version $fileVersion does not match $Version.0."
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $folder 'receiver\clearcast_receiver.dll')).Hash -ne $ValidatedReceiverSha256) {
+        throw 'The published receiver does not match the independently validated release candidate.'
+    }
+    foreach ($index in 0..79) {
+        $frame = Join-Path $folder ('Assets\MirroringAnimation\frame-{0:D3}.svg' -f $index)
+        if (-not (Test-Path -LiteralPath $frame -PathType Leaf)) { throw "Missing animation frame: $frame" }
+    }
+    if (@(Get-ChildItem -LiteralPath (Join-Path $folder 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count -ne 80) {
+        throw 'The published animation must contain exactly 80 SVG frames.'
+    }
+}
+foreach ($relative in @('receiver\gst-plugin-scanner.exe', 'receiver\clearcast_receiver.dll')) {
+    if ((Get-FileHash -LiteralPath (Join-Path $publish $relative)).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $storePublish $relative)).Hash) {
+        throw "Desktop and Store receiver runtime files do not match: $relative"
     }
 }
 

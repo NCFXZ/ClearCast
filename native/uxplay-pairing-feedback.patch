@@ -1,0 +1,214 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -36,7 +36,7 @@
+ extern uint64_t clearcast_diagnostic_connected(const char *remote);
+ extern void clearcast_diagnostic_closed(uint64_t id);
+ extern void clearcast_diagnostic_request(uint64_t id, const char *method, const char *path);
+-extern void clearcast_diagnostic_response(uint64_t id, int status);
++extern void clearcast_diagnostic_response(uint64_t id, int status, int generation, int pairing_feedback);
+ #endif
+ 
+ 
+@@ -88,6 +88,7 @@
+     uint64_t pin_retry_after;
+     unsigned int failed_pin_attempts;
+     unsigned short pending_pairing_pin;
++    int pending_pairing_generation;
+     uint64_t pending_pin_expires_at;
+     unsigned char pending_pin_remote[16];
+     int pending_pin_remote_len;
+@@ -139,6 +140,8 @@
+     bool have_active_remote;
+ #ifdef CLEARCAST_IN_PROCESS
+     unsigned short pairing_pin;
++    int pairing_generation;
++    bool pairing_feedback_reported;
+     uint64_t pin_expires_at;
+     uint64_t diagnostic_id;
+     bool diagnostic_skip_response;
+@@ -244,6 +247,7 @@
+     const char *protocol = http_request_get_protocol(request);
+ #ifdef CLEARCAST_IN_PROCESS
+     // Successful keepalives are routine and would otherwise cause two disk opens each.
++    conn->pairing_feedback_reported = false;
+     conn->diagnostic_skip_response = method && url && !strcmp(method, "POST") && !strcmp(url, "/feedback");
+     if (!conn->diagnostic_skip_response) clearcast_diagnostic_request(conn->diagnostic_id, method, url);
+ #endif
+@@ -266,7 +270,7 @@
+         *response = http_response_create();
+         http_response_init(*response, protocol, 431, "Request Header Fields Too Large");
+ #ifdef CLEARCAST_IN_PROCESS
+-        clearcast_diagnostic_response(conn->diagnostic_id, 431);
++        clearcast_diagnostic_response(conn->diagnostic_id, 431, conn->pairing_generation, 0);
+ #endif
+         return;
+     }
+@@ -546,7 +550,8 @@
+     int diagnostic_status = 0;
+     if (data && len > 0) sscanf(data, "%*15s %3d", &diagnostic_status);
+     if (!conn->diagnostic_skip_response || diagnostic_status >= 400) {
+-        clearcast_diagnostic_response(conn->diagnostic_id, diagnostic_status);
++        clearcast_diagnostic_response(conn->diagnostic_id, diagnostic_status,
++            conn->pairing_generation, conn->pairing_feedback_reported);
+     }
+ #endif
+     if (response_data && response_datalen > 0) {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -249,13 +249,21 @@
+ }
+ 
+ #ifdef CLEARCAST_IN_PROCESS
+-extern void clearcast_pairing_status(int rejected);
++extern int clearcast_begin_pairing(const char *pin);
++extern void clearcast_pairing_result(int status, int generation, int reason);
++
++/* The response logger must not publish a second, uncorrelated rejection. */
++static void clearcast_report_pairing(raop_conn_t *conn, int status, int reason) {
++    conn->pairing_feedback_reported = true;
++    clearcast_pairing_result(status, status == 0 ? 0 : conn->pairing_generation, reason);
++}
+ #define CLEARCAST_PIN_LIFETIME_MS 60000
+ #define CLEARCAST_PIN_MAX_FAILURES 5
+ #define CLEARCAST_PIN_COOLDOWN_MS 60000
+ 
+ static void clearcast_clear_pending_pin(raop_t *raop) {
+     raop->pending_pairing_pin = 0;
++    raop->pending_pairing_generation = 0;
+     raop->pending_pin_expires_at = 0;
+     memset(raop->pending_pin_remote, 0, sizeof(raop->pending_pin_remote));
+     raop->pending_pin_remote_len = 0;
+@@ -272,7 +280,7 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     uint64_t now = GetTickCount64();
+     if (now < raop->pin_retry_after) {
+-        clearcast_pairing_status(1);
++        clearcast_report_pairing(conn, 1, 4);
+         http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+         return;
+     }
+@@ -287,6 +295,7 @@
+     }
+     pairing_session_reset_pin(conn->session);
+     conn->pairing_pin = 0;
++    conn->pairing_generation = 0;
+     conn->pin_expires_at = 0;
+     // Apple may close this discovery connection before sending pair-setup-pin.
+     // Keep only a short-lived challenge here; the SRP session stays connection-bound.
+@@ -311,9 +320,13 @@
+ #endif
+     char pin[6] = { '\0' };
+     snprintf(pin, sizeof(pin), "%04u", (unsigned int) pin_4 % 10000u);
++#ifdef CLEARCAST_IN_PROCESS
++    raop->pending_pairing_generation = clearcast_begin_pairing(pin);
++#else
+     if (raop->callbacks.display_pin) {
+          raop->callbacks.display_pin(raop->callbacks.cls, pin);
+     }
++#endif
+ #ifndef CLEARCAST_IN_PROCESS
+     logger_log(raop->logger, LOGGER_INFO, "*** CLIENT MUST NOW ENTER PIN = \"%s\" AS AIRPLAY PASSWORD", pin);
+ #endif
+@@ -328,6 +341,7 @@
+     int request_datalen = 0;
+     bool logger_debug = (logger_get_level(raop->logger) >= LOGGER_DEBUG);
+ #ifdef CLEARCAST_IN_PROCESS
++    int rejection_reason = 1; /* invalid setup data until a known stage is parsed */
+     uint64_t now = GetTickCount64();
+     if (now >= raop->pending_pin_expires_at || now < raop->pin_retry_after) {
+         clearcast_clear_pending_pin(raop);
+@@ -338,6 +352,7 @@
+         !memcmp(conn->remote, raop->pending_pin_remote, conn->remotelen)) {
+         // Exactly one connection from the original peer may claim this challenge.
+         conn->pairing_pin = raop->pending_pairing_pin;
++        conn->pairing_generation = raop->pending_pairing_generation;
+         conn->pin_expires_at = raop->pending_pin_expires_at;
+         clearcast_clear_pending_pin(raop);
+     }
+@@ -345,7 +360,7 @@
+         pairing_session_reset_pin(conn->session);
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
+-        clearcast_pairing_status(1);
++        clearcast_report_pairing(conn, 1, now < raop->pin_retry_after ? 4 : 3);
+         http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+         return;
+     }
+@@ -416,6 +431,9 @@
+         return;
+     } else if (PLIST_IS_DATA(req_pk_node) && PLIST_IS_DATA(req_proof_node)) {
+         /* this is the second part of pair-setup-pin request */
++#ifdef CLEARCAST_IN_PROCESS
++        rejection_reason = 2;
++#endif
+         char *client_pk = NULL;
+         char *client_proof = NULL;
+         unsigned char proof[SRP_PROOF_SIZE] = { '\0' };
+@@ -455,6 +473,9 @@
+         return;
+     } else if (PLIST_IS_DATA(req_epk_node) && PLIST_IS_DATA(req_authtag_node)) {
+         /* this is the third part of pair-setup-pin request */
++#ifdef CLEARCAST_IN_PROCESS
++        rejection_reason = 5;
++#endif
+         char *client_epk = NULL;
+         char *client_authtag = NULL;
+         uint64_t client_epk_len = 0;
+@@ -503,7 +524,7 @@
+             }
+             free(client_key);
+         }
+-        clearcast_pairing_status(2);
++        clearcast_report_pairing(conn, 2, 0);
+ #endif
+         plist_t res_root_node = plist_new_dict();
+         plist_t res_epk_node = plist_new_data((const char *) epk, 32);
+@@ -526,7 +547,7 @@
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
+     }
+-    clearcast_pairing_status(1);
++    clearcast_report_pairing(conn, 1, rejection_reason);
+ #endif
+     http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+ }
+@@ -595,7 +616,8 @@
+             free(key64);
+             if (!registered) {
+ #ifdef CLEARCAST_IN_PROCESS
+-                clearcast_pairing_status(1);
++                /* A remembered key may be probed before Apple asks for a new PIN. */
++                clearcast_report_pairing(conn, 0, 0);
+ #endif
+                 http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+                 http_response_set_disconnect(response, 1);
+@@ -607,7 +629,7 @@
+             || pairing_session_get_signature(conn->session, signature)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error initializing pair-verify handshake");
+ #ifdef CLEARCAST_IN_PROCESS
+-            clearcast_pairing_status(1);
++            clearcast_report_pairing(conn, 1, 5);
+ #endif
+             http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+             http_response_set_disconnect(response, 1);
+@@ -632,7 +654,7 @@
+         if (pairing_session_finish(conn->session, data + 4)) {
+             logger_log(raop->logger, LOGGER_ERR, "Incorrect pair-verify signature");
+ #ifdef CLEARCAST_IN_PROCESS
+-            clearcast_pairing_status(1);
++            clearcast_report_pairing(conn, 1, 5);
+ #endif
+             http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+             http_response_set_disconnect(response, 1);
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -61,7 +61,8 @@
+ static void clearcast_poll_video_rotation();
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+ extern "C" void clearcast_pipeline_error();
+-extern "C" void clearcast_pairing_status(int rejected);
++extern "C" int clearcast_begin_pairing(const char *pin);
++extern "C" void clearcast_pairing_result(int status, int generation, int reason);
+ #endif
+ #else
+ #include <csignal>

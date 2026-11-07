@@ -29,7 +29,7 @@ internal sealed partial class UiText : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LandingDescription)));
     }
 
-    public string Mirroring => Get("投屏", "Screen mirroring");
+    public string Mirroring => Get("屏幕镜像", "Screen mirroring");
     public string Settings => Get("设置", "Settings");
     public string About => Get("关于", "About");
     public string AboutVersion { get; } = typeof(UiText).Assembly.GetName().Version?.ToString() ?? "—";
@@ -37,14 +37,15 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string AboutRepositoryLinkText => Get("查看 GitHub 仓库", "View GitHub repository");
     public string AboutReportIssue => Get("问题反馈", "Report an issue");
 
-    public string PairingCode => Get("投屏验证码", "Mirroring code");
+    public string PairingCode => Get("屏幕镜像验证码", "Screen mirroring code");
+    public string DismissPairingCode => Get("关闭验证码提示", "Dismiss pairing code");
     public string ReceiverError => Get("接收遇到问题", "Receiver error");
-    public string LandingHeading => Get("将屏幕投到这台电脑", "Mirror your screen to this PC");
-    public string LandingDescription => Get($"在同一局域网的 iPhone、iPad 或 Mac 上打开「屏幕镜像」，然后选择 {_receiverName}。",
-        $"On an iPhone, iPad, or Mac on the same network, open Screen Mirroring and choose {_receiverName}.");
+    public string LandingHeading => Get("将屏幕镜像到此电脑", "Mirror your screen to this PC");
+    public string LandingDescription => Get($"请确保设备与此电脑连接到同一网络，然后在设备上打开「屏幕镜像」，选择「{_receiverName}」",
+        $"Make sure your device and this PC are connected to the same network, then open Screen Mirroring on your device and select “{_receiverName}”");
     public string RetryReceiver => Get("重试接收", "Try again");
 
-    public string Disconnect => Get("断开投屏", "Disconnect");
+    public string Disconnect => Get("断开屏幕镜像", "Disconnect");
     public string FullScreen => Get("全屏", "Full screen");
     public string ExitFullScreen => Get("退出全屏", "Exit full screen");
     public string RotateLeft => Get("向左旋转 90°", "Rotate left 90°");

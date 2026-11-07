@@ -18,7 +18,8 @@ namespace {
 
 enum ReceiverEventType {
     Ready = 1, Connecting, Video, MirrorEnded, Fatal, PairingRequired, PairingRejected,
-    DecoderChanged, DecoderChangeFailed, PairingCompleted, ConnectionRejected
+    DecoderChanged, DecoderChangeFailed, PairingCompleted, ConnectionRejected,
+    PairingAuthenticationRequired
 };
 
 struct ReceiverEvent {
@@ -57,6 +58,7 @@ size_t event_count = 0;
 std::atomic<bool> mirror_active(false);
 std::atomic<bool> decoder_commands_ready(false);
 std::atomic<int> receiver_failure(0);
+std::atomic<unsigned int> pairing_generation(0);
 
 struct ExclusiveLock {
     explicit ExclusiveLock(SRWLOCK& lock) : lock(lock) { AcquireSRWLockExclusive(&lock); }
@@ -215,9 +217,9 @@ int initialize_gstreamer(const std::string& state_directory) {
         if (!length || length == ARRAYSIZE(module_path)) {
             return ERROR_BAD_PATHNAME;
         }
-        std::wstring plugin_directory(module_path, length);
-        plugin_directory.resize(plugin_directory.find_last_of(L"\\/"));
-        plugin_directory += L"\\lib\\gstreamer-1.0";
+        std::wstring runtime_directory(module_path, length);
+        runtime_directory.resize(runtime_directory.find_last_of(L"\\/"));
+        std::wstring plugin_directory = runtime_directory + L"\\lib\\gstreamer-1.0";
         gchar* plugin_path = g_utf16_to_utf8(reinterpret_cast<const gunichar2*>(plugin_directory.c_str()),
                                             -1, nullptr, nullptr, nullptr);
         if (!plugin_path) {
@@ -225,12 +227,25 @@ int initialize_gstreamer(const std::string& state_directory) {
         }
         std::unique_ptr<gchar, decltype(&g_free)> portable_path(plugin_path, &g_free);
         if (!gst_is_initialized()) {
+            std::wstring scanner_file = runtime_directory + L"\\gst-plugin-scanner.exe";
+            if (GetFileAttributesW(scanner_file.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                return GetLastError();
+            }
+            std::unique_ptr<gchar, decltype(&g_free)> scanner_path(
+                g_utf16_to_utf8(reinterpret_cast<const gunichar2*>(scanner_file.c_str()),
+                    -1, nullptr, nullptr, nullptr), &g_free);
+            if (!scanner_path) {
+                return ERROR_BAD_PATHNAME;
+            }
             // Limit the initial scan and registry to this app's packaged runtime.
+            // Probe graphics-driver capabilities in the bundled helper process,
+            // so cold D3D11 discovery does not stall WinUI's composition buffers.
             const std::string registry_path = state_directory + "/gstreamer-registry.bin";
             ScopedEnvironment registry_option("GST_REGISTRY", registry_path.c_str());
             ScopedEnvironment system_plugins("GST_PLUGIN_SYSTEM_PATH_1_0", plugin_path);
             ScopedEnvironment extra_plugins("GST_PLUGIN_PATH_1_0", "");
-            gst_registry_fork_set_enabled(FALSE);
+            ScopedEnvironment scanner_option("GST_PLUGIN_SCANNER_1_0", scanner_path.get());
+            gst_registry_fork_set_enabled(TRUE);
             GError* error = nullptr;
             const bool initialized = gst_init_check(nullptr, nullptr, &error);
             g_clear_error(&error);
@@ -575,10 +590,10 @@ extern "C" void clearcast_diagnostic_request(uint64_t id, const char* method, co
         static_cast<unsigned long long>(id), safe_method, safe_path);
 }
 
-extern "C" void clearcast_diagnostic_response(uint64_t id, int status) {
+extern "C" void clearcast_diagnostic_response(uint64_t id, int status, int generation, int pairing_feedback) {
     write_diagnostic("connection=%llu response status=%d", static_cast<unsigned long long>(id), status);
-    if (status >= 400 && !mirror_active) {
-        enqueue_event({ConnectionRejected, 0, 0, 0, status});
+    if (status >= 400 && !pairing_feedback && !mirror_active) {
+        enqueue_event({ConnectionRejected, 0, generation, 0, status});
     }
 }
 
@@ -631,15 +646,29 @@ extern "C" void clearcast_set_video_sink(GstElement* sink) {
     set_stats_sink(sink);
 }
 
-static void clearcast_display_pairing_pin(const char* pin) {
+extern "C" int clearcast_begin_pairing(const char* pin) {
+    // Keep generations positive in the unchanged, signed ReceiverEvent ABI.
+    int generation = static_cast<int>(pairing_generation.fetch_add(1) % 0x7fffffffu) + 1;
     if (!mirror_active) {
-        enqueue_event({PairingRequired, std::atoi(pin), 0, 0, 0});
+        write_diagnostic("pairing generation=%d stage=challenge outcome=required", generation);
+        enqueue_event({PairingRequired, std::atoi(pin), generation, 0, 0});
     }
+    return generation;
 }
 
-extern "C" void clearcast_pairing_status(int status) {
+static void clearcast_display_pairing_pin(const char* pin) {
+    clearcast_begin_pairing(pin);
+}
+
+extern "C" void clearcast_pairing_result(int status, int generation, int reason) {
     if (!mirror_active) {
-        enqueue_event({status == 2 ? PairingCompleted : PairingRejected, 0, 0, 0, 0});
+        // Only fixed stage names and counters are logged, never PINs or proofs.
+        const char* stages[] = {"verification", "setup-data", "setup-proof", "challenge-expired", "cooldown", "verification"};
+        const char* stage = reason >= 0 && reason < 6 ? stages[reason] : "unknown";
+        write_diagnostic("pairing generation=%d stage=%s outcome=%s", generation, stage,
+            status == 2 ? "completed" : status == 0 ? "authentication-required" : "rejected");
+        ReceiverEventType type = status == 2 ? PairingCompleted : status == 0 ? PairingAuthenticationRequired : PairingRejected;
+        enqueue_event({type, 0, generation, 0, reason});
     }
 }
 

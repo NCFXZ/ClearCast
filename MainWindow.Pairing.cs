@@ -63,7 +63,7 @@ public sealed partial class MainWindow
 
     private async Task RemoveSavedPairingsAsync(string? id, string? name)
     {
-        if (_resettingPairings || _hasVideo || _closing || _closed || _stopTask is not null)
+        if (_resettingPairings || _startingReceiver || _hasVideo || _closing || _closed || _stopTask is not null)
             return;
 
         _resettingPairings = true;
@@ -78,9 +78,9 @@ public sealed partial class MainWindow
                 {
                     TextWrapping = TextWrapping.Wrap,
                     Text = id is null
-                        ? Texts.Get("删除后，所有设备下次投屏时都需要重新验证。",
+                        ? Texts.Get("删除后，所有设备下次屏幕镜像时都需要重新验证。",
                             "All saved devices will need a pairing code the next time they connect.")
-                        : Texts.Get($"删除「{name}」的配对记录后，该设备下次投屏时需要重新验证。其他已保存设备也可能需要重新验证。",
+                        : Texts.Get($"删除「{name}」的配对记录后，该设备下次屏幕镜像时需要重新验证。其他已保存设备也可能需要重新验证。",
                             $"“{name}” will need a pairing code the next time it connects. Other saved devices may also need to pair again.")
                 },
                 PrimaryButtonText = Texts.RemovePairing,
@@ -99,12 +99,12 @@ public sealed partial class MainWindow
             if (id is null)
             {
                 AirPlayReceiver.ClearPairings(_root);
-                ShowPairingResetFeedback("已删除全部配对记录。设备下次投屏时需要重新验证。");
+                ShowPairingResetFeedback("已删除全部配对记录。设备下次屏幕镜像时需要重新验证。");
             }
             else
             {
                 AirPlayReceiver.RemovePairing(_root, id);
-                ShowPairingResetFeedback("已删除该设备的配对记录。该设备下次投屏时需要重新验证，其他已保存设备也可能需要重新验证。");
+                ShowPairingResetFeedback("已删除该设备的配对记录。该设备下次屏幕镜像时需要重新验证，其他已保存设备也可能需要重新验证。");
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
