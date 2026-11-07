@@ -1,6 +1,16 @@
 # ClearCast
 
-ClearCast 是 Windows 上的局域网屏幕镜像工具。iPhone、iPad 和 Mac 使用系统 AirPlay 投到 ClearCast 窗口。
+将 iPhone、iPad 和 Mac 的屏幕投到 Windows 电脑。
+
+ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示照片、演示文稿、应用操作和其他屏幕内容。
+
+将苹果设备与电脑连接到同一局域网，在苹果设备的“屏幕镜像”中选择 ClearCast，即可开始投屏。
+
+- 接收屏幕画面和声音。
+- 支持全屏显示、画面旋转和等比缩放。
+- 使用验证码配对，并管理已保存的设备。
+
+使用时，两台设备所在的局域网需要允许设备相互访问。
 
 [下载 Windows x64 安装包](https://github.com/NCFXZ/ClearCast/releases/latest)
 
@@ -30,7 +40,9 @@ dotnet publish .\ClearCast.csproj -c Release -r win-x64 -o .\.runtime\app
 
 新设备发起配对时，ClearCast 会显示新的四位验证码，有效期为一分钟。验证多次失败后，新配对会短暂暂停，已配对设备仍可连接。接收器密钥、配对记录和显示偏好保存在 `.clearcast-state` 中。
 
-侧栏底部的「设置」按接收、播放显示和设备配对分组。在「设备配对」中展开「已保存的配对」，即可逐台删除设备的配对记录，也可一次删除全部。配对记录被删除的设备下次连接时需要重新验证。发生接收错误时，可在投屏页复制错误详情并重试。
+验证码请求与后续验证可使用来自同一设备的不同连接。验证码通过后立即保存配对记录，以便设备重新连接验证。当本地没有任何已保存配对时，接收端会更新配对身份，让仍记住旧身份的苹果设备重新显示验证码。
+
+侧栏底部的「设置」按接收、播放显示和设备配对分组。在「设备配对」中展开「已保存的配对」，即可逐台删除设备的配对记录，也可一次删除全部。配对记录被删除的设备下次连接时需要重新验证。发生接收错误时，可在投屏页点击「复制详情」并重试。
 
 ## 准备 Windows 接收运行时
 
@@ -44,7 +56,7 @@ pacman -Syu
 
 ```bash
 pacman -S --needed git \
-  mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,openssl,libplist,gstreamer} \
+  mingw-w64-ucrt-x86_64-{gcc,cmake,meson,ninja,pkgconf,openssl,libplist,gstreamer} \
   mingw-w64-ucrt-x86_64-gst-{plugins-base,plugins-good,plugins-bad,libav}
 ```
 
@@ -53,8 +65,11 @@ pacman -S --needed git \
 ```powershell
 New-Item -ItemType Directory -Force .runtime
 Invoke-WebRequest 'https://codeload.github.com/FDH2/UxPlay/tar.gz/d4b7373cb6107b2d8d6c5838991c19d39e2b96ae' -OutFile .runtime\uxplay-d4b7373.tar.gz
+pwsh -File .\native\Build-GStreamerSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
 pwsh -File .\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
+
+安全组件构建脚本验证官方源码 SHA256，并单独构建 GStreamer 1.28.9 的 codecparsers 和 videoparsersbad，包含已发布的解析器安全修复；其余组件使用 MSYS2 运行时。接收器构建会验证这两个组件的清单和哈希后收集发布文件。
 
 构建完成后执行上面的发布命令。若遇到解码兼容问题，可在「设置 → 接收」中切换到软件解码。
 
@@ -73,6 +88,7 @@ pwsh -File .\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ## 排查
 
 - **AirPlay 列表里没有 ClearCast。** 检查两台设备是否位于同一局域网，访客网络的设备隔离是否挡住发现，Windows 防火墙是否允许 `ClearCast.exe`。AirPlay 发现使用 UDP 5353，接收端使用 TCP 和 UDP 47000–47002。
+- **苹果设备提示无法连接，电脑没有验证码。** 接收器会在 `.clearcast-state\receiver.log` 记录连接阶段；仅有 `ready` 而没有设备连接记录时，检查两台设备是否允许互访，以及当前启动的 `ClearCast.exe` 是否被防火墙允许。校园、访客等网络可能允许发现但隔离设备连接。若已有请求和拒绝状态，应用会显示错误；「复制详情」会附带最近的连接记录。日志不包含验证码、密钥或投屏内容。
 - **有声音但画面黑屏。** 先镜像发送设备的设置界面或本地照片。若只有受保护的视频黑屏，换用普通本地视频验证。若一般内容也黑屏，在「设置 → 接收」中试用自动或软件解码。
 - **画面尺寸偏低或卡顿。** 查看实际画面尺寸和播放帧率，检查 AirPlay 设备是否支持 HEVC，以及两台设备的网络连接。改善连接后重新开始接收可更新画质请求。
 

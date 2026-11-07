@@ -118,6 +118,7 @@ static gint clearcast_decoder_select_factory(GstElement *decodebin, GstPad *pad,
 }
 
 static bool clearcast_decoder_link_pipeline(video_renderer_t *instance) {
+    clearcast_video_context_watch(instance->pipeline);
     if (strcmp(instance->codec, h264) && strcmp(instance->codec, h265)) {
         return true;
     }

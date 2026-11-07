@@ -7,7 +7,7 @@ public sealed partial class MainWindow
     private string _decoderFeedback = "";
     private string _pairingResetFeedback = "";
     private string _receiveErrorMessage = "";
-    private string _copyErrorLabel = "复制错误详情";
+    private string _copyErrorLabel = "复制详情";
     private int? _streamFps;
     private ulong? _streamDropped;
 

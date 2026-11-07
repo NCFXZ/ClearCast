@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.System;
 using Microsoft.UI.Windowing;
@@ -609,6 +610,7 @@ public sealed partial class MainWindow : Window
                         WaitForMirror();
                     break;
                 case ReceiverEventKind.Connecting:
+                    ReceiverInfoBar.IsOpen = false;
                     HidePairingCode();
                     if (!_hasVideo)
                         SetReceiverStatus("正在打开投屏画面…");
@@ -639,14 +641,27 @@ public sealed partial class MainWindow : Window
                     return;
                 case ReceiverEventKind.PairingRequired:
                     if (!_hasVideo && update.Width is >= 1 and <= 9999)
+                    {
+                        ReceiverInfoBar.IsOpen = false;
                         ShowPairingCode(update.Width.ToString("0000", System.Globalization.CultureInfo.InvariantCulture));
+                    }
                     break;
                 case ReceiverEventKind.PairingRejected:
                     if (!_hasVideo && WaitingPairing.Visibility == Visibility.Visible)
                         SetPairingPrompt("配对未通过，请在设备上重试。");
                     break;
                 case ReceiverEventKind.PairingCompleted:
+                    ReceiverInfoBar.IsOpen = false;
                     HidePairingCode();
+                    break;
+                case ReceiverEventKind.ConnectionRejected:
+                    if (!_hasVideo)
+                    {
+                        string message = update.ErrorCode is 401 or 470
+                            ? "设备验证未通过，请在苹果设备上重新选择 ClearCast 后重试。"
+                            : "设备连接未完成，请在苹果设备上重试。可复制详情查看连接记录。";
+                        ShowReceiveError(message, update.ErrorCode);
+                    }
                     break;
                 case ReceiverEventKind.DecoderChanged:
                 case ReceiverEventKind.DecoderChangeFailed:
@@ -715,7 +730,7 @@ public sealed partial class MainWindow : Window
         _receiveErrorCode = errorCode;
         _receiveErrorMessage = message;
         ReceiverInfoBar.Message = Texts.Translate(message);
-        SetCopyErrorLabel("复制错误详情");
+        SetCopyErrorLabel("复制详情");
         ReceiverInfoBar.IsOpen = true;
         if (_receiver is null)
         {
@@ -729,7 +744,8 @@ public sealed partial class MainWindow : Window
     private void CopyErrorClicked(object sender, RoutedEventArgs e)
     {
         string errorCodeLabel = Texts.Get("错误代码", "Error code");
-        bool copied = CopyToClipboard($"ClearCast\r\n{ReceiverInfoBar.Message}\r\n{errorCodeLabel} 0x{_receiveErrorCode:X8}");
+        string diagnostics = AirPlayReceiver.ReadDiagnostics(_root);
+        bool copied = CopyToClipboard($"ClearCast\r\n{ReceiverInfoBar.Message}\r\n{errorCodeLabel} 0x{_receiveErrorCode:X8}\r\n{diagnostics}");
         SetCopyErrorLabel(copied ? "已复制" : "重试复制");
     }
 
@@ -741,13 +757,21 @@ public sealed partial class MainWindow : Window
 
     private static bool CopyToClipboard(string text)
     {
-        var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
-        data.SetText(text);
-        return Clipboard.SetContentWithOptions(data, new ClipboardContentOptions
+        try
         {
-            IsAllowedInHistory = false,
-            IsRoamable = false
-        });
+            var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+            data.SetText(text);
+            return Clipboard.SetContentWithOptions(data, new ClipboardContentOptions
+            {
+                IsAllowedInHistory = false,
+                IsRoamable = false
+            });
+        }
+        catch (Exception error) when (error is COMException or InvalidOperationException)
+        {
+            // A busy clipboard should leave a retry action, rather than escape the UI event handler.
+            return false;
+        }
     }
 
     private static string FindRoot()

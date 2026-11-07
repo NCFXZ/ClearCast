@@ -3,7 +3,8 @@ param(
     [string] $ArchivePath,
     [string] $Ucrt64Directory,
     [string] $BuildDirectory,
-    [string] $OutputDirectory
+    [string] $OutputDirectory,
+    [string] $SecurityRuntimeDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,30 @@ if (-not $ArchivePath) { $ArchivePath = Join-Path $runtime 'uxplay-d4b7373.tar.g
 if (-not $Ucrt64Directory) { $Ucrt64Directory = Join-Path $runtime 'msys64\ucrt64' }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $runtime 'uxplay-receiver-build' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $runtime 'receiver' }
+if (-not $SecurityRuntimeDirectory) { $SecurityRuntimeDirectory = Join-Path $runtime 'gstreamer-security' }
+
+# UCRT64 currently supplies GStreamer 1.28.8. Ship the ABI-compatible 1.28.9
+# parser components to include the H.264/H.265/MPEG parser security fixes.
+$securityRuntime = [IO.Path]::GetFullPath($SecurityRuntimeDirectory)
+$securityManifestPath = Join-Path $securityRuntime 'manifest.json'
+if (-not (Test-Path -LiteralPath $securityManifestPath)) {
+    throw 'Build the pinned parser security components with native\Build-GStreamerSecurity.ps1 first.'
+}
+$securityManifest = Get-Content -LiteralPath $securityManifestPath -Raw | ConvertFrom-Json
+if ($securityManifest.schemaVersion -ne 1 -or $securityManifest.version -ne '1.28.9' -or
+    $securityManifest.sourceSha256 -ne '4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1') {
+    throw 'The parser security component manifest is incompatible.'
+}
+$securityOverrides = @{}
+foreach ($relativePath in 'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll') {
+    $records = @($securityManifest.files | Where-Object relativePath -eq $relativePath)
+    $file = Join-Path $securityRuntime $relativePath
+    if ($records.Count -ne 1 -or -not (Test-Path -LiteralPath $file) -or
+        (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $records[0].sha256) {
+        throw "The parser security component hash is invalid: $relativePath"
+    }
+    $securityOverrides[[IO.Path]::GetFileName($file)] = $file
+}
 
 $ArchivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
 $Ucrt64Directory = (Resolve-Path -LiteralPath $Ucrt64Directory).Path
@@ -27,7 +52,11 @@ $patches = @(
     (Join-Path $PSScriptRoot 'uxplay-renderer-stats.patch'),
     (Join-Path $PSScriptRoot 'uxplay-live-decoder.patch'),
     (Join-Path $PSScriptRoot 'uxplay-mdns.patch'),
-    (Join-Path $PSScriptRoot 'uxplay-network-guards.patch')
+    (Join-Path $PSScriptRoot 'uxplay-network-guards.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-http-headers.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-diagnostics.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-pairing-recovery.patch'),
+    (Join-Path $PSScriptRoot 'uxplay-release-hardening.patch')
 )
 # Use a fresh source tree when a patch changes.
 $hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '')
@@ -92,7 +121,11 @@ try {
         'videoparsersbad', 'videoconvertscale', 'd3d11', 'libav',
         'audioconvert', 'audioresample', 'volume', 'level', 'wasapi', 'wasapi2', 'directsound'
     )
-    $plugins = @($pluginNames | ForEach-Object { Join-Path $pluginDir "libgst$_.dll" })
+    $plugins = @($pluginNames | ForEach-Object {
+        $name = "libgst$_.dll"
+        if ($securityOverrides.ContainsKey($name)) { $securityOverrides[$name] }
+        else { Join-Path $pluginDir $name }
+    })
     $pending = [Collections.Generic.Queue[string]]::new()
     foreach ($binary in @($receiver) + $plugins) { $pending.Enqueue($binary) }
 
@@ -106,7 +139,8 @@ try {
             if ($line -notmatch '^\s*DLL Name:\s*(\S+)\s*$') { continue }
             $name = $Matches[1]
             if ($dependencies.ContainsKey($name)) { continue }
-            $dependency = Join-Path $bin $name
+            $dependency = if ($securityOverrides.ContainsKey($name)) { $securityOverrides[$name] }
+                else { Join-Path $bin $name }
             if (Test-Path -LiteralPath $dependency -PathType Leaf) {
                 $dependencies[$name] = $dependency
                 $pending.Enqueue($dependency)
@@ -124,6 +158,8 @@ try {
     Copy-Item -LiteralPath $plugins -Destination $outputPlugins -Force
     Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $output 'LICENSE-UxPlay.txt') -Force
     Copy-Item -LiteralPath $receiver -Destination $output -Force
+    Copy-Item -LiteralPath $securityManifestPath -Destination (Join-Path $output 'gstreamer-security-manifest.json') -Force
+    Copy-Item -LiteralPath (Join-Path $securityRuntime 'COPYING') -Destination (Join-Path $output 'LICENSE-GStreamerSecurity.txt') -Force
     Write-Output (Join-Path $output 'clearcast_receiver.dll')
 } finally {
     $env:PATH = $originalPath

@@ -13,15 +13,25 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <DefaultItemExcludes>$(DefaultItemExcludes);.runtime\**;.clearcast-state\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.runtime\**;.clearcast-state\**;bin\**;obj\**</DefaultItemExcludes>
     <ReceiverRuntimeDirectory Condition="'$(ReceiverRuntimeDirectory)' == ''">$(MSBuildProjectDirectory)\.runtime\receiver</ReceiverRuntimeDirectory>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(EnableUiTests)' == 'true'">
+    <DefineConstants>$(DefineConstants);CLEARCAST_UI_TESTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(EnableUiTests)' != 'true'">
+    <Compile Remove="MainWindow.UiTests.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="tests\**" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
     <Content Include="Assets\ClearCast.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\ClearCast.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\GitHubMark-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="PRIVACY.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="$(ReceiverRuntimeDirectory)\**\*"
           Link="receiver\%(RecursiveDir)%(Filename)%(Extension)"

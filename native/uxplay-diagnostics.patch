@@ -1,0 +1,94 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -32,6 +32,13 @@
+ #include "raop_rtp_mirror.h"
+ #include "raop_ntp.h"
+ 
++#ifdef CLEARCAST_IN_PROCESS
++extern uint64_t clearcast_diagnostic_connected(const char *remote);
++extern void clearcast_diagnostic_closed(uint64_t id);
++extern void clearcast_diagnostic_request(uint64_t id, const char *method, const char *path);
++extern void clearcast_diagnostic_response(uint64_t id, int status);
++#endif
++
+ 
+ /* libplist-2.3.0  API change */
+ #ifndef PLIST_230
+@@ -128,6 +135,7 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     unsigned short pairing_pin;
+     uint64_t pin_expires_at;
++    uint64_t diagnostic_id;
+ #endif
+ };
+ typedef struct raop_conn_s raop_conn_t;
+@@ -168,6 +176,9 @@
+ 
+     utils_ipaddress_to_string(remotelen, remote, zone_id, ip_address, (int) sizeof(ip_address));
+     logger_log(raop->logger, LOGGER_INFO, "Remote: %s", ip_address);
++#ifdef CLEARCAST_IN_PROCESS
++    conn->diagnostic_id = clearcast_diagnostic_connected(ip_address);
++#endif
+ 
+     conn->local = (unsigned char *) malloc(locallen);
+     assert(conn->local);
+@@ -225,6 +236,9 @@
+     const char *method = http_request_get_method(request);
+     const char *url = http_request_get_url(request);
+     const char *protocol = http_request_get_protocol(request);
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_diagnostic_request(conn->diagnostic_id, method, url);
++#endif
+ 
+     if (!method  || !url || !protocol) {
+         return;
+@@ -243,6 +257,9 @@
+                    num_fields, (int) max_field_len, (int) max_value_len);
+         *response = http_response_create();
+         http_response_init(*response, protocol, 431, "Request Header Fields Too Large");
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_diagnostic_response(conn->diagnostic_id, 431);
++#endif
+         return;
+     }
+ 
+@@ -517,6 +534,11 @@
+     http_response_finish(*response, response_data, response_datalen);
+     int len = 0;
+     const char *data = http_response_get_data(*response, &len);
++#ifdef CLEARCAST_IN_PROCESS
++    int diagnostic_status = 0;
++    if (data && len > 0) sscanf(data, "%*15s %3d", &diagnostic_status);
++    clearcast_diagnostic_response(conn->diagnostic_id, diagnostic_status);
++#endif
+     if (response_data && response_datalen > 0) {
+         len -= response_datalen;
+     } else {
+@@ -573,6 +595,9 @@
+     raop_conn_t *conn = ptr;
+     raop_t *raop = conn->raop;
+     logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_diagnostic_closed(conn->diagnostic_id);
++#endif
+ 
+     if (conn->raop_rtp) {
+         /* This is done in case TEARDOWN was not called */
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -264,6 +264,7 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     uint64_t now = GetTickCount64();
+     if (now < raop->pin_retry_after) {
++        clearcast_pairing_status(1);
+         http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+         return;
+     }
+@@ -312,6 +313,7 @@
+         pairing_session_reset_pin(conn->session);
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
++        clearcast_pairing_status(1);
+         http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+         return;
+     }

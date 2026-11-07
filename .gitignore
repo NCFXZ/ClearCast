@@ -2,3 +2,7 @@
 /.clearcast-state/
 /bin/
 /obj/
+/tests/**/bin/
+/tests/**/obj/
+__pycache__/
+*.pyc

@@ -9,6 +9,7 @@
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <glib/gstdio.h>
+#include <cstdarg>
 #include <new>
 #include "lib/global.h"
 #include "lib/mdnsd/mdnsd.h"
@@ -17,7 +18,7 @@ namespace {
 
 enum ReceiverEventType {
     Ready = 1, Connecting, Video, MirrorEnded, Fatal, PairingRequired, PairingRejected,
-    DecoderChanged, DecoderChangeFailed, PairingCompleted
+    DecoderChanged, DecoderChangeFailed, PairingCompleted, ConnectionRejected
 };
 
 struct ReceiverEvent {
@@ -42,6 +43,10 @@ struct ReceiverOptions {
 SRWLOCK lifecycle_lock = SRWLOCK_INIT;
 SRWLOCK event_lock = SRWLOCK_INIT;
 SRWLOCK stats_lock = SRWLOCK_INIT;
+SRWLOCK diagnostic_lock = SRWLOCK_INIT;
+std::string diagnostic_path;
+std::string diagnostic_previous_path;
+uint64_t diagnostic_connection_id = 0;
 HANDLE worker_thread = nullptr;
 GstBaseSink* stats_sink = nullptr;
 int requested_rotation = 0;
@@ -58,6 +63,81 @@ struct ExclusiveLock {
     ~ExclusiveLock() { ReleaseSRWLockExclusive(&lock); }
     SRWLOCK& lock;
 };
+
+// Only explicit connection metadata reaches this writer. Never pass UxPlay's
+// general logger, request headers, bodies, credentials or pairing material here.
+void write_diagnostic(const char* format, ...) noexcept {
+    char message[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    SYSTEMTIME now;
+    GetSystemTime(&now);
+    char entry[576];
+    int count = snprintf(entry, sizeof(entry),
+        "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ %s\n",
+        static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
+        static_cast<unsigned>(now.wDay), static_cast<unsigned>(now.wHour),
+        static_cast<unsigned>(now.wMinute), static_cast<unsigned>(now.wSecond),
+        static_cast<unsigned>(now.wMilliseconds), message);
+    if (count <= 0 || static_cast<size_t>(count) >= sizeof(entry)) return;
+
+    ExclusiveLock lock(diagnostic_lock);
+    if (diagnostic_path.empty()) return;
+    FILE* file = g_fopen(diagnostic_path.c_str(), "a+b");
+    if (!file) return;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return;
+    }
+    long size = ftell(file);
+    constexpr long limit = 256 * 1024;
+    if (size < 0 || size + count > limit) {
+        fclose(file);
+        if (size < 0) return;
+        g_remove(diagnostic_previous_path.c_str());
+        if (g_rename(diagnostic_path.c_str(), diagnostic_previous_path.c_str()) != 0) return;
+        file = g_fopen(diagnostic_path.c_str(), "wb");
+        if (!file) return;
+    }
+    fwrite(entry, 1, count, file);
+    fclose(file);
+}
+
+void diagnostic_token(const char* input, char* output, size_t size, bool path = false) noexcept {
+    if (!input) input = "";
+    if (path) {
+        const char* authority = nullptr;
+        for (const char* scheme : {"rtsp://", "http://", "https://"}) {
+            if (!g_ascii_strncasecmp(input, scheme, strlen(scheme))) {
+                authority = input + strlen(scheme);
+                break;
+            }
+        }
+        if (authority) {
+            const char* slash = strchr(authority, '/');
+            input = slash ? slash : "/";
+        }
+    }
+    size_t length = 0;
+    while (*input && length + 1 < size && (!path || (*input != '?' && *input != '#'))) {
+        unsigned char ch = static_cast<unsigned char>(*input++);
+        output[length++] = ch > 32 && ch < 127 ? static_cast<char>(ch) : '_';
+    }
+    output[length] = '\0';
+}
+
+void diagnostic_ready() noexcept {
+    uint32_t address = mdnsd_get_active_ipv4();
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&address);
+    write_diagnostic("ready address=%u.%u.%u.%u rtsp=%u tcp=%u,%u,%u udp=%u,%u,%u",
+        static_cast<unsigned>(bytes[0]), static_cast<unsigned>(bytes[1]),
+        static_cast<unsigned>(bytes[2]), static_cast<unsigned>(bytes[3]),
+        static_cast<unsigned>(raop_get_port(raop)),
+        static_cast<unsigned>(tcp[0]), static_cast<unsigned>(tcp[1]), static_cast<unsigned>(tcp[2]),
+        static_cast<unsigned>(udp[0]), static_cast<unsigned>(udp[1]), static_cast<unsigned>(udp[2]));
+}
 
 void set_stats_sink(GstElement* sink) {
     ExclusiveLock lock(stats_lock);
@@ -215,20 +295,22 @@ const char* receiver_display_name() noexcept {
     }
 }
 
-void load_pairing_keys() {
+int load_pairing_keys() {
     registered_keys.clear();
+    registered_client_metadata.clear();
     const std::unique_ptr<FILE, decltype(&fclose)> file(g_fopen(pairing_register.c_str(), "rb"), &fclose);
     if (!file) {
-        return;
+        return errno == ENOENT ? 0 : ERROR_READ_FAULT;
     }
 
-    // Only the key and its delimiter are needed. Read past oversized metadata without
-    // mistaking a continuation of the same line for a second paired device.
+    // Bound metadata memory and consume oversized lines without treating their
+    // continuation as another device. Cache metadata to avoid duplicate SETUP writes.
     constexpr size_t key_length = 44;
-    char prefix[key_length + 2];
+    char prefix[1024];
     size_t length = 0;
+    bool truncated = false;
     const auto add_key = [&](bool ended_with_newline) {
-        if (ended_with_newline && length == key_length + 1 && prefix[key_length] == '\r') {
+        if (ended_with_newline && length && prefix[length - 1] == '\r') {
             --length;
         }
         if (length < key_length || (length > key_length && prefix[key_length] != ',') ||
@@ -238,7 +320,22 @@ void load_pairing_keys() {
         if (std::all_of(prefix, prefix + key_length - 1, [](unsigned char c) {
             return g_ascii_isalnum(c) || c == '+' || c == '/';
         })) {
-            registered_keys.emplace_back(prefix, key_length);
+            const std::string key(prefix, key_length);
+            if (registered_client_metadata.emplace(key, "").second) {
+                registered_keys.emplace_back(key);
+            }
+            if (!truncated && length > key_length) {
+                const std::string row(prefix, length);
+                const size_t second_comma = row.find(',', key_length + 1);
+                if (second_comma != std::string::npos) {
+                    const std::string metadata = row.substr(second_comma + 1);
+                    const size_t name_comma = metadata.find(',');
+                    if (name_comma != std::string::npos &&
+                        (name_comma + 1 < metadata.size() || registered_client_metadata[key].empty())) {
+                        registered_client_metadata[key] = metadata;
+                    }
+                }
+            }
         }
     };
 
@@ -246,11 +343,20 @@ void load_pairing_keys() {
         if (ch == '\n') {
             add_key(true);
             length = 0;
+            truncated = false;
         } else if (length < sizeof(prefix)) {
             prefix[length++] = static_cast<char>(ch);
+        } else {
+            truncated = true;
         }
     }
+    if (ferror(file.get())) {
+        registered_keys.clear();
+        registered_client_metadata.clear();
+        return ERROR_READ_FAULT;
+    }
     add_key(false);
+    return 0;
 }
 
 void configure_receiver(const ReceiverOptions& options) {
@@ -274,7 +380,6 @@ void configure_receiver(const ReceiverOptions& options) {
     keyfile = options.state_directory + "/receiver.pem";
     pairing_register = options.state_directory + "/clients.txt";
     registration_list = true;
-    load_pairing_keys();
     audio_type = previous_audio_type = compression_type = 0;
     current_volume = initial_volume;
     remote_clock_offset = 0;
@@ -299,9 +404,32 @@ bool initialize_video() {
 }
 
 int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread) {
+    {
+        ExclusiveLock lock(diagnostic_lock);
+        diagnostic_path = options.state_directory + "/receiver.log";
+        diagnostic_previous_path = options.state_directory + "/receiver.previous.log";
+    }
+    write_diagnostic("receiver starting");
     ntp_global_init();
     configure_receiver(options);
-    int error = initialize_gstreamer(options.state_directory);
+    int error = load_pairing_keys();
+    if (error) {
+        write_diagnostic("could not read saved clients; pairing identity unchanged");
+        return error;
+    }
+    // Apple remembers the receiver's public key and skips PIN setup on later visits.
+    // With no saved clients, retaining that identity leaves those clients trying
+    // pair-verify forever. A fresh identity makes the next visit request a PIN.
+    if (registered_keys.empty() && g_file_test(keyfile.c_str(), G_FILE_TEST_EXISTS)) {
+        const std::string previous_identity = options.state_directory + "/receiver.unpaired.pem";
+        if ((g_file_test(previous_identity.c_str(), G_FILE_TEST_EXISTS) &&
+             g_remove(previous_identity.c_str()) != 0) ||
+            g_rename(keyfile.c_str(), previous_identity.c_str()) != 0) {
+            return ERROR_ACCESS_DENIED;
+        }
+        write_diagnostic("no saved clients; renewing receiver pairing identity");
+    }
+    error = initialize_gstreamer(options.state_directory);
     if (error || clearcast_stopping) {
         return error;
     }
@@ -353,6 +481,7 @@ int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread
     }
 
     decoder_commands_ready = true;
+    diagnostic_ready();
     enqueue_event({Ready, static_cast<int>(mdnsd_get_active_ipv4()), 0, 0, 0});
     while (!clearcast_stopping && !receiver_failure) {
         main_loop();
@@ -377,6 +506,7 @@ int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread
             return WSAEADDRINUSE;
         }
         raop_set_port(raop, port);
+        diagnostic_ready();
         enqueue_event({Ready, static_cast<int>(mdnsd_get_active_ipv4()), 0, 0, 0});
     }
     return receiver_failure;
@@ -412,6 +542,7 @@ DWORD WINAPI receiver_worker(void* parameter) {
         CloseHandle(host_thread);
     }
     mirror_active = false;
+    write_diagnostic("receiver stopped error=%d", error);
     if (error && !clearcast_stopping) {
         enqueue_event({Fatal, 0, 0, 0, error});
     }
@@ -419,6 +550,37 @@ DWORD WINAPI receiver_worker(void* parameter) {
 }
 
 } // namespace
+
+extern "C" uint64_t clearcast_diagnostic_connected(const char* remote) {
+    uint64_t id;
+    {
+        ExclusiveLock lock(diagnostic_lock);
+        id = ++diagnostic_connection_id;
+    }
+    char address[64];
+    diagnostic_token(remote, address, sizeof(address));
+    write_diagnostic("connection=%llu opened remote=%s", static_cast<unsigned long long>(id), address);
+    return id;
+}
+
+extern "C" void clearcast_diagnostic_closed(uint64_t id) {
+    write_diagnostic("connection=%llu closed", static_cast<unsigned long long>(id));
+}
+
+extern "C" void clearcast_diagnostic_request(uint64_t id, const char* method, const char* path) {
+    char safe_method[24], safe_path[160];
+    diagnostic_token(method, safe_method, sizeof(safe_method));
+    diagnostic_token(path, safe_path, sizeof(safe_path), true);
+    write_diagnostic("connection=%llu request method=%s path=%s",
+        static_cast<unsigned long long>(id), safe_method, safe_path);
+}
+
+extern "C" void clearcast_diagnostic_response(uint64_t id, int status) {
+    write_diagnostic("connection=%llu response status=%d", static_cast<unsigned long long>(id), status);
+    if (status >= 400 && !mirror_active) {
+        enqueue_event({ConnectionRejected, 0, 0, 0, status});
+    }
+}
 
 static void clearcast_poll_video_rotation() {
     static constexpr GstVideoOrientationMethod directions[] = {

@@ -1,0 +1,10 @@
+{
+  "zh-CN": {
+    "shortDescription": "将 iPhone、iPad 和 Mac 的屏幕投到 Windows 电脑。",
+    "description": "ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示照片、演示文稿、应用操作和其他屏幕内容。\n\n将苹果设备与电脑连接到同一局域网，在苹果设备的“屏幕镜像”中选择 ClearCast，即可开始投屏。\n\n- 接收屏幕画面和声音。\n- 支持全屏显示、画面旋转和等比缩放。\n- 使用验证码配对，并管理已保存的设备。\n\n使用时，两台设备所在的局域网需要允许设备相互访问。"
+  },
+  "en-US": {
+    "shortDescription": "Mirror your iPhone, iPad, or Mac screen to a Windows PC.",
+    "description": "ClearCast turns your Windows PC into an AirPlay receiver, making it easy to show photos, presentations, app demonstrations, and other screen content.\n\nConnect your Apple device and PC to the same local network, then select ClearCast in Screen Mirroring on your Apple device to start mirroring.\n\n- Receive screen video and audio.\n- Use full-screen display, rotate the picture, and scale it while preserving its aspect ratio.\n- Pair using a verification code and manage saved devices.\n\nThe local network must allow the two devices to communicate with each other."
+  }
+}

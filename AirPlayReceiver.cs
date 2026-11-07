@@ -18,7 +18,8 @@ internal enum ReceiverEventKind
     PairingRejected,
     DecoderChanged,
     DecoderChangeFailed,
-    PairingCompleted
+    PairingCompleted,
+    ConnectionRejected
 }
 
 internal readonly record struct ReceiverEvent(ReceiverEventKind Kind, int Width, int Height, int Codec, int ErrorCode);
@@ -93,7 +94,9 @@ internal sealed class AirPlayReceiver
     public static IReadOnlyList<SavedPairing> GetSavedPairings(string root)
     {
         var pairings = new Dictionary<string, SavedPairing>(StringComparer.Ordinal);
-        foreach (var row in ReadPairingRows(PairingPath(root)))
+        // Receiver records are below 1 KiB. Keep a bounded prefix even if a damaged
+        // local file contains an oversized metadata line, while still retaining its key.
+        foreach (var row in ReadPairingRows(PairingPath(root), maximumRowBytes: 4096))
         {
             if (GetPairingKey(row.Span) is not { } id)
                 continue;
@@ -117,23 +120,108 @@ internal sealed class AirPlayReceiver
             return;
 
         string path = PairingPath(root);
-        var rows = ReadPairingRows(path).ToList();
-        if (rows.RemoveAll(row => GetPairingKey(row.Span) == id) == 0)
-            return;
-
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
+            bool removed = false;
             using (var stream = new FileStream(temporary, FileMode.CreateNew))
             {
-                foreach (var row in rows)
-                    stream.Write(row.Span);
+                // Stream complete records so removing one key does not copy the entire
+                // pairing history into memory, and unrelated bytes remain unchanged.
+                foreach (var row in ReadPairingRows(path))
+                {
+                    if (GetPairingKey(row.Span) == id)
+                        removed = true;
+                    else
+                        stream.Write(row.Span);
+                }
             }
-            File.Move(temporary, path, overwrite: true);
+            if (removed)
+                CommitPairingRemoval(root, temporary, path);
         }
         finally
         {
             File.Delete(temporary);
+        }
+    }
+
+    private static void CommitPairingRemoval(string root, string temporary, string path)
+    {
+        // Apple caches the receiver public key. Retire that identity as well as
+        // revoking the client key, so a removed device can request a new PIN.
+        // Keep unique staging files until clients.txt is committed, so any I/O
+        // failure can restore both the live identity and its previous backup.
+        string state = StateDirectory(root);
+        string identity = Path.Combine(state, "receiver.pem");
+        string retired = Path.Combine(state, "receiver.unpaired.pem");
+        string transaction = Guid.NewGuid().ToString("N");
+        string stagedIdentity = identity + "." + transaction + ".tmp";
+        string stagedBackup = retired + "." + transaction + ".tmp";
+        bool identityStaged = false, backupStaged = false, identityRetired = false, committed = false;
+        try
+        {
+            identityStaged = MoveIfPresent(identity, stagedIdentity);
+            if (identityStaged)
+            {
+                backupStaged = MoveIfPresent(retired, stagedBackup);
+                File.Move(stagedIdentity, retired);
+                identityRetired = true;
+            }
+            File.Move(temporary, path, overwrite: true);
+            committed = true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            var rollbackErrors = new List<Exception>();
+            bool identityRestored = !identityStaged;
+            if (identityStaged)
+            {
+                try
+                {
+                    File.Move(identityRetired ? retired : stagedIdentity, identity, overwrite: true);
+                    identityRestored = true;
+                }
+                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException)
+                {
+                    rollbackErrors.Add(rollback);
+                }
+            }
+            // Do not overwrite the only surviving identity if restoring it failed.
+            if (backupStaged && identityRestored)
+            {
+                try { File.Move(stagedBackup, retired, overwrite: true); }
+                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException)
+                {
+                    rollbackErrors.Add(rollback);
+                }
+            }
+            if (rollbackErrors.Count != 0)
+                throw new IOException("Could not restore the pairing identity after a failed removal.",
+                    new AggregateException(new[] { error }.Concat(rollbackErrors)));
+            throw;
+        }
+        finally
+        {
+            if (committed)
+            {
+                // A delayed antivirus scan may hold a retired backup briefly. A
+                // cleanup failure must not turn a completed revocation into an error.
+                try { File.Delete(stagedBackup); }
+                catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    private static bool MoveIfPresent(string source, string destination)
+    {
+        try
+        {
+            File.Move(source, destination);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
         }
     }
 
@@ -154,32 +242,68 @@ internal sealed class AirPlayReceiver
         return Encoding.ASCII.GetString(row[..PairingKeyLength]);
     }
 
-    private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path)
+    private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path, int? maximumRowBytes = null)
     {
-        byte[] bytes;
+        FileStream stream;
         try
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var snapshot = new MemoryStream();
-            stream.CopyTo(snapshot);
-            bytes = snapshot.ToArray();
+            stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {
             yield break;
         }
-        for (int offset = 0; offset < bytes.Length;)
+        using (stream)
+        using (var row = new MemoryStream())
         {
-            int end = Array.IndexOf(bytes, (byte)'\n', offset);
-            int next = end == -1 ? bytes.Length : end + 1;
-            yield return bytes.AsMemory(offset, next - offset);
-            offset = next;
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = stream.Read(buffer)) != 0)
+            {
+                for (int offset = 0; offset < count;)
+                {
+                    int end = Array.IndexOf(buffer, (byte)'\n', offset, count - offset);
+                    int next = end == -1 ? count : end + 1;
+                    int length = next - offset;
+                    int retained = maximumRowBytes is int limit
+                        ? Math.Min(length, Math.Max(0, limit - (int)row.Length)) : length;
+                    row.Write(buffer, offset, retained);
+                    offset = next;
+                    if (end != -1)
+                    {
+                        yield return row.ToArray();
+                        row.SetLength(0);
+                    }
+                }
+            }
+            if (row.Length != 0)
+                yield return row.ToArray();
         }
     }
 
     private static string PairingPath(string root) => Path.Combine(StateDirectory(root), "clients.txt");
 
     private static string StateDirectory(string root) => Path.Combine(root, ".clearcast-state");
+
+    public static string ReadDiagnostics(string root)
+    {
+        try
+        {
+            using var stream = new FileStream(Path.Combine(StateDirectory(root), "receiver.log"),
+                FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            // Keep copied reports small even after a long session.
+            if (stream.Length > 16 * 1024)
+                stream.Seek(-16 * 1024, SeekOrigin.End);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            if (stream.Position > 0)
+                reader.ReadLine();
+            return reader.ReadToEnd();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return "";
+        }
+    }
 
     // A second ClearCast process can browse saved devices, but cannot change keys cached by an active receiver.
     private static FileStream AcquireStateLock(string state) => new(Path.Combine(state, "receiver.lock"),

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../UiText.cs" Link="UiText.cs" />
+    <Compile Include="../../UiText.Dynamic.cs" Link="UiText.Dynamic.cs" />
+    <Compile Include="../../AirPlayReceiver.cs" Link="AirPlayReceiver.cs" />
+    <Compile Include="../../NativeReceiver.cs" Link="NativeReceiver.cs" />
+    <Compile Include="../../ReceiverNetwork.cs" Link="ReceiverNetwork.cs" />
+    <Compile Include="../../ReceiverPreferences.cs" Link="ReceiverPreferences.cs" />
+  </ItemGroup>
+</Project>

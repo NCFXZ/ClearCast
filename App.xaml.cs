@@ -13,7 +13,18 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+#if CLEARCAST_UI_TESTS
+        if (!MainWindow.UiTestsAreConfigured())
+        {
+            Environment.ExitCode = 2;
+            Exit();
+            return;
+        }
+#endif
         window = new MainWindow();
         window.Activate();
+#if CLEARCAST_UI_TESTS
+        window.StartUiTests();
+#endif
     }
 }

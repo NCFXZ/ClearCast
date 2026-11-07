@@ -1,13 +1,18 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="ClearCast" Manufacturer="NCFX" Version="$(var.ReleaseVersion)"
-           UpgradeCode="{6D6518A0-43F2-4C14-BD46-36C04820B3F1}" Scope="perUserOrMachine">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of ClearCast is already installed." />
+           UpgradeCode="{6D6518A0-43F2-4C14-BD46-36C04820B3F1}" Scope="perUser">
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of ClearCast is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <Icon Id="ClearCast.ico" SourceFile="!(bindpath.Payload)\Assets\ClearCast.ico" />
     <Property Id="ARPPRODUCTICON" Value="ClearCast.ico" />
     <Property Id="ARPHELPLINK" Value="https://github.com/NCFXZ/ClearCast/issues" />
-    <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="ClearCast" />
+    <!-- Match the original public installer's default context and directory.
+         Burn 5 cannot safely manage an MSI whose install context changes. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ClearCast" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="{BDA4BA07-86B2-4B3B-AF9C-4CFC55EAF247}">

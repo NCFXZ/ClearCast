@@ -12,6 +12,10 @@ internal sealed partial class UiText
         ["暂时无法接收投屏"] = "Screen mirroring unavailable",
         ["在设备上输入这四位数字。"] = "Enter these four digits on your device.",
         ["配对未通过，请在设备上重试。"] = "Pairing failed. Try again on your device.",
+        ["设备验证未通过，请在苹果设备上重新选择 ClearCast 后重试。"] =
+            "Device verification failed. Select ClearCast again on your Apple device and try again.",
+        ["设备连接未完成，请在苹果设备上重试。可复制详情查看连接记录。"] =
+            "The device couldn't finish connecting. Try again on your Apple device. Copy details to view the connection log.",
         ["正在切换解码方式…"] = "Switching decoding mode…",
         ["画面没有及时更新。请在苹果设备上滑动或切换画面后重试。"] =
             "No new frames arrived in time. Swipe or change what's on your Apple device, then try again.",
@@ -24,16 +28,16 @@ internal sealed partial class UiText
         ["无法读取已保存的配对记录。"] = "Couldn't read saved pairings.",
         ["已删除全部配对记录。设备下次投屏时需要重新验证。"] =
             "All pairings removed. Devices will need a pairing code the next time they connect.",
-        ["已删除该设备的配对记录。该设备下次投屏时需要重新验证。"] =
-            "Pairing removed. The device will need a pairing code the next time it connects.",
+        ["已删除该设备的配对记录。该设备下次投屏时需要重新验证，其他已保存设备也可能需要重新验证。"] =
+            "Pairing removed. This device will need a pairing code next time. Other saved devices may also need to pair again.",
         ["无法删除配对记录，请重试。"] = "Couldn't remove the saved pairings. Try again.",
         ["无法启动接收，请重试。"] = "Couldn't start the receiver. Try again.",
         ["无法停止接收，请重试。"] = "Couldn't stop the receiver. Try again.",
         ["另一个 ClearCast 窗口正在使用接收器。请关闭它后重试。"] =
             "Another ClearCast window is using the receiver. Close it and try again.",
-        ["复制错误详情"] = "Copy error details",
+        ["复制详情"] = "Copy details",
         ["已复制"] = "Copied",
-        ["重试复制"] = "Try copying again",
+        ["重试复制"] = "Try again",
         ["找不到接收组件。请使用完整的 ClearCast 发布文件夹。"] =
             "The receiver component is missing. Use the complete ClearCast release folder.",
         ["无法初始化接收组件的 DLL 搜索路径。"] = "Couldn't initialize the receiver's DLL search path.",

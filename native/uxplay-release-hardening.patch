@@ -1,0 +1,340 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -27,6 +27,7 @@
+ #include <string>
+ #include <algorithm>
+ #include <vector>
++#include <map>
+ #include <array>
+ #include <fstream>
+ #include <sstream>
+@@ -209,6 +210,9 @@
+ static bool registration_list = false;
+ static std::string pairing_register = "";
+ static std::vector <std::string> registered_keys;
++#ifdef CLEARCAST_IN_PROCESS
++static std::map<std::string, std::string> registered_client_metadata;
++#endif
+ static double db_low = -30.0;
+ static double db_high = 0.0;
+ static bool taper_volume = false;
+@@ -3156,50 +3160,56 @@
+ }
+ 
+ extern "C" void register_client(void *cls, const char *device_id, const char *client_pk, const char *client_name) {
+-    if (!registration_list) {
+-      /* we are not maintaining a list of registered clients */
+-        return;
+-    }
+-    LOGI("registered new client: %s DeviceID = %s PK = \n%s", client_name, device_id, client_pk);
++    if (!registration_list || !device_id || !client_pk || !client_name) return;
++#ifdef CLEARCAST_IN_PROCESS
++    char saved_id[257], saved_name[513];
++    const auto copy_field = [](char* output, size_t size, const char* input, bool allow_comma) {
++        const char* end;
++        g_utf8_validate(input, std::min(strlen(input), size - 1), &end);
++        for (; input != end; ++input) {
++            const unsigned char c = *input;
++            *output++ = c < ' ' || c == 0x7f || (!allow_comma && c == ',') ? ' ' : *input;
++        }
++        *output = '\0';
++    };
++    copy_field(saved_id, sizeof(saved_id), device_id, false);
++    copy_field(saved_name, sizeof(saved_name), client_name, true);
++    const std::string metadata = std::string(saved_id) + "," + saved_name;
++    const auto previous = registered_client_metadata.find(client_pk);
++    // A reconnect should not append another identical row or discard a known name.
++    if (previous != registered_client_metadata.end() &&
++        (previous->second == metadata || (!*saved_name && !previous->second.empty()))) return;
++    if (previous == registered_client_metadata.end()) {
++        registered_keys.emplace_back(client_pk);
++        registered_client_metadata.emplace(client_pk, "");
++    }
++    FILE* file = g_fopen(pairing_register.c_str(), "a+b");
++    if (!file) return;
++    time_t raw_time = time(NULL);
++    struct tm *tm_info = localtime(&raw_time);
++    char time_str[20];
++    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
++    if (fseek(file, -1, SEEK_END) == 0) {
++        const bool needs_separator = fgetc(file) != '\n';
++        if (fseek(file, 0, SEEK_END) == 0 && needs_separator) fputc('\n', file);
++    }
++    const bool written = fprintf(file, "%s,%s,%s\n", client_pk, time_str, metadata.c_str()) > 0;
++    const bool closed = fclose(file) == 0;
++    if (written && closed) registered_client_metadata[client_pk] = metadata;
++#else
+     registered_keys.push_back(client_pk);
+-    if (strlen(pairing_register.c_str())) {
+-#ifdef CLEARCAST_IN_PROCESS
+-        FILE *fp = g_fopen(pairing_register.c_str(), "a+b");
+-#else
+-        FILE *fp = fopen600(pairing_register.c_str(), "a");
+-#endif
+-        if (fp) {
++    if (!pairing_register.empty()) {
++        FILE* file = fopen600(pairing_register.c_str(), "a");
++        if (file) {
+             time_t raw_time = time(NULL);
+             struct tm *tm_info = localtime(&raw_time);
+             char time_str[20];
+             strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+-#ifdef CLEARCAST_IN_PROCESS
+-            char saved_id[257], saved_name[513];
+-            const auto copy_field = [](char* output, size_t size, const char* input, bool allow_comma) {
+-                const char* end;
+-                g_utf8_validate(input, std::min(strlen(input), size - 1), &end);
+-                for (; input != end; ++input) {
+-                    const unsigned char c = *input;
+-                    *output++ = c < ' ' || c == 0x7f || (!allow_comma && c == ',') ? ' ' : *input;
+-                }
+-                *output = '\0';
+-            };
+-            copy_field(saved_id, sizeof(saved_id), device_id, false);
+-            copy_field(saved_name, sizeof(saved_name), client_name, true);
+-            // An older key-only record may end at EOF without a line break.
+-            if (fseek(fp, -1, SEEK_END) == 0) {
+-                const bool needs_separator = fgetc(fp) != '\n';
+-                if (fseek(fp, 0, SEEK_END) == 0 && needs_separator) {
+-                    fputc('\n', fp);
+-                }
+-            }
+-            fprintf(fp, "%s,%s,%s,%s\n", client_pk, time_str, saved_id, saved_name);
+-#else
+-            fprintf(fp, "%s,%s,%s,%s\n", client_pk, time_str, device_id, client_name);
+-#endif
+-            fclose(fp);
+-        }
+-    }
++            fprintf(file, "%s,%s,%s,%s\n", client_pk, time_str, device_id, client_name);
++            fclose(file);
++        }
++    }
++#endif
+ }
+ 
+ extern "C" bool check_register(void *cls, const char *client_pk) {
+@@ -3208,6 +3218,9 @@
+         return true;
+     }
+     LOGD("check returning client's pairing registration");
++#ifdef CLEARCAST_IN_PROCESS
++    return client_pk && registered_client_metadata.find(client_pk) != registered_client_metadata.end();
++#else
+     std::string pk = client_pk;
+     if (std::find(registered_keys.rbegin(), registered_keys.rend(), pk) != registered_keys.rend()) {
+         LOGD("registration found: PK=%s", client_pk);
+@@ -3216,6 +3229,7 @@
+         LOGE("returning client's pairing registration not found: PK=%s", client_pk);
+         return false;
+     }
++#endif
+ }
+ 
+ extern "C" void get_custom_profile(void *cls, const char **custom_profile) {
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -141,6 +141,7 @@
+     unsigned short pairing_pin;
+     uint64_t pin_expires_at;
+     uint64_t diagnostic_id;
++    bool diagnostic_skip_response;
+ #endif
+ };
+ typedef struct raop_conn_s raop_conn_t;
+@@ -242,7 +243,9 @@
+     const char *url = http_request_get_url(request);
+     const char *protocol = http_request_get_protocol(request);
+ #ifdef CLEARCAST_IN_PROCESS
+-    clearcast_diagnostic_request(conn->diagnostic_id, method, url);
++    // Successful keepalives are routine and would otherwise cause two disk opens each.
++    conn->diagnostic_skip_response = method && url && !strcmp(method, "POST") && !strcmp(url, "/feedback");
++    if (!conn->diagnostic_skip_response) clearcast_diagnostic_request(conn->diagnostic_id, method, url);
+ #endif
+ 
+     if (!method  || !url || !protocol) {
+@@ -542,7 +545,9 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     int diagnostic_status = 0;
+     if (data && len > 0) sscanf(data, "%*15s %3d", &diagnostic_status);
+-    clearcast_diagnostic_response(conn->diagnostic_id, diagnostic_status);
++    if (!conn->diagnostic_skip_response || diagnostic_status >= 400) {
++        clearcast_diagnostic_response(conn->diagnostic_id, diagnostic_status);
++    }
+ #endif
+     if (response_data && response_datalen > 0) {
+         len -= response_datalen;
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -576,12 +576,14 @@
+     data = (unsigned char *) http_request_get_data(request, &datalen);
+     if (datalen < 4) {
+         logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
++        http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+         return;
+     }
+     switch (data[0]) {
+     case 1:
+         if (datalen != 4 + X25519_KEY_SIZE + ED25519_KEY_SIZE) {
+             logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
++            http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+             return;
+         }
+         const unsigned char *client_key = data + 4 + X25519_KEY_SIZE;
+@@ -623,6 +625,7 @@
+         logger_log(raop->logger, LOGGER_DEBUG, "2nd pair-verify step: checking signature");
+         if (datalen != 4 + PAIRING_SIG_SIZE) {
+             logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
++            http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+             return;
+         }
+ 
+@@ -637,6 +640,9 @@
+         }
+         logger_log(raop->logger, LOGGER_DEBUG, "pair-verify: signature is verified");	    
+         http_response_add_header(response, "Content-Type", "application/octet-stream");
++        break;
++    default:
++        http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+         break;
+     }
+ }
+--- a/lib/httpd.c
++++ b/lib/httpd.c
+@@ -45,6 +45,9 @@
+     http_request_t *request;
+     int pending_remove;
+     time_t last_active;
++#ifdef CLEARCAST_IN_PROCESS
++    time_t request_started;
++#endif
+ };
+ typedef struct http_connection_s http_connection_t;
+ 
+@@ -304,6 +307,18 @@
+         return -1;
+     }
+ 
++#ifdef CLEARCAST_IN_PROCESS
++    // A peer that stops reading must not block the sole control thread or shutdown.
++#ifdef _WIN32
++    DWORD send_timeout = 2000;
++#else
++    struct timeval send_timeout = { 2, 0 };
++#endif
++    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*) &send_timeout, sizeof(send_timeout)) != 0) {
++        CLOSESOCKET(fd);
++        return 0;
++    }
++#endif
+     local_saddrlen = sizeof(local_saddr);
+     ret = getsockname(fd, (struct sockaddr *)&local_saddr, &local_saddrlen);
+     if (ret == -1) {
+@@ -390,6 +405,39 @@
+ 
+         /* Get the correct nfds value and set rfds */
+         FD_ZERO(&rfds);
++        for (int i = 0; i < httpd->max_connections; i++) {
++            int socket_fd;
++            http_connection_t *connection = &httpd->connections[i];
++            if (!connection->connected) {
++                continue;
++            }
++            if (connection->pending_remove) {
++                httpd_remove_connection(httpd, connection, 0);
++                continue;
++            }
++#ifdef CLEARCAST_IN_PROCESS
++            // Receiving a byte occasionally must not keep a partial request alive forever.
++            if (connection->request && connection->type != CONNECTION_TYPE_EVENT &&
++                now - connection->request_started > 15) {
++                httpd_remove_connection(httpd, connection, 0);
++                continue;
++            }
++#endif
++            if (now - connection->last_active > timeout_limit) {
++                logger_log(httpd->logger, LOGGER_WARNING,
++                           "httpd closing dead connection on socket %d after timeout_limit = %d seconds of inactivity",
++                            connection->socket_fd, timeout_limit);
++                httpd_remove_connection(httpd, connection, 0);
++                continue;
++            }
++            socket_fd = connection->socket_fd;
++            FD_SET(socket_fd, &rfds);
++            if (nfds <= socket_fd) {
++                nfds = socket_fd + 1;
++            }
++        }
++
++        /* Timeouts above may have freed every slot; never select an empty set on Windows. */
+         if (httpd->open_connections < httpd->max_connections) {
+             if (httpd->server_fd4 != -1) {
+                 FD_SET(httpd->server_fd4, &rfds);
+@@ -402,29 +450,6 @@
+                 if (nfds <= httpd->server_fd6) {
+                     nfds = httpd->server_fd6+1;
+                 }
+-            }
+-        }
+-        for (int i = 0; i < httpd->max_connections; i++) {
+-            int socket_fd;
+-            http_connection_t *connection = &httpd->connections[i];
+-            if (!connection->connected) {
+-                continue;
+-            }
+-            if (connection->pending_remove) {
+-                httpd_remove_connection(httpd, connection, 0);
+-                continue;
+-            }
+-            if (now - connection->last_active > timeout_limit) {
+-                logger_log(httpd->logger, LOGGER_WARNING,
+-                           "httpd closing dead connection on socket %d after timeout_limit = %d seconds of inactivity",
+-                            connection->socket_fd, timeout_limit);
+-                httpd_remove_connection(httpd, connection, 0);
+-                continue;
+-            }
+-            socket_fd = connection->socket_fd;
+-            FD_SET(socket_fd, &rfds);
+-            if (nfds <= socket_fd) {
+-                nfds = socket_fd + 1;
+             }
+         }
+ 
+@@ -472,6 +497,9 @@
+             /* If not in the middle of request, allocate one */
+             if (!connection->request) {
+                 connection->request = http_request_init();
++#ifdef CLEARCAST_IN_PROCESS
++                connection->request_started = now;
++#endif
+                 if (!connection->request) {
+                     httpd_remove_connection(httpd, connection, 0);
+                     continue;
+@@ -591,8 +619,9 @@
+                     int written = 0;
+                     while (written < datalen) {
+                         int ret = send(connection->socket_fd, data + written, datalen - written, 0);
+-                        if (ret == -1) {
++                        if (ret <= 0) {
+                             logger_log(httpd->logger, LOGGER_ERR, "httpd error in sending data");
++                            http_response_set_disconnect(response, 1);
+                             break;
+                         }
+                         written += ret;
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -29,10 +29,14 @@
+ #ifdef CLEARCAST_IN_PROCESS
+ extern void clearcast_pipeline_error(void);
+ extern void clearcast_set_video_sink(GstElement *sink);
++#include "clearcast_video_context.h"
+ #endif
+ 
+ static GstBusSyncReply
+ window_handle_bus_sync_handler(GstBus *bus, GstMessage *message, gpointer user_data) {
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_video_context_message(message);
++#endif
+     if (gst_is_video_overlay_prepare_window_handle_message(message)) {
+         if (external_window_handle) {
+             GstElement *sink = GST_ELEMENT(GST_MESSAGE_SRC(message));

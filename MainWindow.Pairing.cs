@@ -80,8 +80,8 @@ public sealed partial class MainWindow
                     Text = id is null
                         ? Texts.Get("删除后，所有设备下次投屏时都需要重新验证。",
                             "All saved devices will need a pairing code the next time they connect.")
-                        : Texts.Get($"删除「{name}」的配对记录后，该设备下次投屏时需要重新验证。",
-                            $"“{name}” will need a pairing code the next time it connects.")
+                        : Texts.Get($"删除「{name}」的配对记录后，该设备下次投屏时需要重新验证。其他已保存设备也可能需要重新验证。",
+                            $"“{name}” will need a pairing code the next time it connects. Other saved devices may also need to pair again.")
                 },
                 PrimaryButtonText = Texts.RemovePairing,
                 CloseButtonText = Texts.Get("取消", "Cancel"),
@@ -104,7 +104,7 @@ public sealed partial class MainWindow
             else
             {
                 AirPlayReceiver.RemovePairing(_root, id);
-                ShowPairingResetFeedback("已删除该设备的配对记录。该设备下次投屏时需要重新验证。");
+                ShowPairingResetFeedback("已删除该设备的配对记录。该设备下次投屏时需要重新验证，其他已保存设备也可能需要重新验证。");
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

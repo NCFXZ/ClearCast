@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory)] [string] $MakeAppxPath,
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
-    [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version = '1.0.0'
+    [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version = '1.0.0',
+    [switch] $ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +28,8 @@ foreach ($source in @($publish, $storePublish, $compliance)) {
 }
 
 $files = 'ClearCast.exe', 'ClearCast.dll', 'Assets\ClearCast.png', 'Assets\ClearCast.ico',
-    'LICENSE', 'THIRD-PARTY-NOTICES.md', 'receiver\clearcast_receiver.dll'
+    'LICENSE', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md', 'receiver\clearcast_receiver.dll',
+    'receiver\gstreamer-security-manifest.json'
 foreach ($inputFiles in @(
     @{ Folder = $publish; Files = $files + 'ClearCast.pri' },
     @{ Folder = $storePublish; Files = $files + 'resources.pri' },
@@ -38,6 +40,37 @@ foreach ($inputFiles in @(
             throw "Missing $file in $($inputFiles.Folder)."
         }
     }
+}
+
+$parserNotice = Join-Path $compliance 'licenses\gst-plugins-bad-1.28.9\source-build.json'
+if (-not (Test-Path -LiteralPath $parserNotice)) {
+    throw 'The distribution notices must include the exact rebuilt GStreamer parser source-build.json.'
+}
+$noticeManifest = Get-Content -LiteralPath $parserNotice -Raw | ConvertFrom-Json
+$parserPaths = @('libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll')
+$sourceHash = '4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1'
+foreach ($folder in @($publish, $storePublish)) {
+    $receiver = Join-Path $folder 'receiver'
+    $manifest = Get-Content -LiteralPath (Join-Path $receiver 'gstreamer-security-manifest.json') -Raw | ConvertFrom-Json
+    foreach ($metadata in @($manifest, $noticeManifest)) {
+        if ($metadata.schemaVersion -ne 1 -or $metadata.version -ne '1.28.9' -or
+            $metadata.sourceSha256 -ne $sourceHash -or $metadata.files.Count -ne 2 -or
+            @(Compare-Object $parserPaths @($metadata.files.relativePath)).Count -ne 0) {
+            throw 'The package or notice parser manifest does not match the pinned GStreamer 1.28.9 source/components.'
+        }
+    }
+    foreach ($file in $manifest.files) {
+        $path = Join-Path $receiver $file.relativePath
+        $noticeFile = @($noticeManifest.files | Where-Object relativePath -eq $file.relativePath)
+        if ($noticeFile.Count -ne 1 -or $file.sha256 -ne $noticeFile[0].sha256 -or
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $file.sha256) {
+            throw "The published parser file or distribution notice hash does not match: $path"
+        }
+    }
+}
+if ($ValidateOnly) {
+    [pscustomobject]@{ Validated = $true; Desktop = $publish; Store = $storePublish; Notices = $compliance }
+    return
 }
 
 [void] [IO.Directory]::CreateDirectory($output)
