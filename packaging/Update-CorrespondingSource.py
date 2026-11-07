@@ -187,7 +187,7 @@ def main():
     print(json.dumps({"output": str(args.output.resolve()), "sha256": output_hash,
                       "application_commit": args.commit.lower(), "application_source_sha256": app_hash,
                       "verified_base_members": verified_base_members,
-                      "verified_source_archives": len([name for name in checksums if name.endswith((".zip", ".tar.gz", ".tar.xz", ".tar.zst"))]),
+                      "verified_source_archives": len([name for name in checksums if name.endswith((".zip", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"))]),
                       "additional_sources": {name: sha for name, (_, sha) in additional.items()},
                       "distribution_notice_files": len(notices)}, indent=2))
 
