@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
     [ValidatePattern('^\d+\.\d+\.\d+$')] [string] $Version = '1.1.0',
-    [switch] $ValidateOnly
+    [switch] $ValidateOnly,
+    [switch] $StoreOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -148,6 +149,7 @@ function Copy-Payload([string] $Source, [string] $Destination) {
 }
 
 try {
+    if (-not $StoreOnly) {
     $payload = Join-Path $stage 'installer'
     Copy-Payload $publish $payload
     $msi = Join-Path $stage 'ClearCast.msi'
@@ -158,6 +160,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'WiX failed to build the MSI.' }
     & $wix build (Join-Path $PSScriptRoot 'Bundle.wxs') @wixOptions -ext $balExtension -d "MsiPath=$msi" -o $setup
     if ($LASTEXITCODE -ne 0) { throw 'WiX failed to build the EXE installer.' }
+    }
 
     $store = Join-Path $stage 'store'
     Copy-Payload $storePublish $store
@@ -194,9 +197,10 @@ try {
         throw 'MakeAppx failed to build the Store MSIX.'
     }
 
-    [IO.File]::Move($setup, (Join-Path $output $setupName), $true)
+    if (-not $StoreOnly) { [IO.File]::Move($setup, (Join-Path $output $setupName), $true) }
     [IO.File]::Move($storePackage, (Join-Path $output $storeName), $true)
-    Get-Item -LiteralPath (Join-Path $output $setupName), (Join-Path $output $storeName)
+    if (-not $StoreOnly) { Get-Item -LiteralPath (Join-Path $output $setupName) }
+    Get-Item -LiteralPath (Join-Path $output $storeName)
 } finally {
     $resolved = (Resolve-Path -LiteralPath $stage).Path
     $outputPrefix = (Resolve-Path -LiteralPath $output).Path.TrimEnd('\') + '\'
