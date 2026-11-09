@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
-  <title id="title">ClearCast Light</title>
-  <rect x="21" y="21" width="214" height="214" rx="30" fill="#E7F2FA" stroke="#BED5E6" stroke-width="1.5"/>
-  <path d="M 201 111 V 95 A 18 18 0 0 0 183 77 H 70 A 18 18 0 0 0 52 95 V 147 A 18 18 0 0 0 70 165 H 157" fill="none" stroke="#17334A" stroke-width="11"/>
-  <rect x="112" y="166" width="12" height="16" fill="#17334A"/>
-  <rect x="91" y="179" width="54" height="10" rx="5" fill="#17334A"/>
-  <rect x="167" y="118" width="39" height="71" rx="8.5" fill="#168FB2"/>
-</svg>

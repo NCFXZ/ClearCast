@@ -4,13 +4,19 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin\**;obj\**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../UiText.cs" Link="UiText.cs" />
-    <Compile Include="../../UiText.Dynamic.cs" Link="UiText.Dynamic.cs" />
-    <Compile Include="../../AirPlayReceiver.cs" Link="AirPlayReceiver.cs" />
-    <Compile Include="../../NativeReceiver.cs" Link="NativeReceiver.cs" />
-    <Compile Include="../../ReceiverNetwork.cs" Link="ReceiverNetwork.cs" />
-    <Compile Include="../../ReceiverPreferences.cs" Link="ReceiverPreferences.cs" />
+    <Compile Include="../../src/ClearCast/Localization/UiText.cs" Link="UiText.cs" />
+    <Compile Include="../../src/ClearCast/Localization/UiText.Dynamic.cs" Link="UiText.Dynamic.cs" />
+    <Compile Include="../../src/ClearCast/Services/AirPlayReceiver.cs" Link="AirPlayReceiver.cs" />
+    <Compile Include="../../src/ClearCast/Services/NativeReceiver.cs" Link="NativeReceiver.cs" />
+    <Compile Include="../../src/ClearCast/Services/ReceiverNetwork.cs" Link="ReceiverNetwork.cs" />
+    <Compile Include="../../src/ClearCast/Services/ReceiverPreferences.cs" Link="ReceiverPreferences.cs" />
+    <Compile Include="../../src/ClearCast/Services/ReceiverMediaState.cs" Link="ReceiverMediaState.cs" />
+    <Compile Include="../../src/ClearCast/Controls/MusicPalette.cs" Link="MusicPalette.cs" />
+    <Compile Include="../../src/ClearCast/Controls/MusicMotion.cs" Link="MusicMotion.cs" />
+    <Compile Include="../../src/ClearCast/Controls/ArtworkFlow.cs" Link="ArtworkFlow.cs" />
+    <Compile Include="../../src/ClearCast/Controls/BeatImpulse.cs" Link="BeatImpulse.cs" />
   </ItemGroup>
 </Project>

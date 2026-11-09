@@ -1,0 +1,235 @@
+--- a/lib/stream.h
++++ b/lib/stream.h
+@@ -39,6 +39,9 @@
+     uint64_t ntp_time_remote;
+     uint32_t rtp_time;
+     unsigned short seqnum;
++#ifdef CLEARCAST_IN_PROCESS
++    uint64_t clearcast_source_id;
++#endif
+ } audio_decode_struct;
+ 
+ #endif //AIRPLAYSERVER_STREAM_H
+--- a/lib/raop_rtp.h
++++ b/lib/raop_rtp.h
+@@ -32,6 +32,10 @@
+ raop_rtp_t *raop_rtp_init(logger_t *logger, raop_callbacks_t *callbacks, raop_ntp_t *ntp, const char *remote, 
+                           int remotelen, const unsigned char *aeskey, const unsigned char *aesiv);
+ 
++#ifdef CLEARCAST_IN_PROCESS
++void raop_rtp_set_audio_source(raop_rtp_t *instance, uint64_t source_id);
++#endif
++
+ void raop_rtp_start_audio(raop_rtp_t *raop_rtp, unsigned short *control_rport, unsigned short *control_lport,
+                           unsigned short *data_lport, unsigned char *ct, unsigned int *sr);
+ 
+--- a/lib/raop_rtp.c
++++ b/lib/raop_rtp.c
+@@ -43,6 +43,9 @@
+ struct raop_rtp_s {
+     logger_t *logger;
+     raop_callbacks_t callbacks;
++#ifdef CLEARCAST_IN_PROCESS
++    uint64_t clearcast_source_id; /* Assigned before this instance starts its producer. */
++#endif
+ 
+     // Time and sync
+     raop_ntp_t *ntp;
+@@ -182,6 +185,12 @@
+     MUTEX_CREATE(raop_rtp->run_mutex);
+     return raop_rtp;
+ }
++
++#ifdef CLEARCAST_IN_PROCESS
++void raop_rtp_set_audio_source(raop_rtp_t *instance, uint64_t source_id) {
++    if (instance && !instance->running && !instance->clearcast_source_id) instance->clearcast_source_id = source_id;
++}
++#endif
+ 
+ void
+ raop_rtp_destroy(raop_rtp_t *raop_rtp)
+@@ -653,6 +662,9 @@
+                     audio_data.data_len = payload_size;
+                     audio_data.data = payload;
+                     audio_data.ct = raop_rtp->ct;
++#ifdef CLEARCAST_IN_PROCESS
++                    audio_data.clearcast_source_id = raop_rtp->clearcast_source_id;
++#endif
+                     audio_data.ntp_time_remote = rtp_time_to_client_ntp(raop_rtp, rtp_timestamp);
+                     audio_data.ntp_time_local  = raop_ntp_convert_remote_time(raop_rtp->ntp, audio_data.ntp_time_remote);
+ 
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -1113,6 +1113,9 @@
+         raop_ntp_start(conn->raop_ntp, &timing_lport);
+         conn->raop_rtp = raop_rtp_init(raop->logger, &raop->callbacks, conn->raop_ntp,
+                                        remote, conn->remotelen, aeskey, aesiv);
++#ifdef CLEARCAST_IN_PROCESS
++        raop_rtp_set_audio_source(conn->raop_rtp, conn->diagnostic_id);
++#endif
+         conn->raop_rtp_mirror = raop_rtp_mirror_init(raop->logger, &raop->callbacks,
+                                                      conn->raop_ntp, remote, conn->remotelen, aeskey);
+ 
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -68,7 +68,8 @@
+ namespace { static void clearcast_direct_video_set_volume(double); static void clearcast_direct_video_poll(); }
+ static void clearcast_display_pairing_pin(const char* pin);
+ static void clearcast_poll_video_rotation();
+-static void clearcast_media_audio_packet();
++static void clearcast_media_audio_packet(uint64_t source_id);
++extern "C" uint64_t clearcast_media_audio_activity_epoch_for_source(uint64_t source_id);
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+ extern "C" void clearcast_pipeline_error();
+ extern "C" int clearcast_begin_pairing(const char *pin);
+@@ -2917,7 +2918,7 @@
+ 
+ extern "C" void audio_process (void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
+ #ifdef CLEARCAST_IN_PROCESS
+-    if (data && data->data_len > 0) clearcast_media_audio_packet();
++    if (data && data->data_len > 0) clearcast_media_audio_packet(data->clearcast_source_id);
+ #endif
+     if (dump_audio) {
+         dump_audio_to_file(data->data, data->data_len, (data->data)[0] & 0xf0);
+@@ -2949,7 +2950,12 @@
+         default:
+             break;
+         }
++#ifdef CLEARCAST_IN_PROCESS
++        audio_renderer_render_buffer_with_epoch(data->data, &(data->data_len), &(data->seqnum), &(data->ntp_time_remote),
++            clearcast_media_audio_activity_epoch_for_source(data->clearcast_source_id));
++#else
+         audio_renderer_render_buffer(data->data, &(data->data_len), &(data->seqnum), &(data->ntp_time_remote));
++#endif
+     }
+ }
+ 
+--- a/renderers/audio_renderer.h
++++ b/renderers/audio_renderer.h
+@@ -37,6 +37,9 @@
+ void audio_renderer_start(unsigned char* compression_type);
+ void audio_renderer_stop();
+ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time);
++#ifdef CLEARCAST_IN_PROCESS
++void audio_renderer_render_buffer_with_epoch(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time, uint64_t epoch);
++#endif
+ void audio_renderer_set_volume(double volume);
+ void audio_renderer_flush();
+ void audio_renderer_destroy();
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -24,6 +24,9 @@
+ #include <gst/gst.h>
+ #include <gst/app/gstappsrc.h>
+ #include "audio_renderer.h"
++#ifdef CLEARCAST_IN_PROCESS
++#include "clearcast_audio_activity_gst.h"
++#endif
+ #define SECOND_IN_NSECS 1000000000ULL
+ 
+ #define NFORMATS 2     /* set to 4 to enable AAC_LD and PCM:  allowed, but  never seen in real-world use */
+@@ -49,6 +52,11 @@
+     GstElement *volume;
+     GstBus *bus;
+     unsigned char ct;
++#ifdef CLEARCAST_IN_PROCESS
++    GstPad *activity_pad;
++    gulong activity_probe;
++    ClearCastAudioTap activity_tap;
++#endif
+ } audio_renderer_t ;
+ static audio_renderer_t *renderer_type[NFORMATS];
+ static audio_renderer_t *renderer = NULL;
+@@ -213,6 +221,13 @@
+         renderer_type[i]->volume = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "volume");
+         if (renderer_type[i]->volume) {
+             g_object_set(renderer_type[i]->volume, "volume", volume_level, NULL);
++#ifdef CLEARCAST_IN_PROCESS
++            renderer_type[i]->activity_pad = gst_element_get_static_pad(renderer_type[i]->volume, "sink");
++            if (renderer_type[i]->activity_pad) {
++                renderer_type[i]->activity_probe = clearcast_audio_tap_attach(renderer_type[i]->activity_pad,
++                    &renderer_type[i]->activity_tap);
++            }
++#endif
+         }
+         switch (i) {
+         case 0:
+@@ -249,6 +264,9 @@
+ }
+ 
+ void audio_renderer_stop() {
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_media_audio_activity_boundary();
++#endif
+     if (renderer) {
+         gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
+         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+@@ -293,6 +311,9 @@
+ }
+ 
+ void  audio_renderer_start(unsigned char *ct) {
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_media_audio_activity_boundary();
++#endif
+     int id = -1;
+     get_renderer_type(ct, &id);
+     if (id >= 0 && renderer) {
+@@ -314,7 +335,7 @@
+     }
+ }
+ 
+-void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time) {
++static void clearcast_render_audio_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time, uint64_t activity_epoch) {
+     if (!render_audio || !renderer || !data || !data_len || *data_len <= 0 || !ntp_time) return;
+ 
+     GstClockTime pts = (GstClockTime) *ntp_time ;    /* now in nsecs */
+@@ -369,6 +390,9 @@
+             GST_BUFFER_PTS(buffer) = pts;
+         }
+         gst_buffer_fill(buffer, 0, data, *data_len);
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_audio_epoch_add(buffer, activity_epoch);
++#endif
+ 
+         gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);
+     } else {
+@@ -376,6 +400,15 @@
+         logger_log(logger, LOGGER_ERR, "***       first byte of invalid frame was  0x%2.2x ", (unsigned int) data[0]);
+     }
+ }
++
++void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time) {
++    clearcast_render_audio_buffer(data, data_len, seqnum, ntp_time, 0);
++}
++#ifdef CLEARCAST_IN_PROCESS
++void audio_renderer_render_buffer_with_epoch(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time, uint64_t epoch) {
++    clearcast_render_audio_buffer(data, data_len, seqnum, ntp_time, epoch);
++}
++#endif
+ 
+ void audio_renderer_set_volume(double volume) {
+     if (!renderer) {
+@@ -392,6 +425,10 @@
+ }
+ 
+ void audio_renderer_flush() {
++#ifdef CLEARCAST_IN_PROCESS
++    // Only analysis is reset: preserve the existing audio playback lifecycle.
++    clearcast_media_audio_activity_boundary();
++#endif
+ }
+ 
+ void audio_renderer_destroy() {
+@@ -399,6 +436,12 @@
+     for (int i = 0; i < NFORMATS ; i++ ) {
+         audio_renderer_t *instance = renderer_type[i];
+         if (instance) {
++#ifdef CLEARCAST_IN_PROCESS
++            if (instance->activity_pad) {
++                if (instance->activity_probe) gst_pad_remove_probe(instance->activity_pad, instance->activity_probe);
++                gst_object_unref(instance->activity_pad);
++            }
++#endif
+             if (instance->bus) gst_object_unref(instance->bus);
+             if (instance->volume) gst_object_unref(instance->volume);
+             if (instance->appsrc) gst_object_unref(instance->appsrc);

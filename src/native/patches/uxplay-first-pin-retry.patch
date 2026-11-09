@@ -1,0 +1,41 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -97,6 +97,7 @@
+     unsigned int failed_pin_attempts;
+     unsigned short pending_pairing_pin;
+     int pending_pairing_generation;
++    int latest_pairing_generation;
+     uint64_t pending_pin_expires_at;
+     unsigned char pending_pin_remote[16];
+     int pending_pin_remote_len;
+@@ -726,6 +727,20 @@
+     raop_t *raop = conn->raop;
+     logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");
+ #ifdef CLEARCAST_IN_PROCESS
++    // A sender may try a remembered credential before asking the user for the
++    // displayed PIN, then close that failed SRP socket. Release only this
++    // generation's exclusive claim; never resurrect an obsolete or used code.
++    uint64_t now = GetTickCount64();
++    if (conn->pairing_pin && conn->pairing_generation == raop->latest_pairing_generation &&
++        !raop->pending_pairing_pin && now < conn->pin_expires_at && now >= raop->pin_retry_after &&
++        (conn->remotelen == 4 || conn->remotelen == 16)) {
++        raop->pending_pairing_pin = conn->pairing_pin;
++        raop->pending_pairing_generation = conn->pairing_generation;
++        raop->pending_pin_expires_at = conn->pin_expires_at;
++        memcpy(raop->pending_pin_remote, conn->remote, conn->remotelen);
++        raop->pending_pin_remote_len = conn->remotelen;
++        raop->pending_pin_zone_id = conn->zone_id;
++    }
+     clearcast_diagnostic_closed(conn->diagnostic_id);
+ #endif
+ 
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -329,6 +329,7 @@
+     snprintf(pin, sizeof(pin), "%04u", (unsigned int) pin_4 % 10000u);
+ #ifdef CLEARCAST_IN_PROCESS
+     raop->pending_pairing_generation = clearcast_begin_pairing(pin);
++    raop->latest_pairing_generation = raop->pending_pairing_generation;
+ #else
+     if (raop->callbacks.display_pin) {
+          raop->callbacks.display_pin(raop->callbacks.cls, pin);

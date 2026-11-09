@@ -1,0 +1,51 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -61,2 +61,3 @@
+ static void clearcast_poll_video_rotation();
++static void clearcast_media_audio_packet();
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+@@ -2901,2 +2902,5 @@
+ extern "C" void audio_process (void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
++#ifdef CLEARCAST_IN_PROCESS
++    if (data && data->data_len > 0) clearcast_media_audio_packet();
++#endif
+     if (dump_audio) {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -30,2 +30,9 @@
+ #define MAX_PW_ATTEMPTS 3
++
++#ifdef CLEARCAST_IN_PROCESS
++extern void clearcast_media_audio_setup(uint64_t id, const unsigned char *peer, int peer_len, unsigned int zone,
++    int using_screen, const char *dacp, const char *remote);
++extern void clearcast_media_audio_parameter(uint64_t id, const char *type, const void *buffer, int length);
++extern void clearcast_media_audio_stop(uint64_t id, int ended);
++#endif
+ 
+@@ -1213,2 +1220,6 @@
+ 
++#ifdef CLEARCAST_IN_PROCESS
++                    clearcast_media_audio_setup(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id,
++                        usingScreen, dacp_id, active_remote_header);
++#endif
+                     raop->callbacks.audio_get_format(raop->callbacks.cls, &ct, &spf, &usingScreen, &isMedia, &audioFormat);
+@@ -1324,2 +1335,7 @@
+     data = http_request_get_data(request, &datalen);
++#ifdef CLEARCAST_IN_PROCESS
++    // Keep untrusted metadata out of upstream's unchecked DMAP parser and video renderer.
++    clearcast_media_audio_parameter(conn->diagnostic_id, content_type, data, datalen);
++    if (strcmp(content_type, "text/parameters") || datalen < 8 || !data || memcmp(data, "volume: ", 8)) return;
++#endif
+     if (!strcmp(content_type, "text/parameters")) {
+@@ -1420,2 +1436,5 @@
+     raop_t *raop = conn->raop;
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_media_audio_stop(conn->diagnostic_id, 0);
++#endif
+     const char *rtpinfo = NULL;
+@@ -1468,2 +1487,5 @@
+     logger_log(raop->logger, LOGGER_DEBUG, "TEARDOWN request,  96=%d, 110=%d", teardown_96, teardown_110);
++#ifdef CLEARCAST_IN_PROCESS
++    if (teardown_96 || !teardown_110) clearcast_media_audio_stop(conn->diagnostic_id, 1);
++#endif
+   

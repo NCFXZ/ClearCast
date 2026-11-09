@@ -1,0 +1,491 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -33,6 +33,14 @@
+ #include "raop_ntp.h"
+ 
+ #ifdef CLEARCAST_IN_PROCESS
++#include <windows.h>
++#include <math.h>
++extern void clearcast_media_verified(uint64_t, const unsigned char*, int, unsigned int);
++extern void clearcast_media_closed(uint64_t);
++extern void clearcast_media_remote(uint64_t, const char*, const char*);
++extern bool clearcast_media_peer_verified(const unsigned char*, int, unsigned int);
++extern void clearcast_media_retain_peer(const unsigned char*, int, unsigned int, bool);
++extern bool clearcast_direct_video_uri_allowed(const char*);
+ extern uint64_t clearcast_diagnostic_connected(const char *remote);
+ extern void clearcast_diagnostic_closed(uint64_t id);
+ extern void clearcast_diagnostic_request(uint64_t id, const char *method, const char *path);
+@@ -93,6 +101,11 @@
+     unsigned char pending_pin_remote[16];
+     int pending_pin_remote_len;
+     unsigned int pending_pin_zone_id;
++    SRWLOCK media_owner_lock;
++    unsigned char media_owner_peer[16];
++    int media_owner_peer_len;
++    unsigned int media_owner_zone;
++    char media_owner_session[129];
+ #endif
+   
+      /* public key as string */
+@@ -149,6 +162,66 @@
+ };
+ typedef struct raop_conn_s raop_conn_t;
+ 
++#ifdef CLEARCAST_IN_PROCESS
++static bool clearcast_video_owner_matches(raop_conn_t *conn, const char *session, bool allow_empty) {
++    raop_t *raop = conn->raop;
++    bool matches;
++    AcquireSRWLockShared(&raop->media_owner_lock);
++    matches = !raop->media_owner_peer_len ? allow_empty :
++        session && !strcmp(session, raop->media_owner_session) && conn->remotelen == raop->media_owner_peer_len &&
++        conn->zone_id == raop->media_owner_zone && !memcmp(conn->remote, raop->media_owner_peer, conn->remotelen);
++    ReleaseSRWLockShared(&raop->media_owner_lock);
++    return matches;
++}
++
++static bool clearcast_video_owner_begin(raop_conn_t *conn, const char *session) {
++    raop_t *raop = conn->raop;
++    if (!session || !*session || strlen(session) > 128 || (conn->remotelen != 4 && conn->remotelen != 16) ||
++        !clearcast_media_peer_verified(conn->remote, conn->remotelen, conn->zone_id)) return false;
++    AcquireSRWLockExclusive(&raop->media_owner_lock);
++    bool allowed = !raop->media_owner_peer_len ||
++        (!strcmp(session, raop->media_owner_session) && conn->remotelen == raop->media_owner_peer_len &&
++         conn->zone_id == raop->media_owner_zone && !memcmp(conn->remote, raop->media_owner_peer, conn->remotelen));
++    if (allowed) {
++        memcpy(raop->media_owner_peer, conn->remote, conn->remotelen);
++        raop->media_owner_peer_len = conn->remotelen;
++        raop->media_owner_zone = conn->zone_id;
++        memcpy(raop->media_owner_session, session, strlen(session) + 1);
++    }
++    ReleaseSRWLockExclusive(&raop->media_owner_lock);
++    if (allowed) clearcast_media_retain_peer(conn->remote, conn->remotelen, conn->zone_id, true);
++    return allowed;
++}
++
++void raop_clear_video_owner(raop_t *raop) {
++    if (!raop) return;
++    unsigned char peer[16];
++    int length;
++    unsigned int zone;
++    AcquireSRWLockExclusive(&raop->media_owner_lock);
++    length = raop->media_owner_peer_len;
++    zone = raop->media_owner_zone;
++    memcpy(peer, raop->media_owner_peer, sizeof(peer));
++    raop->media_owner_peer_len = 0;
++    memset(raop->media_owner_session, 0, sizeof(raop->media_owner_session));
++    ReleaseSRWLockExclusive(&raop->media_owner_lock);
++    if (length) clearcast_media_retain_peer(peer, length, zone, false);
++}
++
++static bool clearcast_video_local_playlist(raop_conn_t *conn, const char *method, const char *url) {
++    static const unsigned char v6loopback[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
++    bool loopback = (conn->remotelen == 4 && conn->remote[0] == 127) ||
++        (conn->remotelen == 16 && !memcmp(conn->remote, v6loopback, 16));
++    AcquireSRWLockShared(&conn->raop->media_owner_lock);
++    bool active = conn->raop->media_owner_peer_len != 0;
++    ReleaseSRWLockShared(&conn->raop->media_owner_lock);
++    if (!loopback || !active || strcmp(method, "GET") || !url || url[0] != '/' || strlen(url) > 2048 ||
++        strstr(url, "..") || !strstr(url, ".m3u8")) return false;
++    for (const unsigned char *p = (const unsigned char *)url; *p; ++p) if (*p <= 32 || *p >= 127) return false;
++    return true;
++}
++#endif
++
+ #include "raop_handlers.h"
+ #include "http_handlers.h"
+ 
+@@ -223,6 +296,7 @@
+     raop_conn_t *conn = ptr;
+     raop_t *raop = conn->raop;
+     bool hls_request = false;
++    bool clearcast_http_discovery = false;
+     logger_log(raop->logger, LOGGER_DEBUG, "conn_request");
+     bool logger_debug = (logger_get_level(raop->logger) >= LOGGER_DEBUG);
+     bool logger_debug_data = (logger_get_level(raop->logger) >= LOGGER_DEBUG_DATA);
+@@ -305,8 +379,36 @@
+     const char *client_session_id = http_request_get_header(request, "X-Apple-Session-ID");
+     const char *host = http_request_get_header(request, "Host");
+     hls_request =  (host && !cseq && !client_session_id);
+-
+-    if (conn->connection_type == CONNECTION_TYPE_UNKNOWN
++#ifdef CLEARCAST_IN_PROCESS
++    bool clearcast_media_endpoint = !strcmp(url, "/play") || !strcmp(url, "/reverse") || !strcmp(url, "/stop") ||
++        !strcmp(url, "/action") || !strcmp(url, "/playback-info") || !strcmp(url, "/fp-setup2") ||
++        !strncmp(url, "/scrub", 6) || !strncmp(url, "/rate", 5) || !strncmp(url, "/getProperty", 12) ||
++        !strncmp(url, "/setProperty", 12) || strstr(url, ".m3u8");
++    if (!strncmp(protocol, "HTTP/", 5) || clearcast_media_endpoint || hls_request) {
++        clearcast_http_discovery = !strcmp(url, "/server-info") || !strcmp(url, "/pair-pin-start") ||
++            !strcmp(url, "/pair-setup-pin") || !strcmp(url, "/pair-setup") || !strcmp(url, "/pair-verify");
++        if (clearcast_http_discovery) hls_request = false;
++        bool allowed = clearcast_http_discovery || (hls_request ?
++            !strcmp(protocol, "HTTP/1.1") && clearcast_video_local_playlist(conn, method, url) :
++            client_session_id && *client_session_id && strlen(client_session_id) <= 128 &&
++            clearcast_media_peer_verified(conn->remote, conn->remotelen, conn->zone_id) &&
++            clearcast_video_owner_matches(conn, client_session_id, true));
++        if (!allowed) {
++            *response = http_response_create();
++            http_response_init(*response, protocol, 401, "Unauthorized");
++            http_response_set_disconnect(*response, 1);
++            goto finish;
++        }
++        if (clearcast_media_endpoint && strcmp(protocol, "HTTP/1.1")) {
++            *response = http_response_create();
++            http_response_init(*response, protocol, 505, "HTTP Version Not Supported");
++            http_response_set_disconnect(*response, 1);
++            goto finish;
++        }
++    }
++#endif
++
++    if (conn->connection_type == CONNECTION_TYPE_UNKNOWN && !clearcast_http_discovery
+ #ifdef CLEARCAST_IN_PROCESS
+         // A discovery or pairing connection must not reserve the single media slot.
+         && (!raop->use_pin || !(cseq || ble) ||
+@@ -440,13 +542,15 @@
+         free(header_str);
+     }
+     
+-    if (client_session_id) {
+-        assert(!strcmp(client_session_id, conn->client_session_id));
++    if (client_session_id && conn->client_session_id && strcmp(client_session_id, conn->client_session_id)) {
++        http_response_init(*response, protocol, 400, "Bad Request");
++        http_response_set_disconnect(*response, 1);
++        goto finish;
+     }
+ 
+     logger_log(raop->logger, LOGGER_DEBUG, "Handling request %s with URL %s", method, url);
+     raop_handler_t handler = NULL;
+-    if (!hls_request && !strcmp(protocol, "RTSP/1.0")) {
++    if (!hls_request && (!strcmp(protocol, "RTSP/1.0") || clearcast_http_discovery)) {
+ #ifdef CLEARCAST_IN_PROCESS
+         if (raop->use_pin && !pairing_session_is_verified(conn->session) &&
+             (!strcmp(method, "SETUP") || !strcmp(method, "RECORD") || !strcmp(method, "FLUSH") ||
+@@ -473,7 +577,9 @@
+                 handler = &raop_handler_audiomode;
+             }
+         } else if (!strcmp(method, "GET")) {
+-            if (strstr(url, "/info")) {
++            if (clearcast_http_discovery && !strcmp(url, "/server-info")) {
++                handler = &http_handler_server_info;
++            } else if (strstr(url, "/info")) {
+                 handler = &raop_handler_info;
+             }
+         } else if (!strcmp(method, "OPTIONS")) {
+@@ -517,6 +623,8 @@
+             if (!strcmp(url, "/server-info")) {
+                 raop->hls_pending = true;
+                 handler = &http_handler_server_info;
++            } else if (!strcmp(url, "/scrub")) {
++                handler = &http_handler_scrub_info;
+             } else if (!strcmp(url, "/playback-info")) {
+                 handler = &http_handler_playback_info;
+             }
+@@ -531,6 +639,13 @@
+ 
+     if (handler != NULL) {
+         handler(conn, request, *response, &response_data, &response_datalen);
++#ifdef CLEARCAST_IN_PROCESS
++        if (pairing_session_is_verified(conn->session)) {
++            clearcast_media_verified(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id);
++            clearcast_media_remote(conn->diagnostic_id, http_request_get_header(request, "DACP-ID"),
++                http_request_get_header(request, "Active-Remote"));
++        }
++#endif
+     } else {
+         logger_log(raop->logger, LOGGER_INFO,
+                    "Unhandled Client Request: %s %s %s", method, url, protocol);
+@@ -634,6 +749,9 @@
+     }
+ 
+     free(conn->local);
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_media_closed(conn->diagnostic_id);
++#endif
+     free(conn->remote);
+     pairing_session_destroy(conn->session);
+     fairplay_destroy(conn->fairplay);
+--- a/lib/raop.h
++++ b/lib/raop.h
+@@ -154,6 +154,9 @@
+ RAOP_API void raop_destroy(raop_t *raop);
+ RAOP_API void raop_remove_known_connections(raop_t * raop);
+ RAOP_API void raop_remove_hls_connections(raop_t * raop);
++#ifdef CLEARCAST_IN_PROCESS
++RAOP_API void raop_clear_video_owner(raop_t *raop);
++#endif
+ RAOP_API void raop_destroy_airplay_video(raop_t *raop, int id);
+ RAOP_API void raop_playlist_remove(raop_t *raop, void *airplay_video, float position);
+ #ifdef __cplusplus
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -106,47 +106,49 @@
+     free(hw_addr);
+ }    
+ 
++static bool clearcast_http_number(const char *url, const char *prefix, double *value) {
++    if (!url || strncmp(url, prefix, strlen(prefix))) return false;
++    const char *number = url + strlen(prefix);
++    char *end = NULL;
++    *value = strtod(number, &end);
++    return end && end != number && !*end && isfinite(*value) && *value >= 0 && *value <= 7 * 86400;
++}
++
+ static void
+ http_handler_scrub(raop_conn_t *conn, http_request_t *request, http_response_t *response,
+                    char **response_data, int *response_datalen) {
+-    raop_t *raop = conn->raop;
+-    const char *url = http_request_get_url(request);
+-    const char *data = strstr(url, "?");
+-    float scrub_position = 0.0f;
+-    if (data) {
+-        data++;
+-        const char *position = strstr(data, "=") + 1;
+-        char *end = NULL;
+-        double value = strtod(position, &end);
+-        if (end && end != position) {
+-            scrub_position = (float) value;
+-            logger_log(raop->logger, LOGGER_DEBUG, "http_handler_scrub: got position = %.6f",
+-                       scrub_position);	  
+-        }
+-    }
+-    logger_log(raop->logger, LOGGER_DEBUG, "**********************SCRUB %f ***********************",scrub_position);
+-    raop->callbacks.on_video_scrub(raop->callbacks.cls, scrub_position);
++    double position;
++    if (!clearcast_http_number(http_request_get_url(request), "/scrub?position=", &position)) {
++        http_response_init(response, "HTTP/1.1", 400, "Bad Request");
++        return;
++    }
++    conn->raop->callbacks.on_video_scrub(conn->raop->callbacks.cls, (float)position);
+ }
+ 
+ static void
+ http_handler_rate(raop_conn_t *conn, http_request_t *request, http_response_t *response,
+                   char **response_data, int *response_datalen) {
+-
+-    raop_t *raop = conn->raop;
+-    const char *url = http_request_get_url(request);
+-    const char *data = strstr(url, "?");
+-    float rate_value = 0.0f;
+-    if (data) {
+-        data++;
+-        const char *rate = strstr(data, "=") + 1;
+-        char *end = NULL;
+-        float value = strtof(rate, &end);
+-        if (end && end != rate) {
+-            rate_value =  value;
+-            logger_log(raop->logger, LOGGER_DEBUG, "http_handler_rate: got rate = %.6f", rate_value);
+-        }
+-    }
+-    raop->callbacks.on_video_rate(raop->callbacks.cls, rate_value);
++    double rate;
++    if (!clearcast_http_number(http_request_get_url(request), "/rate?value=", &rate) || (rate != 0 && rate != 1)) {
++        http_response_init(response, "HTTP/1.1", 400, "Bad Request");
++        return;
++    }
++    conn->raop->callbacks.on_video_rate(conn->raop->callbacks.cls, (float)rate);
++}
++
++static void
++http_handler_scrub_info(raop_conn_t *conn, http_request_t *request, http_response_t *response,
++                       char **response_data, int *response_datalen) {
++    playback_info_t info = {0};
++    conn->raop->callbacks.on_video_acquire_playback_info(conn->raop->callbacks.cls, &info);
++    char data[128];
++    int length = snprintf(data, sizeof(data), "duration: %.6f\nposition: %.6f\n", info.duration, info.position);
++    if (length < 0 || length >= (int)sizeof(data)) return;
++    *response_data = malloc(length + 1);
++    if (!*response_data) return;
++    memcpy(*response_data, data, length + 1);
++    *response_datalen = length;
++    http_response_add_header(response, "Content-Type", "text/parameters");
+ }
+ 
+ static void
+@@ -721,14 +723,21 @@
+          goto play_error;
+     }
+ 
++    if (request_datalen <= 0 || request_datalen > 65536) goto play_error;
+     plist_from_bin(request_data, request_datalen, &req_root_node);
++    if (!req_root_node || plist_get_node_type(req_root_node) != PLIST_DICT) goto play_error;
+ 
+     plist_t req_uuid_node = plist_dict_get_item(req_root_node, "uuid");
+     if (!req_uuid_node) {
+        goto play_error;
+     }
+     char* playback_uuid = NULL;
++    if (plist_get_node_type(req_uuid_node) != PLIST_STRING) goto play_error;
+     plist_get_string_val(req_uuid_node, &playback_uuid);
++    if (!playback_uuid || !*playback_uuid || strlen(playback_uuid) > 128) {
++        plist_mem_free(playback_uuid);
++        goto play_error;
++    }
+ 
+ #if 0
+     for (int i = 0; i < MAX_AIRPLAY_VIDEO; i++) {
+@@ -761,6 +770,9 @@
+             goto play_error;
+         }
+         set_apple_session_id(airplay_video, apple_session_id, strlen(apple_session_id));
++#ifdef CLEARCAST_IN_PROCESS
++        if (!clearcast_video_owner_begin(conn, apple_session_id)) goto play_error;
++#endif
+         float resume_pos = get_resume_position_seconds(airplay_video);
+         float start_pos = get_start_position_seconds(airplay_video);
+ 	//printf("========= %f ============call on_video_play===== %f ==========\n", start_pos, resume_pos);
+@@ -834,7 +846,9 @@
+     if (!req_content_location_node) {
+         goto play_error;
+     } else {
++        if (plist_get_node_type(req_content_location_node) != PLIST_STRING) goto play_error;
+         plist_get_string_val(req_content_location_node, &playback_location);
++        if (!playback_location || !*playback_location || strlen(playback_location) > 4096) goto play_error;
+     }
+     /* we support HLS playlists if the playback location is terminated by "/master.m3u8", otherwise pass location to player */
+     const char *uri_suffix = strstr(playback_location, "/master.m3u8");    
+@@ -847,19 +861,38 @@
+          plist_get_real_val(req_start_position_seconds_node, &start_position);
+          start_position_seconds = (float) start_position;
+     }
++    if (!isfinite(start_position_seconds) || start_position_seconds < 0 || start_position_seconds > 7 * 86400) goto play_error;
+     set_start_position_seconds(airplay_video, (float) start_position_seconds);
++#ifdef CLEARCAST_IN_PROCESS
++    bool direct_http = !strncmp(playback_location, "http://", 7) || !strncmp(playback_location, "https://", 8);
++    if ((direct_http ? !clearcast_direct_video_uri_allowed(playback_location) :
++         !uri_suffix || strncmp(playback_location, "mlhls://", strlen("mlhls://"))) ||
++        !clearcast_video_owner_begin(conn, apple_session_id)) goto play_error;
++#endif
+ 
+     /* we now also support playing video from direct Content-Location sources  (such as Safari on iOS/macOS via airplay button)) */ 
+     if (!strncmp(playback_location, "http://", strlen("http://")) ||
+         !strncmp(playback_location, "https://", strlen("https://"))) {
++#ifdef CLEARCAST_IN_PROCESS
++        if (!clearcast_direct_video_uri_allowed(playback_location)) goto play_error;
++#endif
+         set_playback_location(airplay_video, playback_location, strlen(playback_location));
+         raop->callbacks.on_video_play(raop->callbacks.cls,
+                                       get_playback_location(airplay_video),
+                                       start_position_seconds);
+-    } else if (uri_suffix) {
++    } else if (uri_suffix
++#ifdef CLEARCAST_IN_PROCESS
++               && !strncmp(playback_location, "mlhls://", strlen("mlhls://"))
++#endif
++    ) {
+         plist_t req_client_proc_name_node = plist_dict_get_item(req_root_node, "clientProcName");
+         if (req_client_proc_name_node) {
++            if (plist_get_node_type(req_client_proc_name_node) != PLIST_STRING) goto play_error;
+             plist_get_string_val(req_client_proc_name_node, &client_proc_name);
++            if (!client_proc_name || strlen(client_proc_name) > 128) {
++                plist_mem_free(client_proc_name);
++                goto play_error;
++            }
+             if (!strstr(supported_hls_proc_names, client_proc_name)){
+                 logger_log(raop->logger, LOGGER_WARNING, "Unsupported m3u8 HLS streaming format: clientProcName %s not found in supported list: %s",
+                            client_proc_name, supported_hls_proc_names);
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -57,6 +57,15 @@
+ #include <glib/gstdio.h>
+ static std::atomic<bool> clearcast_stopping(false);
+ static void clearcast_mirror_running(bool running);
++extern "C" void clearcast_direct_video_play(const char*, float);
++extern "C" void clearcast_direct_video_seek(float);
++extern "C" void clearcast_direct_video_rate(float);
++extern "C" void clearcast_direct_video_stop();
++extern "C" float clearcast_direct_video_playlist_remove();
++struct playback_info_s;
++extern "C" void clearcast_direct_video_info(struct playback_info_s*);
++extern "C" bool clearcast_direct_video_uri_allowed(const char*);
++namespace { static void clearcast_direct_video_set_volume(double); static void clearcast_direct_video_poll(); }
+ static void clearcast_display_pairing_pin(const char* pin);
+ static void clearcast_poll_video_rotation();
+ static void clearcast_mirror_geometry(int width, int height, bool hevc);
+@@ -749,6 +758,7 @@
+         g_main_loop_quit((GMainLoop *) loop);
+         return G_SOURCE_CONTINUE;
+     }
++    clearcast_direct_video_poll();
+ #endif
+     if (reset_loop) {
+         g_main_loop_quit((GMainLoop *) loop);
+@@ -2691,6 +2701,12 @@
+ //to be simplified
+ 
+ extern "C" void video_reset(void *cls, reset_type_t type) {
++#ifdef CLEARCAST_IN_PROCESS
++    if (type == RESET_TYPE_HLS_EOS || type == RESET_TYPE_HLS_SHUTDOWN) {
++        clearcast_direct_video_stop();
++        return;
++    }
++#endif
+     switch (type) {
+     case RESET_TYPE_NOHOLD:
+         LOGD("video_reset: type = NoHold");
+@@ -3044,6 +3060,9 @@
+     }
+     audio_renderer_set_volume(gst_volume);
+     video_renderer_hls_set_volume(gst_volume);
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_direct_video_set_volume(gst_volume);
++#endif
+     LOGI("AirPlay volume %.1f dB (slider %.0f%%): GStreamer volume %.3f", (double) volume, 100.0 * frac, gst_volume);
+ }
+ 
+@@ -3366,12 +3385,21 @@
+ #elif defined(DBUS)
+     raop_cbs.mirror_video_running = mirror_video_running;
+ #endif
++#ifdef CLEARCAST_IN_PROCESS
++    raop_cbs.on_video_play = [](void*, const char* uri, float position) { clearcast_direct_video_play(uri, position); };
++    raop_cbs.on_video_scrub = [](void*, float position) { clearcast_direct_video_seek(position); };
++    raop_cbs.on_video_rate = [](void*, float rate) { clearcast_direct_video_rate(rate); };
++    raop_cbs.on_video_stop = [](void*) { clearcast_direct_video_stop(); };
++    raop_cbs.on_video_playlist_remove = [](void*) { return clearcast_direct_video_playlist_remove(); };
++    raop_cbs.on_video_acquire_playback_info = [](void*, playback_info_t* info) { clearcast_direct_video_info(info); };
++#else
+     raop_cbs.on_video_play = on_video_play;
+     raop_cbs.on_video_scrub = on_video_scrub;
+     raop_cbs.on_video_rate = on_video_rate;
+     raop_cbs.on_video_stop = on_video_stop;
+     raop_cbs.on_video_playlist_remove = on_video_playlist_remove;
+     raop_cbs.on_video_acquire_playback_info = on_video_acquire_playback_info;
++#endif
+ 
+     raop = raop_init(&raop_cbs);
+     if (raop == NULL) {
+--- a/renderers/video_renderer.h
++++ b/renderers/video_renderer.h
+@@ -32,6 +32,7 @@
+ #endif
+ 
+ #include <stdlib.h>
++#include <gst/gst.h>
+ #include <stdint.h>
+ #include <stdbool.h>
+ #include "../lib/logger.h"
+@@ -96,6 +97,10 @@
+ bool video_renderer_eos_watch();
+ void video_renderer_hls_set_volume(double volume);
+ void video_renderer_set_window_handle(uintptr_t handle);
++#ifdef CLEARCAST_IN_PROCESS
++void clearcast_video_watch_pipeline(GstElement *pipeline);
++void clearcast_video_handle_context(GstMessage *message);
++#endif
+ bool gstreamer_decoder_check(const char *decoder);
+ #ifdef __cplusplus
+ }
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -30,6 +30,11 @@
+ extern void clearcast_pipeline_error(void);
+ extern void clearcast_set_video_sink(GstElement *sink);
+ #include "clearcast_video_context.h"
++#endif
++
++#ifdef CLEARCAST_IN_PROCESS
++void clearcast_video_watch_pipeline(GstElement *pipeline) { clearcast_video_context_watch(pipeline); }
++void clearcast_video_handle_context(GstMessage *message) { clearcast_video_context_message(message); }
+ #endif
+ 
+ static GstBusSyncReply

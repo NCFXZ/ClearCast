@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="ClearCast" Manufacturer="NCFX" Version="$(var.ReleaseVersion)"
+  <Package Name="ClearCast" Manufacturer="NCFX" Version="$(var.MsiVersion)"
            UpgradeCode="{6D6518A0-43F2-4C14-BD46-36C04820B3F1}" Scope="perUser">
     <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of ClearCast is already installed." />

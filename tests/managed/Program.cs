@@ -136,17 +136,206 @@ static object RunTests(string root)
     Check(!File.Exists(clients) && AirPlayReceiver.GetSavedPairings(root).Count == 0, "clear pairings and missing file");
 
     string preferences = Path.Combine(state, "preferences.json");
-    File.WriteAllText(preferences, "{\"Decoder\":999,\"Theme\":999,\"Language\":999,\"OriginalSize\":true}");
+    Check(!new ReceiverPreferences().AutoFullScreen, "automatic full screen defaults off");
+    File.WriteAllText(preferences, "{\"Decoder\":1,\"Theme\":2,\"Language\":1,\"OriginalSize\":true}");
     var settings = ReceiverPreferences.Load(root);
-    Check(settings.Decoder == DecoderMode.Automatic && settings.Theme == AppTheme.System && settings.Language == AppLanguage.SimplifiedChinese && settings.OriginalSize, "invalid saved enums replaced with defaults");
+    Check(settings == new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English),
+        "legacy preferences preserve existing values and leave automatic full screen off");
+    File.WriteAllText(preferences, "{\"Decoder\":999,\"Theme\":999,\"Language\":999,\"OriginalSize\":true,\"AutoFullScreen\":true}");
+    settings = ReceiverPreferences.Load(root);
+    Check(settings.Decoder == DecoderMode.Automatic && settings.Theme == AppTheme.System && settings.Language == AppLanguage.SimplifiedChinese && settings.OriginalSize && settings.AutoFullScreen, "invalid saved enums replaced with defaults while boolean preferences survive");
     File.WriteAllText(preferences, "{broken json");
     Check(ReceiverPreferences.Load(root) == new ReceiverPreferences(), "malformed settings recover");
-    settings = new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English);
+    settings = new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English, AutoFullScreen: true);
     settings.Save(root);
     Check(ReceiverPreferences.Load(root) == settings, "settings round trip");
-    settings = settings with { Theme = AppTheme.Light };
+    settings = settings with { Theme = AppTheme.Light, AutoFullScreen = false };
     settings.Save(root);
     Check(ReceiverPreferences.Load(root) == settings && Directory.GetFiles(state, "*.tmp").Length == 0, "settings atomic overwrite and cleanup");
+
+    var mediaSnapshot = new
+    {
+        revision = 7UL, kind = "audio", playing = true, title = "曲目🎵", artist = "演奏者", album = "专辑",
+        positionMs = 7_000L, durationMs = 120_000L, artworkRevision = 3UL, artworkBytes = 512, controls = 7UL
+    };
+    byte[] MediaJson<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value);
+    byte[] validMedia = MediaJson(mediaSnapshot);
+    string validMediaJson = Encoding.UTF8.GetString(validMedia);
+    Check(ReceiverMediaState.Empty.Kind == ReceiverMediaKind.None && !ReceiverMediaState.Empty.Playing &&
+        ReceiverMediaState.Empty.Controls == MediaControls.None && ReceiverMediaState.Empty.PositionAt(TimeSpan.MaxValue) == 0,
+        "empty media has no playback or controls");
+    Check(ReceiverMediaState.TryParse(validMedia, out var media) && media.Revision == 7 &&
+        media.Kind == ReceiverMediaKind.Audio && media.Playing && media.Title == "曲目🎵" && media.Artist == "演奏者" &&
+        media.Album == "专辑" && media.PositionMs == 7_000 && media.DurationMs == 120_000 && media.ArtworkRevision == 3 &&
+        media.ArtworkBytes == 512 && media.Controls == (MediaControls.PlayPause | MediaControls.Previous | MediaControls.Next),
+        "complete UTF-8 media snapshot parses without losing metadata");
+    Check(media.Session == 0, "media snapshots without the optional session remain compatible");
+    Check(media.Connected && !ReceiverMediaState.Empty.Connected &&
+        ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "video" }), out var legacyVideoConnection) && legacyVideoConnection.Connected &&
+        ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "none" }), out var legacyIdleConnection) && !legacyIdleConnection.Connected,
+        "legacy snapshots infer connection from media while the empty state remains disconnected");
+    byte[] ConnectionJson(string connected, string? source = null) => Encoding.UTF8.GetBytes(
+        (source ?? validMediaJson)[..^1] + ",\"connected\":" + connected + "}");
+    string idleMediaJson = Encoding.UTF8.GetString(MediaJson(mediaSnapshot with { kind = "none" }));
+    Check(ReceiverMediaState.TryParse(ConnectionJson("true", idleMediaJson), out var idleConnected) &&
+        idleConnected.Connected && idleConnected.Kind == ReceiverMediaKind.None && !idleConnected.Playing && idleConnected.Controls == MediaControls.None,
+        "authenticated idle connection is independent of media playback and capabilities");
+    Check(ReceiverMediaState.TryParse(ConnectionJson("false", idleMediaJson), out var idleDisconnected) && !idleDisconnected.Connected &&
+        idleDisconnected.Revision == idleConnected.Revision,
+        "connection can change without a metadata revision");
+    Check(ReceiverMediaState.TryParse(ConnectionJson("false"), out var explicitDisconnected) && !explicitDisconnected.Connected &&
+        ReceiverMediaState.TryParse(ConnectionJson("true", validMediaJson.Replace("\"playing\":true", "\"playing\":false")), out var pausedConnection) &&
+        pausedConnection.Connected && !pausedConnection.Playing,
+        "explicit connection state remains authoritative during playback or pause");
+    foreach (string invalidConnection in new[] { "null", "0", "1", "\"true\"", "{}", "[]", "true,\"connected\":false" })
+        Check(!ReceiverMediaState.TryParse(ConnectionJson(invalidConnection), out var rejectedConnection) &&
+            rejectedConnection == ReceiverMediaState.Empty,
+            "nonboolean or duplicate connection state is rejected without partial state");
+    Check(media.AudioActivity == default && !media.AudioActivity.IsFresh(TimeSpan.Zero),
+        "legacy media without audio analysis uses non-reactive background motion");
+    byte[] ActivityJson(string activity, string? source = null) => Encoding.UTF8.GetBytes(
+        (source ?? validMediaJson)[..^1] + ",\"audioActivity\":" + activity + "}");
+    const string validActivity = """{"valid":true,"energy":0.125,"density":0.75,"ageMs":25}""";
+    Check(ReceiverMediaState.TryParse(ActivityJson(validActivity), out var rhythmicMedia) &&
+        rhythmicMedia.AudioActivity == new ReceiverAudioActivity(true, 0.125f, 0.75f, 25),
+        "normalized decoded-audio activity parses independently of metadata and session revision");
+    Check(rhythmicMedia.AudioActivity.IsFresh(TimeSpan.Zero) &&
+        rhythmicMedia.AudioActivity.IsFresh(TimeSpan.FromMilliseconds(874)) &&
+        !rhythmicMedia.AudioActivity.IsFresh(TimeSpan.FromMilliseconds(875)),
+        "native sample age and local elapsed time expire activity at the shared 900ms deadline");
+    Check(rhythmicMedia.AudioActivity.IsFresh(TimeSpan.FromSeconds(-1)) &&
+        !rhythmicMedia.AudioActivity.IsFresh(TimeSpan.MaxValue),
+        "activity freshness handles negative and extreme elapsed time without overflow");
+    Check(ReceiverMediaState.TryParse(ActivityJson("""{"valid":true,"energy":0,"density":1,"ageMs":900}"""), out var staleActivity) &&
+        !staleActivity.AudioActivity.IsFresh(TimeSpan.Zero), "stale decoded-audio windows cannot drive motion");
+    Check(ReceiverMediaState.TryParse(ActivityJson("""{"valid":false,"energy":1,"density":1,"ageMs":2147483647}"""), out var invalidActivity) &&
+        invalidActivity.AudioActivity == default, "invalid analysis is normalized to an empty activity");
+    foreach (string suppressedSource in new[] { validMediaJson.Replace("\"playing\":true", "\"playing\":false"),
+        validMediaJson.Replace("\"kind\":\"audio\"", "\"kind\":\"video\""),
+        validMediaJson.Replace("\"kind\":\"audio\"", "\"kind\":\"none\"") })
+        Check(ReceiverMediaState.TryParse(ActivityJson(validActivity, suppressedSource), out var suppressedActivity) &&
+            suppressedActivity.AudioActivity == default, "paused or non-audio media suppresses retained activity");
+    foreach (string invalidAnalysis in new[]
+    {
+        "null", "[]", "{}",
+        """{"valid":1,"energy":0,"density":0,"ageMs":0}""",
+        """{"valid":true,"energy":-0.01,"density":0,"ageMs":0}""",
+        """{"valid":true,"energy":1.00000001,"density":0,"ageMs":0}""",
+        """{"valid":true,"energy":1e400,"density":0,"ageMs":0}""",
+        """{"valid":true,"energy":"0.5","density":0,"ageMs":0}""",
+        """{"valid":true,"energy":0,"density":1.0001,"ageMs":0}""",
+        """{"valid":true,"energy":0,"density":0,"density":1,"ageMs":0}""",
+        """{"valid":true,"energy":0,"density":0,"ageMs":-1}""",
+        """{"valid":true,"energy":0,"density":0,"ageMs":0.5}""",
+        """{"valid":true,"energy":0,"density":0,"ageMs":2147483648}"""
+    })
+        Check(!ReceiverMediaState.TryParse(ActivityJson(invalidAnalysis), out _),
+            "malformed, non-finite, duplicate, or out-of-bounds audio analysis is rejected");
+    Check(!new ReceiverAudioActivity(true, float.NaN, 0, 0).IsFresh(TimeSpan.Zero) &&
+        !new ReceiverAudioActivity(true, 0, float.PositiveInfinity, 0).IsFresh(TimeSpan.Zero),
+        "invalid in-process activity values cannot enable reactive motion");
+    MusicMotionTests.Run(Check);
+    BeatImpulseTests.Run(Check);
+    MediaBeatTests.Run(Check);
+    ArtworkFlowTests.Run(Check);
+    Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":18446744073709551615}"), out var sessionMedia) &&
+        sessionMedia.Session == ulong.MaxValue && sessionMedia.Title == media.Title,
+        "audio session identity accepts the full unsigned 64-bit range");
+    Check(ReceiverMediaState.TryParse(validMedia.Concat(new byte[] { 0 }).ToArray(), out var terminatedMedia) && terminatedMedia == media,
+        "native NUL-terminated media snapshot parses");
+    Check(media.PositionAt(TimeSpan.FromMilliseconds(1_500)) == 8_500 && media.PositionAt(TimeSpan.FromTicks(9_999)) == 7_000,
+        "playing audio extrapolates whole milliseconds");
+    Check(media.PositionAt(TimeSpan.MaxValue) == 120_000 && media.PositionAt(TimeSpan.FromSeconds(-1)) == 7_000,
+        "audio progress clamps at duration and never rewinds for negative elapsed time");
+    Check((media with { Playing = false }).PositionAt(TimeSpan.FromSeconds(5)) == 7_000,
+        "paused audio progress remains fixed");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "video" }), out var videoMedia) &&
+        videoMedia.Playing && videoMedia.Controls == MediaControls.None && videoMedia.PositionAt(TimeSpan.FromSeconds(5)) == 7_000,
+        "video preserves playback state without audio controls or extrapolation");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "none" }), out var noMedia) &&
+        !noMedia.Playing && noMedia.Controls == MediaControls.None,
+        "no-media snapshots cannot enable playback or transport controls");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { controls = 0xFFFFUL }), out var maskedMedia) &&
+        maskedMedia.Controls == (MediaControls.PlayPause | MediaControls.Previous | MediaControls.Next),
+        "unknown transport capability bits are masked");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { positionMs = long.MaxValue }), out var endedMedia) && endedMedia.PositionMs == 120_000,
+        "overshooting snapshot position clamps to track duration");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { positionMs = -1L }), out var negativeMedia) && negativeMedia.PositionMs == 0,
+        "negative snapshot position clamps to zero");
+    const long sevenDaysMs = 7L * 24 * 60 * 60 * 1000;
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { durationMs = 0L, positionMs = long.MaxValue }), out var unboundedMedia) &&
+        unboundedMedia.PositionMs == sevenDaysMs && unboundedMedia.PositionAt(TimeSpan.MaxValue) == sevenDaysMs,
+        "unknown duration remains bounded without arithmetic overflow");
+    Check(ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { durationMs = sevenDaysMs, artworkBytes = 2 * 1024 * 1024,
+        revision = ulong.MaxValue, artworkRevision = ulong.MaxValue, title = new string('x', 1024) }), out var limitsMedia) &&
+        limitsMedia.Revision == ulong.MaxValue && limitsMedia.ArtworkRevision == ulong.MaxValue,
+        "media duration artwork text and revision boundary values are accepted");
+
+    var invalidMediaCases = new (string Name, byte[] Json)[]
+    {
+        ("empty", Array.Empty<byte>()),
+        ("malformed", Encoding.UTF8.GetBytes("{broken")),
+        ("array root", Encoding.UTF8.GetBytes("[]")),
+        ("null root", Encoding.UTF8.GetBytes("null")),
+        ("missing field", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"durationMs\":120000,", ""))),
+        ("unknown kind", MediaJson(mediaSnapshot with { kind = "other" })),
+        ("negative revision", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"revision\":7", "\"revision\":-1"))),
+        ("overflow revision", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"revision\":7", "\"revision\":18446744073709551616"))),
+        ("nonboolean playing", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"playing\":true", "\"playing\":1"))),
+        ("fractional position", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"positionMs\":7000", "\"positionMs\":7000.5"))),
+        ("negative duration", MediaJson(mediaSnapshot with { durationMs = -1L })),
+        ("oversized duration", MediaJson(mediaSnapshot with { durationMs = sevenDaysMs + 1 })),
+        ("negative artwork", MediaJson(mediaSnapshot with { artworkBytes = -1 })),
+        ("oversized artwork", MediaJson(mediaSnapshot with { artworkBytes = 2 * 1024 * 1024 + 1 })),
+        ("oversized text", MediaJson(mediaSnapshot with { title = new string('x', 1025) })),
+        ("null text", Encoding.UTF8.GetBytes(validMediaJson.Replace("\"title\":" + JsonSerializer.Serialize(mediaSnapshot.title), "\"title\":null"))),
+        ("overflow controls", MediaJson(mediaSnapshot with { controls = (ulong)uint.MaxValue + 1 })),
+        ("negative session", Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":-1}")),
+        ("nonnumeric session", Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":\"1\"}")),
+        ("duplicate field", Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"kind\":\"audio\"}")),
+        ("excessive depth", Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"extra\":{\"one\":{\"two\":{\"three\":{}}}}}")),
+        ("trailing JSON", Encoding.UTF8.GetBytes(validMediaJson + " {}")),
+        ("double NUL", validMedia.Concat(new byte[] { 0, 0 }).ToArray()),
+        ("oversized payload", new byte[8193])
+    };
+    foreach (var invalid in invalidMediaCases)
+        Check(!ReceiverMediaState.TryParse(invalid.Json, out var rejectedMedia) && ReferenceEquals(rejectedMedia, ReceiverMediaState.Empty),
+            "invalid media snapshot rejected: " + invalid.Name);
+    byte[] invalidUtf8 = validMedia.Concat(new byte[] { 0xFF }).ToArray();
+    Check(!ReceiverMediaState.TryParse(invalidUtf8, out _), "invalid UTF-8 media bytes rejected");
+    byte[] boundaryMedia = new byte[8192];
+    Array.Fill(boundaryMedia, (byte)' ');
+    validMedia.CopyTo(boundaryMedia, 0);
+    boundaryMedia[^1] = 0;
+    Check(ReceiverMediaState.TryParse(boundaryMedia, out _), "8192-byte snapshot accepts its terminating NUL");
+    boundaryMedia[^1] = (byte)' ';
+    Check(!ReceiverMediaState.TryParse(boundaryMedia, out _) && ReceiverMediaState.TryParse(boundaryMedia.AsSpan(0, 8191), out _),
+        "raw JSON reserves one byte of the native buffer for NUL");
+
+    uint[] PaletteColors(MusicPalette palette) => [palette.Background, palette.First, palette.Second, palette.Third];
+    byte[] blueArtwork = Enumerable.Repeat(new byte[] { 230, 80, 20, 255 }, 32 * 32).SelectMany(pixel => pixel).ToArray();
+    byte[] whiteArtwork = Enumerable.Repeat((byte)255, 32 * 32 * 4).ToArray();
+    byte[] whiteCoverWithAccent = whiteArtwork.ToArray();
+    blueArtwork.AsSpan(0, 128 * 4).CopyTo(whiteCoverWithAccent);
+    foreach (bool dark in new[] { false, true })
+    {
+        var bluePalette = MusicPalette.FromBgra(blueArtwork, dark);
+        Check((bluePalette.First & 255) > ((bluePalette.First >> 16) & 255), "artwork palette retains the cover hue " + dark);
+        var accentPalette = MusicPalette.FromBgra(whiteCoverWithAccent, dark);
+        Check((accentPalette.First & 255) > ((accentPalette.First >> 16) & 255) + 5,
+            "chromatic cover accents remain visible when most artwork pixels are white " + dark);
+        Check(PaletteColors(bluePalette).All(color => (color >> 24) == 255), "artwork palette colors have a stable opaque base " + dark);
+        var whitePalette = MusicPalette.FromBgra(whiteArtwork, dark);
+        Check(PaletteColors(whitePalette).All(color => Math.Abs((int)((color >> 16) & 255) - (int)(color & 255)) <= 6),
+            "white artwork produces a neutral wash without invented saturated colors " + dark);
+        Check(MusicPalette.FromBgra(new byte[4096], dark) == MusicPalette.FromBgra([], dark),
+            "fully transparent artwork uses the theme-safe neutral fallback " + dark);
+        Check(PaletteColors(bluePalette).Concat(PaletteColors(whitePalette)).All(color =>
+            new[] { (color >> 16) & 255, (color >> 8) & 255, color & 255 }.All(channel => dark ? channel <= 122 : channel >= 180)),
+            "artwork palette tones stay within readable theme bounds " + dark);
+        Check(MusicPalette.FromBgra(blueArtwork.Concat(whiteArtwork).ToArray(), dark) == bluePalette,
+            "artwork palette computation is bounded to its 32 by 32 sample " + dark);
+    }
 
     var texts = new UiText();
     texts.SetReceiverName("Test-PC");

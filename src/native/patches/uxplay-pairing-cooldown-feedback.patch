@@ -1,0 +1,10 @@
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -548,6 +548,7 @@
+     pairing_session_reset_pin(conn->session);
+     if (++raop->failed_pin_attempts >= CLEARCAST_PIN_MAX_FAILURES) {
+         raop->pin_retry_after = GetTickCount64() + CLEARCAST_PIN_COOLDOWN_MS;
++        rejection_reason = 4; /* Report the cooldown on the failure that starts it. */
+         clearcast_clear_pending_pin(raop);
+         raop->failed_pin_attempts = 0;
+         conn->pairing_pin = 0;

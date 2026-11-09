@@ -5,6 +5,7 @@
           IconSourceFile="!(bindpath.Payload)\Assets\ClearCast.ico">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+                                              LogoFile="!(bindpath.Payload)\Assets\ClearCast.png"
                                               LicenseUrl="https://github.com/NCFXZ/ClearCast/blob/v$(var.ReleaseVersion)/LICENSE" />
     </BootstrapperApplication>
     <Chain>

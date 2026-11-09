@@ -1,0 +1,24 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -35,6 +35,7 @@
+ #ifdef CLEARCAST_IN_PROCESS
+ #include <windows.h>
+ #include <math.h>
++#include "clearcast_pairing_peer.h"
+ extern void clearcast_media_verified(uint64_t, const unsigned char*, int, unsigned int);
+ extern void clearcast_media_closed(uint64_t);
+ extern void clearcast_media_remote(uint64_t, const char*, const char*);
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -355,9 +355,8 @@
+         clearcast_clear_pending_pin(raop);
+     }
+     if (!conn->pairing_pin && raop->pending_pairing_pin &&
+-        conn->remotelen == raop->pending_pin_remote_len &&
+-        conn->zone_id == raop->pending_pin_zone_id &&
+-        !memcmp(conn->remote, raop->pending_pin_remote, conn->remotelen)) {
++        clearcast_pin_peer_matches(raop->pending_pin_remote, raop->pending_pin_remote_len,
++            raop->pending_pin_zone_id, conn->remote, conn->remotelen, conn->zone_id)) {
+         // Exactly one connection from the original peer may claim this challenge.
+         conn->pairing_pin = raop->pending_pairing_pin;
+         conn->pairing_generation = raop->pending_pairing_generation;
