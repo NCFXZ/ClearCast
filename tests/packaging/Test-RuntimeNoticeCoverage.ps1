@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $StorePublishDirectory,
     [Parameter(Mandatory)] [string] $ComplianceDirectory,
     [Parameter(Mandatory)] [string] $ValidatedReceiverSha256,
-    [string] $Version = '1.2.0.0',
+    [string] $Version = '1.2.1.0',
     [Parameter(Mandatory)] [string] $OutputPath
 )
 $ErrorActionPreference = 'Stop'
@@ -50,7 +50,15 @@ try {
     } { [IO.File]::WriteAllBytes($coverage, $originalCoverage) } '*Source coverage does not match*'
     Reject 'Wrong source archive digest rejected' {
         $value = Get-Content -LiteralPath $coverage -Raw | ConvertFrom-Json
-        @($value.additionalSources.PSObject.Properties)[0].Value.sha256 = '0' * 64
+        $sources = @($value.additionalSources.PSObject.Properties)
+        if ($sources.Count) { $sources[0].Value.sha256 = '0' * 64 }
+        else {
+            $name = 'msys2/mingw-w64-fixture-1.0-1.src.tar.zst'
+            $value.additionalSources | Add-Member -NotePropertyName $name -NotePropertyValue @{
+                path = (Join-Path $work 'mingw-w64-fixture-1.0-1.src.tar.zst')
+                sha256 = '0' * 64; pkgbuildSha256 = '0' * 64
+            }
+        }
         $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $coverage
     } { [IO.File]::WriteAllBytes($coverage, $originalCoverage) } '*additional source archive*'
     $notice = @(Get-ChildItem -LiteralPath (Join-Path $fixture 'licenses') -Filter source-build.json -Recurse -File |

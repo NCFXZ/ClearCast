@@ -18,6 +18,7 @@ namespace ClearCast;
 
 public sealed class MusicBackdrop : UserControl, IDisposable
 {
+    internal const int VideoTransitionMilliseconds = 100;
     private sealed class FlowResources(Compositor compositor) : IDisposable
     {
         internal readonly ContainerVisual Root = compositor.CreateContainerVisual();
@@ -37,6 +38,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         internal bool BeatEnabled, BeatScheduled;
         internal bool ClockStarted;
         internal bool RateControlUnavailable;
+        internal bool VideoFrame;
         private bool _disposed;
 
         public void Dispose()
@@ -69,6 +71,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private readonly SolidColorBrush _fallbackBrush = new();
     private readonly MusicMotion _motion = new();
     private readonly BeatImpulse _beat = new();
+    private readonly Stopwatch _videoClock = new();
     private MusicPalette _palette = MusicPalette.FromBgra([], false);
     private ContainerVisual? _root;
     private SpriteVisual? _fill;
@@ -79,6 +82,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private float _appliedMotionRate = MusicMotion.BaseRate;
     private int _artworkGeneration;
     private bool _active, _animate, _loaded, _disposed;
+    internal bool IsVideoTransitioning { get; private set; }
 
     public MusicBackdrop()
     {
@@ -94,7 +98,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     internal bool IsActive { get; private set; }
     internal bool IsAnimating { get; private set; }
     internal int TextureFrameCount => _flow?.Surfaces.Count ?? 0;
-    internal bool HasArtworkFlow => TextureFrameCount == ArtworkFlow.FrameCount;
+    internal bool HasArtworkFlow => TextureFrameCount == (_flow?.VideoFrame == true ? 1 : ArtworkFlow.FrameCount);
     internal int RateControlledChannelCount => _flow?.Controller is null ? 0 : 1;
     internal int AnimationChannelCount => IsAnimating && _flow is { } flow ? flow.Animations.Count + 1 + BeatAnimationChannelCount : 0;
     internal long AnimationStartCount { get; private set; }
@@ -121,7 +125,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     {
         get
         {
-            try { return _flow?.Controller?.Progress; }
+            try { return _flow?.VideoFrame == true ? (float)(_videoClock.Elapsed.TotalSeconds / 48 % 1) : _flow?.Controller?.Progress; }
             catch (Exception error) when (IsCompositionFailure(error)) { return null; }
         }
     }
@@ -241,9 +245,14 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         }
     }
 
-    public async Task SetArtworkAsync(byte[]? bytes, bool darkTheme)
+    public Task SetArtworkAsync(byte[]? bytes, bool darkTheme) => SetImageAsync(bytes, darkTheme, false, false);
+
+    public Task SetVideoFrameAsync(byte[] pixels, bool darkTheme, bool smooth = true) => SetImageAsync(pixels, darkTheme, true, smooth);
+
+    private async Task SetImageAsync(byte[]? bytes, bool darkTheme, bool videoFrame, bool smooth)
     {
         if (_disposed) return;
+        if (!videoFrame) _videoClock.Reset();
         int generation = ++_artworkGeneration;
         ResetBeatActivity();
         _artworkCancellation?.Cancel();
@@ -253,6 +262,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         CancellationToken token = cancellation.Token;
         MusicPalette palette = MusicPalette.FromBgra([], darkTheme);
         FlowResources? pending = null;
+        FlowResources? retired = null;
         try
         {
             if (bytes is not { Length: > 0 and <= 2 * 1024 * 1024 })
@@ -260,60 +270,115 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 SetStaticPalette(palette);
                 return;
             }
-            using var stream = new InMemoryRandomAccessStream();
-            using (var writer = new DataWriter(stream))
+            byte[] source;
+            int sourceSide;
+            if (videoFrame)
             {
-                writer.WriteBytes(bytes);
-                await writer.StoreAsync();
-                writer.DetachStream();
+                if (bytes.Length != ReceiverVideoFrame.ByteCount) return;
+                source = bytes;
+                sourceSide = ReceiverVideoFrame.Side;
+                palette = MusicPalette.FromBgra(source, darkTheme);
             }
-            stream.Seek(0);
-            var decoder = await BitmapDecoder.CreateAsync(stream);
-            Guid format = decoder.DecoderInformation.CodecId;
-            if ((format != BitmapDecoder.PngDecoderId && format != BitmapDecoder.JpegDecoderId) ||
-                decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 ||
-                (ulong)decoder.PixelWidth * decoder.PixelHeight > 16_000_000)
+            else
             {
-                if (generation == _artworkGeneration && !_disposed) SetStaticPalette(palette);
-                return;
+                using var stream = new InMemoryRandomAccessStream();
+                using (var writer = new DataWriter(stream))
+                {
+                    writer.WriteBytes(bytes);
+                    await writer.StoreAsync();
+                    writer.DetachStream();
+                }
+                stream.Seek(0);
+                var decoder = await BitmapDecoder.CreateAsync(stream);
+                Guid format = decoder.DecoderInformation.CodecId;
+                if ((format != BitmapDecoder.PngDecoderId && format != BitmapDecoder.JpegDecoderId) ||
+                    decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 ||
+                    (ulong)decoder.PixelWidth * decoder.PixelHeight > 16_000_000)
+                {
+                    if (generation == _artworkGeneration && !_disposed) SetStaticPalette(palette);
+                    return;
+                }
+                var transform = new BitmapTransform { ScaledWidth = 32, ScaledHeight = 32, InterpolationMode = BitmapInterpolationMode.Linear };
+                var sampled = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
+                    ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
+                palette = MusicPalette.FromBgra(sampled.DetachPixelData(), darkTheme);
+                transform.ScaledWidth = transform.ScaledHeight = ArtworkFlow.Side;
+                var decoded = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
+                    ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
+                source = decoded.DetachPixelData();
+                sourceSide = ArtworkFlow.Side;
             }
-            var transform = new BitmapTransform { ScaledWidth = 32, ScaledHeight = 32, InterpolationMode = BitmapInterpolationMode.Linear };
-            var sampled = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
-                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
-            palette = MusicPalette.FromBgra(sampled.DetachPixelData(), darkTheme);
-            transform.ScaledWidth = transform.ScaledHeight = ArtworkFlow.Side;
-            var decoded = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
-                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
-            byte[] source = decoded.DetachPixelData();
             token.ThrowIfCancellationRequested();
-            byte[][] frames = await Task.Run(() => ArtworkFlow.Generate(source, ArtworkFlow.Side, ArtworkFlow.Side, darkTheme, token), token);
+            double videoPhase = _videoClock.Elapsed.TotalSeconds / 48;
+            byte[][] frames = await Task.Run(() => videoFrame
+                ? new[] { ArtworkFlow.GenerateFrame(source, sourceSide, sourceSide, videoPhase, darkTheme, token) }
+                : ArtworkFlow.Generate(source, sourceSide, sourceSide, darkTheme, token), token);
             token.ThrowIfCancellationRequested();
             if (_disposed || generation != _artworkGeneration) return;
             EnsureVisuals();
-            pending = await CreateFlowAsync(frames, generation, token);
+            pending = await CreateFlowAsync(frames, generation, token, videoFrame);
             token.ThrowIfCancellationRequested();
             if (_disposed || generation != _artworkGeneration) return;
-            ClearFlow();
-            _palette = palette;
-            ApplyPalette();
+            if (videoFrame)
+            {
+                retired = _flow;
+                _flow = null;
+                IsAnimating = false;
+            }
+            else
+            {
+                ClearFlow();
+                _palette = palette;
+                ApplyPalette();
+            }
             _flow = pending;
             pending = null;
+            if (videoFrame) _flow.Root.Opacity = 0;
             _root!.Children.InsertAtTop(_flow.Root);
             UpdatePlayback();
+            if (videoFrame)
+            {
+                if (smooth)
+                {
+                    IsVideoTransitioning = true;
+                    using var fade = _root.Compositor.CreateScalarKeyFrameAnimation();
+                    fade.InsertKeyFrame(0, 0);
+                    fade.InsertKeyFrame(1, 1, _root.Compositor.CreateLinearEasingFunction());
+                    fade.Duration = TimeSpan.FromMilliseconds(VideoTransitionMilliseconds);
+                    _flow.Root.StartAnimation("Opacity", fade);
+                    await Task.Delay(VideoTransitionMilliseconds, token);
+                }
+                token.ThrowIfCancellationRequested();
+                if (_disposed || generation != _artworkGeneration) return;
+                _flow.Root.StopAnimation("Opacity");
+                _flow.Root.Opacity = 1;
+                _palette = palette;
+                ApplyPalette();
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (IsCompositionFailure(error) || error is IOException or TimeoutException)
         {
             if (!_disposed && generation == _artworkGeneration) SetStaticPalette(palette);
         }
-        finally { pending?.Dispose(); }
+        finally
+        {
+            if (generation == _artworkGeneration) IsVideoTransitioning = false;
+            if (retired is not null)
+            {
+                CloseComposition(() => _root?.Children.Remove(retired.Root));
+                retired.Dispose();
+            }
+            pending?.Dispose();
+        }
     }
 
-    private async Task<FlowResources> CreateFlowAsync(byte[][] frames, int generation, CancellationToken cancellation)
+    private async Task<FlowResources> CreateFlowAsync(byte[][] frames, int generation, CancellationToken cancellation, bool videoFrame)
     {
         var compositor = _root!.Compositor;
         var flow = new FlowResources(compositor);
         flow.ArtworkGeneration = generation;
+        flow.VideoFrame = videoFrame;
         flow.Root.RelativeSizeAdjustment = Vector2.One;
         flow.Clock.InsertScalar("Phase", 0);
         try
@@ -340,22 +405,29 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 }
                 finally { surface.LoadCompleted -= Loaded; }
             }
-            for (int index = 0; index <= ArtworkFlow.FrameCount; index++)
+            for (int index = 0; index < (videoFrame ? 1 : ArtworkFlow.FrameCount + 1); index++)
             {
-                var brush = compositor.CreateSurfaceBrush(flow.Surfaces[index % ArtworkFlow.FrameCount]);
+                var brush = compositor.CreateSurfaceBrush(flow.Surfaces[index % frames.Length]);
                 brush.Stretch = CompositionStretch.Fill;
                 flow.Brushes.Add(brush);
                 var layer = compositor.CreateSpriteVisual();
                 layer.RelativeSizeAdjustment = Vector2.One;
                 layer.Brush = brush;
-                layer.Opacity = ArtworkFlow.LayerOpacity(index, 0);
+                layer.Opacity = videoFrame ? 1 : ArtworkFlow.LayerOpacity(index, 0);
                 flow.Layers.Add(layer);
                 flow.Root.Children.InsertAtTop(layer);
+                if (videoFrame) continue;
                 var opacity = compositor.CreateExpressionAnimation(OpacityExpression(index));
                 opacity.SetReferenceParameter("clock", flow.Clock);
                 layer.StartAnimation("Opacity", opacity);
                 AnimationStartCount++;
                 flow.Animations.Add(opacity);
+            }
+            if (videoFrame)
+            {
+                flow.Root.Scale = new Vector3(BeatImpulse.BaselineScale, BeatImpulse.BaselineScale, 1);
+                UpdateBeatGeometry(flow);
+                return flow;
             }
             flow.Timeline = compositor.CreateScalarKeyFrameAnimation();
             flow.Timeline.InsertKeyFrame(0, 0);
@@ -498,7 +570,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         if (_root is not null && !_disposed)
         {
             _root.Size = new Vector2((float)Math.Max(0, ActualWidth), (float)Math.Max(0, ActualHeight));
-            if (_flow is { BeatEnabled: true } flow)
+            if (_flow is { } flow && (flow.BeatEnabled || flow.VideoFrame))
             {
                 try { UpdateBeatGeometry(flow); }
                 catch (Exception error) when (IsCompositionFailure(error)) { DisableBeatVisuals(flow); _beat.Reset(); }
@@ -514,6 +586,14 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         _fallback.Opacity = visible ? 1 : 0;
         if (_root is not null) _root.Opacity = visible ? 1 : 0;
         bool run = visible && _animate && HasArtworkFlow;
+        if (_flow?.VideoFrame == true)
+        {
+            if (run) _videoClock.Start();
+            else _videoClock.Stop();
+            IsAnimating = run;
+            return;
+        }
+        _videoClock.Stop();
         if (!run) ResetBeatActivity();
         if (run == IsAnimating) return;
         if (!run)
@@ -574,6 +654,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
 
     private void ClearFlow()
     {
+        _videoClock.Stop();
         ResetBeatActivity();
         IsAnimating = false;
         if (_flow is null) return;

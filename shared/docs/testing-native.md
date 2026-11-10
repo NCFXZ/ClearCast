@@ -13,6 +13,10 @@ python .\tests\native\pairing_reconnect_test.py
 
 默认加载 `.runtime\receiver`。可以用 `CLEARCAST_PROBE_RUNTIME` 环境变量选择另一个完整运行时目录。测试在 `.runtime\qa-native-*` 新建独立状态，保留日志便于排查，不使用软件的真实配对数据。
 
+局域网发现回归使用 `python tests/native/mdns_discovery_test.py`，在独立状态下连续启停接收器，并向选定网卡发送 AirPlay 与 RAOP 的组播 PTR 查询，核对本机返回的服务端口。报告默认保存到 `.runtime/qa-video-crash/discovery-results.json`，可用 `--report` 指定路径。它同样必须与应用和其他接收器测试串行运行；本机收到响应不代表手机与路由器之间的组播转发已经验收。
+
+正常版的端到端播放回归使用 `python tests/ui/direct_video_app_test.py --app .runtime/app/ClearCast.exe --media hls --desktop-controls --report .runtime/qa-video-crash-e2e/app-hls.json`，`--media mp4` 检查可定位的 MP4。夹具先创建独立配对身份，再启动实际 WinUI 程序，提供含静音 AAC 的合成媒体，验证窗口/自动全屏、播放、暂停、辅助功能定位、Home 键与鼠标拖动，并检查播放期间及停止后的设备发现。桌面交互探针由系统 .NET Framework 编译器在报告目录生成，仅操作本次启动的窗口，鼠标拖动后恢复原光标位置；不更改系统脚本策略。该测试同样与其他接收器串行运行，且不代表真实手机、账号内容或音画同步验收。
+
 测试会在导入 Python 的散列/加密扩展前，从所选运行时的绝对路径加载 OpenSSL 和 libplist，并记录实际加载模块的路径、SHA-256 和版本。若 Python 已预载其他目录下的同名 DLL，测试会拒绝继续；使用新的 Python 进程重试。
 
 覆盖无保存设备时更新接收身份、跨 TCP 领取 PIN、来源地址限制、单活动连接独占领取、完整 SRP 配对、SETUP 前保存配对、跨 TCP 验证、拒绝未知设备，以及重启后保留已配对身份与记录。只有全部断言通过时才输出 `PASS`。这些检查不替代 iPhone/iPad 真机投屏验收。
@@ -77,7 +81,7 @@ python tests/native/receiver_security_test.py
 $ucrt = (Resolve-Path .runtime/msys64/ucrt64).Path # 或设为 C:\msys64\ucrt64
 $receiverBuild = '<Build-Receiver.ps1 输出的实际 build 目录>'
 $env:PATH = "$ucrt\bin;$env:PATH"
-& "$ucrt\bin\cmake.exe" --build $receiverBuild --target clearcast_http_headers_test clearcast_http_security_test clearcast_video_context_test clearcast_srp_salt_fixture clearcast_media_audio_test clearcast_media_http_test clearcast_pairing_peer_fixture clearcast_audio_rhythm_test clearcast_audio_rhythm_gst_test
+& "$ucrt\bin\cmake.exe" --build $receiverBuild --target clearcast_http_headers_test clearcast_http_security_test clearcast_video_context_test clearcast_srp_salt_fixture clearcast_media_audio_test clearcast_media_http_test clearcast_pairing_peer_fixture clearcast_audio_rhythm_test clearcast_audio_rhythm_gst_test clearcast_audio_timing_test clearcast_video_frame_test
 & "$ucrt\bin\ctest.exe" --test-dir $receiverBuild --output-on-failure
 ```
 
@@ -134,6 +138,8 @@ python tests/native/direct_video_protocol_test.py --runtime .runtime/receiver `
 
 ## 音乐元数据、封面、进度与发送端控制
 
+CTest 的 `audio_sender_presentation_timing` 使用实际生产 ALAC 渲染器、受控运行时解码器和无声输出端。夹具将合成音频的播放时间指定到未来，比较立即输出与按发送端时间戳调度，检查音频不会提前播放；不占接收端口，不访问真实音乐或扬声器。该测试不能替代 Apple Music 手机上的滚动歌词同步验收。
+
 CTest 的 `media_audio_bounds` 使用生产音频媒体桥接头文件，检查有界 DMAP 标签、UTF-8 与 JSON 转义、PNG/JPEG 尺寸和像素上限、封面版本与缓冲区边界、RTP 进度回绕、播放状态和会话清理，以及 DNS 压缩名、服务实例和凭据校验。默认检查不启动网络服务；加入 `--network` 后，在随机回环端口提供模拟 DACP 发送端：
 
 ```powershell
@@ -152,3 +158,9 @@ python tests/native/media_metadata_protocol_test.py
 它覆盖未验证请求拒绝、验证后的有界畸形 DMAP/图像/进度请求、媒体快照和封面 ABI 边界、不记录曲名及停止后清理。默认报告为 `.runtime/qa-media/metadata-protocol-results.json`，可通过 `CLEARCAST_MEDIA_PROTOCOL_REPORT` 更改。该项没有发送加密 RTP 音频；它与内存夹具及回环 DACP 用例不能替代真实 iPhone/iPad/Mac 音乐投放、歌曲切换、设备音频和不同发送应用的验收。
 
 媒体 JSON 顶层的 `connected` 表示仍有存活的已认证控制连接，或已建立音频、镜像或直接视频会话；未认证 TCP、仅完成 PIN 设置及已关闭连接的 60 秒授权缓存均不算在线。协议夹具检查认证后尚无媒体时为真、关闭一个兄弟连接仍为真、最后控制连接关闭且无媒体时及接收器停止后为假；暂停和音频 SETUP 尚无首包的边界由内存状态夹具覆盖。
+
+## 直接视频后台保持和电脑端控制
+
+`tests/native/direct_video_protocol_test.py` 使用真实接收器 DLL 和隔离 HTTP MP4/HLS，覆盖超过镜像心跳时限的暂停保持、辅助 RTSP FLUSH/TEARDOWN/断开、电脑端暂停/定位/恢复、定位边界和旧会话拒绝。`media_audio_bounds` 将直接视频停止替身计数，检查辅助音频 SETUP 不触发停止；加 `--network` 使用随机回环 DACP 服务验证毫秒定位、实际位置确认、忽略命令回退及旧曲目拒绝。音频解码夹具和配对夹具维持各自的媒体替身，不引入发行测试入口。
+
+这些场景验证接收端确定的生命周期问题，不能替代真实播放器息屏、媒体源后台供给和音乐 App 定位能力的验收。

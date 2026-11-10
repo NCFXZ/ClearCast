@@ -6,7 +6,7 @@ using System.Text;
 namespace ClearCast;
 
 internal enum DecoderMode { Automatic, Software, Hardware }
-internal enum MediaCommand { PlayPause = 1, Previous, Next }
+internal enum MediaCommand { PlayPause = 1, Previous, Next, Seek }
 
 internal enum ReceiverEventKind
 {
@@ -365,11 +365,24 @@ internal sealed class AirPlayReceiver
         return NativeReceiver.ReadArtwork(revision, buffer, length) == length ? buffer : null;
     }
 
+    public ReceiverVideoFrame? ReadVideoFrame()
+    {
+        var pixels = new byte[ReceiverVideoFrame.ByteCount];
+        return NativeReceiver.ReadVideoFrame(pixels, pixels.Length, out ulong generation) == pixels.Length && generation != 0
+            ? new ReceiverVideoFrame(generation, pixels) : null;
+    }
+
     public Task SendMediaCommandAsync(MediaCommand command) => Task.Run(() =>
     {
         int result = NativeReceiver.MediaCommand((int)command);
         if (result != 0)
             throw new Win32Exception(result, "无法发送播放指令，请在设备上操作。");
+    });
+
+    public Task ControlMediaAsync(ReceiverMediaState state, MediaCommand command, long value = 0) => Task.Run(() =>
+    {
+        int result = NativeReceiver.MediaControl(state.ControlSession, state.ContentRevision, (int)command, value);
+        if (result != 0) throw new Win32Exception(result);
     });
 
     public void RequestDecoder(DecoderMode decoder)

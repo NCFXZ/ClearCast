@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.2.0.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.2.1.0',
     [ValidateSet('appx', 'msix')] [string] $StoreFormat = 'appx',
     [switch] $AlsoBuildMsix,
     [switch] $ValidateOnly,
@@ -101,12 +101,12 @@ foreach ($folder in @($publish, $storePublish)) {
     if ((Get-FileHash -LiteralPath (Join-Path $folder 'receiver\clearcast_receiver.dll')).Hash -ne $ValidatedReceiverSha256) {
         throw 'The published receiver does not match the independently validated release candidate.'
     }
-    foreach ($index in 0..79) {
+    foreach ($index in 0..199) {
         $frame = Join-Path $folder ('Assets\MirroringAnimation\frame-{0:D3}.svg' -f $index)
         if (-not (Test-Path -LiteralPath $frame -PathType Leaf)) { throw "Missing animation frame: $frame" }
     }
-    if (@(Get-ChildItem -LiteralPath (Join-Path $folder 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count -ne 80) {
-        throw 'The published animation must contain exactly 80 SVG frames.'
+    if (@(Get-ChildItem -LiteralPath (Join-Path $folder 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count -ne 200) {
+        throw 'The published animation must contain exactly 200 SVG frames.'
     }
 }
 foreach ($relative in @('receiver\gst-plugin-scanner.exe', 'receiver\clearcast_receiver.dll')) {

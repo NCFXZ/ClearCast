@@ -49,9 +49,9 @@ function New-PayloadHashManifest([string] $Directory, [string] $ResourceIndex) {
             $requiredFiles += 'receiver\' + $file.relativePath
         }
     }
-    $requiredFiles += @(foreach ($index in 0..79) { 'Assets\MirroringAnimation\frame-{0:D3}.svg' -f $index })
-    if (@(Get-ChildItem -LiteralPath (Join-Path $payloadRoot 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count -ne 80) {
-        throw 'The published payload must contain exactly 80 SVG animation frames.'
+    $requiredFiles += @(foreach ($index in 0..199) { 'Assets\MirroringAnimation\frame-{0:D3}.svg' -f $index })
+    if (@(Get-ChildItem -LiteralPath (Join-Path $payloadRoot 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count -ne 200) {
+        throw 'The published payload must contain exactly 200 SVG animation frames.'
     }
     foreach ($relative in $requiredFiles) {
         $file = Join-Path $payloadRoot $relative

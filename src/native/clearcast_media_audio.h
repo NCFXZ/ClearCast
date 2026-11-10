@@ -16,8 +16,10 @@
 namespace {
 static bool clearcast_direct_video_snapshot(bool&, int64_t&, int64_t&);
 static bool clearcast_mirror_media_active();
+static bool clearcast_direct_video_controls(uint64_t&, int&, int64_t&, int64_t&, bool&);
 }
 extern "C" void clearcast_direct_video_stop();
+extern "C" bool clearcast_direct_video_is_active();
 
 namespace clearcast_media {
 constexpr size_t max_artwork = 2 * 1024 * 1024;
@@ -59,10 +61,10 @@ struct Peer {
         return result;
     }
 };
-struct Verification { unsigned int connections = 0; uint64_t closed = 0; bool audio = false, video = false; };
+struct Verification { unsigned int connections = 0; uint64_t closed = 0; bool audio = false, video = false; std::string name; };
 struct Connection { std::string peer, dacp, remote; };
 struct State {
-    uint64_t revision = 1, artwork_revision = 1, owner = 0;
+    uint64_t revision = 1, artwork_revision = 1, owner = 0, content_revision = 0;
     bool configured = false, active = false, playing = false;
     uint64_t last_packet = 0, position_tick = 0, sender_state_tick = 0;
     bool sender_playing = false;
@@ -75,6 +77,7 @@ struct State {
 };
 static SRWLOCK state_lock = SRWLOCK_INIT;
 static State state;
+static uint64_t content_counter = 0;
 static std::map<std::string, Verification> verified;
 static std::map<uint64_t, Connection> connections;
 static std::atomic<bool> stopping(true);
@@ -171,6 +174,7 @@ inline void clear_audio_locked() {
     if (entry != verified.end()) entry->second.audio = false;
     const uint64_t revision = state.revision + 1, artwork = state.artwork_revision + 1;
     state = State(); state.revision = revision; state.artwork_revision = artwork;
+    state.content_revision = ++content_counter;
     reset_activity_locked();
 }
 inline bool peer_verified_locked(const std::string& key) {
@@ -398,7 +402,26 @@ inline void sender_state_locked(int value) {
         if (state.playing) enable_activity_locked(); else reset_activity_locked();
     }
 }
-inline int request(const Peer& peer, unsigned short port, const std::string& token, const char* command, uint64_t owner = 0, int* playback_state = nullptr, bool* dmap_supported = nullptr) {
+inline bool playback_time_tags(const unsigned char* data, size_t length, int64_t& remaining, int64_t& duration, unsigned depth = 0) {
+    if (depth > 4) return false;
+    for (size_t offset = 0; offset < length;) {
+        if (length - offset < 8) return false;
+        const unsigned char* tag = data + offset;
+        size_t size = be32(tag + 4); offset += 8;
+        if (size > length - offset) return false;
+        if (!memcmp(tag, "cmgt", 4) || !memcmp(tag, "cmst", 4)) {
+            if (!playback_time_tags(data + offset, size, remaining, duration, depth + 1)) return false;
+        } else if (!memcmp(tag, "cant", 4) || !memcmp(tag, "cast", 4)) {
+            if (size != 4) return false;
+            int64_t& value = !memcmp(tag, "cant", 4) ? remaining : duration;
+            if (value != -1) return false;
+            value = be32(data + offset);
+        }
+        offset += size;
+    }
+    return true;
+}
+inline int request(const Peer& peer, unsigned short port, const std::string& token, const char* command, uint64_t owner = 0, int* playback_state = nullptr, bool* dmap_supported = nullptr, int64_t* position = nullptr, int64_t* duration = nullptr, uint64_t content = 0) {
     if (playback_state) *playback_state = -1;
     if (dmap_supported) *dmap_supported = false;
     Socket socket; socket.value = ::socket(peer.length == 4 ? AF_INET : AF_INET6, SOCK_STREAM, IPPROTO_TCP);
@@ -414,7 +437,7 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
     }
     if (owner) {
         Lock lock(state_lock);
-        if (state.owner != owner || !state.active || stopping) return ERROR_CANCELLED;
+        if (state.owner != owner || !state.active || stopping || (content && state.content_revision != content)) return ERROR_CANCELLED;
     }
     char host[INET6_ADDRSTRLEN] = {};
     inet_ntop(peer.length == 4 ? AF_INET : AF_INET6, peer.bytes, host, sizeof(host));
@@ -439,7 +462,7 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
         headers[9] < '0' || headers[9] > '9' || headers[10] < '0' || headers[10] > '9' || headers[11] < '0' || headers[11] > '9') return ERROR_INVALID_DATA;
     const int status = (headers[9] - '0') * 100 + (headers[10] - '0') * 10 + headers[11] - '0';
     if (status < 200 || status >= 300) return status == 401 || status == 403 ? ERROR_ACCESS_DENIED : ERROR_NOT_SUPPORTED;
-    if (!playback_state && !dmap_supported) return 0;
+    if (!playback_state && !dmap_supported && !position && !duration) return 0;
     const size_t header_end = headers.find("\r\n\r\n");
     int content_length = -1;
     size_t line = headers.find("\r\n") + 2;
@@ -473,17 +496,24 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
         player_state_tags(bytes,body.size(),tags,value,0);
     if(dmap_supported)*dmap_supported=valid;
     if(playback_state&&valid)*playback_state=value;
+    if (position && duration && valid) {
+        int64_t remaining = -1, total = -1;
+        if (playback_time_tags(bytes, body.size(), remaining, total) && total > 0 &&
+            total <= 7LL * 86400000 && remaining >= 0 && remaining <= total) {
+            *position = total - remaining; *duration = total;
+        }
+    }
     return 0;
 }
 inline DWORD WINAPI monitor_worker(void*) try {
     uint64_t next_probe = 0;
     while (!stopping) {
-        Peer peer; std::string dacp, token; uint64_t owner = 0; unsigned short port=0;
+        Peer peer; std::string dacp, token; uint64_t owner = 0, content = 0; unsigned short port=0;
         {
             Lock lock(state_lock);
             if (state.active && state.configured && !state.dacp.empty() &&
                 GetTickCount64() >= next_probe && peer_verified_locked(state.peer.key())) {
-                peer = state.peer; dacp = state.dacp; token = state.remote; owner = state.owner;port=state.port;
+                peer = state.peer; dacp = state.dacp; token = state.remote; owner = state.owner; content = state.content_revision; port=state.port;
             }
         }
         if (owner) {
@@ -491,10 +521,17 @@ inline DWORD WINAPI monitor_worker(void*) try {
             int playback_state=-1;bool supported=false;
             int result=port?request(peer,port,token,"getproperty?properties=dacp.playerstate",owner,&playback_state,&supported):ERROR_NOT_FOUND;
             if(result==ERROR_NOT_SUPPORTED||(!result&&!supported))result=request(peer,port,token,"getproperty?properties=dmcp.volume",owner,nullptr,&supported);
+            int64_t seek_position = -1, seek_duration = -1;
+            if (!result && supported)
+                request(peer, port, token, "getproperty?properties=dacp.playingtime", owner, nullptr, nullptr, &seek_position, &seek_duration, content);
             Lock lock(state_lock);
-            if (!stopping && state.owner == owner && state.dacp == dacp && state.remote == token && !result && supported) {
+            if (!stopping && state.owner == owner && state.content_revision == content && state.dacp == dacp && state.remote == token && !result && supported) {
                 state.port = port;
-                if(state.controls!=(7&~state.denied_controls)){state.controls=7&~state.denied_controls;++state.revision;}
+                if (seek_position >= 0) {
+                    state.position = seek_position; state.duration = seek_duration; state.position_tick = GetTickCount64();
+                }
+                int controls = (7 | (seek_position >= 0 ? 8 : 0)) & ~state.denied_controls;
+                if(state.controls!=controls){state.controls=controls;++state.revision;}
                 sender_state_locked(playback_state);
             }
             next_probe = GetTickCount64() + (result?5000:2000);
@@ -526,6 +563,19 @@ extern "C" void clearcast_media_verified(uint64_t id, const unsigned char* peer,
     auto entry = verified.emplace(key, Verification()).first;
     connections.emplace(id, Connection{key, "", ""}); ++entry->second.connections;
 } catch (...) {}
+extern "C" void clearcast_media_client_name(uint64_t id, const char* name) try {
+    using namespace clearcast_media;
+    if (!name) return;
+    size_t size = strnlen(name, 513);
+    if (!size || size > 512 || !g_utf8_validate(name, size, nullptr)) return;
+    for (const char* cursor = name; *cursor; cursor = g_utf8_next_char(cursor))
+        if (g_unichar_iscntrl(g_utf8_get_char(cursor))) return;
+    Lock lock(state_lock);
+    auto connection = connections.find(id);
+    if (connection == connections.end()) return;
+    auto peer = verified.find(connection->second.peer);
+    if (peer != verified.end() && peer->second.name != name) { peer->second.name = name; ++state.revision; }
+} catch (...) {}
 extern "C" void clearcast_media_remote(uint64_t id, const char* dacp, const char* remote) try {
     using namespace clearcast_media; if (!credentials(dacp, remote)) return;
     Lock lock(state_lock); auto entry = connections.find(id);
@@ -556,8 +606,12 @@ extern "C" void clearcast_media_closed(uint64_t id) try {
 extern "C" void clearcast_media_audio_setup(uint64_t id, const unsigned char* peer, int length, unsigned int zone,
     int using_screen, const char* dacp, const char* remote) try {
     using namespace clearcast_media; Peer address; if (!id || !address.assign(peer, length, zone)) return;
-    // Stop a previous direct-video session without holding the audio lock.
-    if (!using_screen && clearcast_media_peer_verified(peer,length,zone)) clearcast_direct_video_stop();
+    // SETUP prepares a transport, including auxiliary audio recreated on lock.
+    // A direct-video owner is released by its own stop/end, not this transport.
+#ifdef CLEARCAST_IN_PROCESS
+    write_diagnostic("audio setup usingScreen=%d directVideo=%d", using_screen,
+        int(clearcast_direct_video_is_active()));
+#endif
     Lock lock(state_lock); if (!peer_verified_locked(address.key())) return;
     if (using_screen) { clear_audio_locked(); return; }
     if (state.owner != id || !state.configured) clear_audio_locked();
@@ -652,6 +706,12 @@ extern "C" void clearcast_media_audio_parameter(uint64_t id, const char* type, c
         if (!length || size_t(length) > max_metadata) return;
         Tags tags; if (!parse_tags(bytes, length, tags)) return;
         Lock lock(state_lock); if (!state.configured || state.owner != id) return;
+        if ((tags.have_title && state.title != tags.title) || (tags.have_artist && state.artist != tags.artist) ||
+            (tags.have_album && state.album != tags.album)) {
+            state.content_revision = ++content_counter;
+            state.denied_controls &= ~8;
+            state.controls &= ~8;
+        }
         if (tags.have_title && state.title != tags.title) {
             if (!state.title.empty()) { state.artwork.clear(); ++state.artwork_revision; }
             state.title = tags.title;
@@ -697,6 +757,9 @@ static inline void clearcast_media_audio_shutdown() {
 extern "C" __declspec(dllexport) int clearcast_receiver_read_media(char* buffer, int capacity) try {
     using namespace clearcast_media; bool video_playing = false; int64_t video_position = 0, video_duration = 0;
     const bool direct_video = clearcast_direct_video_snapshot(video_playing, video_position, video_duration);
+    uint64_t video_session = 0; int video_controls = 0; int64_t seek_start = 0, seek_end = 0;
+    bool video_live = false;
+    if (direct_video) clearcast_direct_video_controls(video_session, video_controls, seek_start, seek_end, video_live);
     const bool mirror = clearcast_mirror_media_active();
     const bool video = direct_video || mirror;
     if(mirror&&!direct_video){video_playing=true;video_position=video_duration=0;}
@@ -706,13 +769,24 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_media(char* buffer,
     const char* kind = video ? "video" : state.active ? "audio" : "none";
     const bool playing = video ? video_playing : state.playing;
     const bool connected = !stopping && (!connections.empty() || state.configured || video);
+    std::string device_name;
+    if (connected) for (auto connection = connections.rbegin(); connection != connections.rend(); ++connection) {
+        auto peer = verified.find(connection->second.peer);
+        if (peer != verified.end() && !peer->second.name.empty()) { device_name = peer->second.name; break; }
+    }
     const std::string json = "{\"revision\":" + std::to_string(state.revision) + ",\"kind\":\"" + kind +
-        "\",\"connected\":" + (connected ? "true" : "false") + ",\"session\":"+std::to_string(!video&&state.active?state.owner:0)+",\"playing\":" + (playing ? "true" : "false") + ",\"title\":\"" + escaped(state.title) +
+        "\",\"connected\":" + (connected ? "true" : "false") + ",\"deviceName\":\"" + escaped(device_name) +
+        "\",\"isLive\":" + (video_live ? "true" : "false") + ",\"session\":"+std::to_string(!video&&state.active?state.owner:0)+",\"playing\":" + (playing ? "true" : "false") + ",\"title\":\"" + escaped(state.title) +
         "\",\"artist\":\"" + escaped(state.artist) + "\",\"album\":\"" + escaped(state.album) +
         "\",\"positionMs\":" + std::to_string(video ? video_position : position_at(GetTickCount64())) +
         ",\"durationMs\":" + std::to_string(video ? video_duration : state.duration) +
         ",\"artworkRevision\":" + std::to_string(state.artwork_revision) + ",\"artworkBytes\":" +
-        std::to_string(video ? 0 : state.artwork.size()) + ",\"controls\":" + std::to_string(video ? 0 : state.controls) +
+        std::to_string(video ? 0 : state.artwork.size()) + ",\"controls\":" + std::to_string(direct_video ? video_controls : video ? 0 : state.controls) +
+        ",\"source\":\"" + (direct_video ? "direct" : mirror ? "mirror" : state.active ? "audio" : "none") +
+        "\",\"controlSession\":" + std::to_string(direct_video ? video_session : state.active ? state.owner : 0) +
+        ",\"contentRevision\":" + std::to_string(direct_video ? video_session : state.content_revision) +
+        ",\"seekStartMs\":" + std::to_string(direct_video ? seek_start : 0) +
+        ",\"seekEndMs\":" + std::to_string(direct_video ? seek_end : state.duration) +
         ",\"audioActivity\":" + activity_json(GetTickCount64(), !video && state.active && state.playing) + "}";
     const int required = int(json.size()) + 1;
     if (required > 8192) return 0;
@@ -748,3 +822,37 @@ extern "C" __declspec(dllexport) int clearcast_receiver_media_command(int comman
     }
     return result;
 } catch (...) { return ERROR_OUTOFMEMORY; }
+
+static int clearcast_media_seek_audio(uint64_t session, uint64_t content, int64_t target) {
+    using namespace clearcast_media;
+    Peer peer; std::string token; unsigned short port;
+    {
+        Lock lock(state_lock);
+        if (!session || state.owner != session || state.content_revision != content || !state.active || stopping)
+            return ERROR_CANCELLED;
+        if (!(state.controls & 8) || target < 0 || target > state.duration || !peer_verified_locked(state.peer.key()))
+            return ERROR_NOT_SUPPORTED;
+        peer = state.peer; token = state.remote; port = state.port;
+    }
+    const std::string command = "setproperty?dacp.playingtime=" + std::to_string(target);
+    int result = request(peer, port, token, command.c_str(), session, nullptr, nullptr, nullptr, nullptr, content);
+    int64_t position = -1, duration = -1;
+    for (int attempt = 0; !result && attempt < 3; ++attempt) {
+        result = request(peer, port, token, "getproperty?properties=dacp.playingtime", session,
+            nullptr, nullptr, &position, &duration, content);
+        if (!result && position >= 0 && std::llabs(position - target) <= 2000) break;
+        if (!result && attempt < 2) Sleep(150);
+    }
+    if (!result && (position < 0 || std::llabs(position - target) > 2000)) result = ERROR_NOT_SUPPORTED;
+    Lock lock(state_lock);
+    if (state.owner != session || state.content_revision != content) return ERROR_CANCELLED;
+    if (result) {
+        state.controls &= ~8;
+        if (result == ERROR_NOT_SUPPORTED || result == ERROR_ACCESS_DENIED) state.denied_controls |= 8;
+    } else {
+        state.position = position; state.duration = duration; state.position_tick = GetTickCount64();
+        reset_activity_locked();
+    }
+    ++state.revision;
+    return result;
+}

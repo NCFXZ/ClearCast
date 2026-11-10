@@ -29,15 +29,14 @@ public sealed partial class MainWindow
     private PointInt32? _lastPlayerPointer;
     private long _playerOverlayActivity;
     private bool _playerOverlayTargetVisible;
-    private double _playerOverlayFadeFrom;
-    private long _playerOverlayFadeStarted;
-    private DispatcherQueueTimer? _playerOverlayFadeTimer;
+    private bool _playerControlsPointerOver;
 
     private NativeVideoHost CreatePlayerVideoHost()
     {
         var host = new NativeVideoHost(WindowNative.GetWindowHandle(this), DispatcherQueue);
         host.DoubleClicked += TogglePlayerFullScreen;
         host.EscapePressed += () => SetPlayerFullScreen(false);
+        host.PlayPausePressed += () => _ = ToggleCurrentPlaybackAsync();
         return host;
     }
 
@@ -62,6 +61,7 @@ public sealed partial class MainWindow
         }
 
         RectInt32? overlay = GetPlayerOverlayBounds(scale);
+        int cornerRadius = _playerFullScreen ? 0 : (int)Math.Round(MusicArtworkFrame.CornerRadius.TopLeft * scale);
         // Use physical pixels for 1:1 output. Clip to the slot if the frame exceeds it.
         if (_preferences.OriginalSize && _playerFrameSize.Width > 0 && _playerFrameSize.Height > 0)
         {
@@ -78,20 +78,32 @@ public sealed partial class MainWindow
                 clip = new RectInt32(left, top, Math.Min(width - left, slot.Width),
                     Math.Min(height - top, slot.Height));
             }
-            if (host.Update(new RectInt32(x, y, width, height), true, clip, overlay))
+            if (host.Update(new RectInt32(x, y, width, height), true, clip, overlay, cornerRadius))
                 return;
         }
 
-        host.Update(slot, true, exclusion: overlay);
+        if (!_playerFullScreen && _playerFrameSize.Width > 0 && _playerFrameSize.Height > 0)
+        {
+            bool rotated = _playerRotation % 2 != 0;
+            int sourceWidth = rotated ? _playerFrameSize.Height : _playerFrameSize.Width;
+            int sourceHeight = rotated ? _playerFrameSize.Width : _playerFrameSize.Height;
+            double fit = Math.Min((double)slot.Width / sourceWidth, (double)slot.Height / sourceHeight);
+            int width = Math.Max(1, (int)Math.Round(sourceWidth * fit));
+            int height = Math.Max(1, (int)Math.Round(sourceHeight * fit));
+            host.Update(new RectInt32(slot.X + (slot.Width - width) / 2, slot.Y + (slot.Height - height) / 2, width, height), true,
+                cornerRadius: cornerRadius);
+            return;
+        }
+        host.Update(slot, true, exclusion: overlay, cornerRadius: cornerRadius);
     }
 
     private RectInt32? GetPlayerOverlayBounds(double scale)
     {
-        if (!PlayerOverlay.IsHitTestVisible || PlayerOverlay.ActualWidth <= 0 || PlayerOverlay.ActualHeight <= 0)
+        if (!_playerFullScreen || !PlayerControls.IsHitTestVisible || PlayerControls.ActualWidth <= 0 || PlayerControls.ActualHeight <= 0)
             return null;
 
-        Rect bounds = PlayerOverlay.TransformToVisual(null).TransformBounds(
-            new Rect(0, 0, PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight));
+        Rect bounds = PlayerControls.TransformToVisual(null).TransformBounds(
+            new Rect(0, 0, PlayerControls.ActualWidth, PlayerControls.ActualHeight));
         int left = (int)Math.Floor(bounds.Left * scale);
         int top = (int)Math.Floor(bounds.Top * scale);
         int right = (int)Math.Ceiling(bounds.Right * scale);
@@ -101,7 +113,7 @@ public sealed partial class MainWindow
 
     private void TrackPlayerPointer(DispatcherQueueTimer sender, object args)
     {
-        if (!_hasVideo || _closed)
+        if (!_hasVideo || !_playerFullScreen || _closed)
             return;
 
         // The video and its black bars can belong to a child HWND, so XAML pointer events alone are insufficient.
@@ -114,8 +126,8 @@ public sealed partial class MainWindow
         }
 
         if (_playerOverlayTargetVisible && Stopwatch.GetElapsedTime(_playerOverlayActivity) >= TimeSpan.FromSeconds(3) &&
-            RotateLeftButton.FocusState != FocusState.Keyboard && RotateRightButton.FocusState != FocusState.Keyboard &&
-            FullScreenButton.FocusState != FocusState.Keyboard)
+            !_playerControlsPointerOver && _playbackSeekSlider is null && !PlayerControlsHaveKeyboardFocus() &&
+            !(_mediaState.IsDirectVideo && !_mediaState.Playing))
         {
             SetPlayerOverlayVisible(false);
         }
@@ -132,10 +144,26 @@ public sealed partial class MainWindow
             pointer.X >= slot.X && pointer.X < slot.X + slot.Width && pointer.Y >= slot.Y && pointer.Y < slot.Y + slot.Height;
     }
 
-    private void PlayerOverlayGotFocus(object sender, RoutedEventArgs args)
+    private bool PlayerControlsHaveKeyboardFocus()
     {
-        if (_hasVideo && args.OriginalSource is Control { FocusState: FocusState.Keyboard })
-            ShowPlayerOverlay();
+        if (WindowLayout.XamlRoot is not { } root ||
+            FocusManager.GetFocusedElement(root) is not Control { FocusState: FocusState.Keyboard } focus) return false;
+        for (DependencyObject? element = focus; element is not null; element = VisualTreeHelper.GetParent(element))
+            if (ReferenceEquals(element, PlayerControls)) return true;
+        return false;
+    }
+
+    private void PlayerControlsGotFocus(object sender, RoutedEventArgs args)
+    {
+        if (_hasVideo) ShowPlayerOverlay();
+    }
+
+    private void PlayerControlsPointerEntered(object sender, PointerRoutedEventArgs args) => _playerControlsPointerOver = true;
+    private void PlayerControlsPointerExited(object sender, PointerRoutedEventArgs args) => _playerControlsPointerOver = false;
+
+    private void PlayerControlsSizeChanged(object sender, SizeChangedEventArgs args)
+    {
+        if (_playerFullScreen) UpdateVideoHost();
     }
 
     private void ShowPlayerOverlay()
@@ -144,70 +172,14 @@ public sealed partial class MainWindow
         SetPlayerOverlayVisible(true);
     }
 
-    private void SetPlayerOverlayVisible(bool visible, bool animate = true)
+    private void SetPlayerOverlayVisible(bool visible)
     {
-        if (animate && _playerOverlayTargetVisible == visible)
-            return;
-
+        visible = _hasVideo && (visible || !_playerFullScreen);
         _playerOverlayTargetVisible = visible;
-        double targetOpacity = visible ? 1 : 0;
-        if (!animate || !_motionSettings.AnimationsEnabled || !IsMirrorPageSelected || PlayerOverlay.Opacity == targetOpacity)
-        {
-            StopPlayerOverlayFade();
-            ApplyPlayerOverlayOpacity(targetOpacity);
-            return;
-        }
-
-        _playerOverlayFadeFrom = PlayerOverlay.Opacity;
-        _playerOverlayFadeStarted = Stopwatch.GetTimestamp();
-        if (_playerOverlayFadeTimer is null)
-        {
-            // The XAML compositor can be idle while the independent video HWND is playing.
-            _playerOverlayFadeTimer = DispatcherQueue.CreateTimer();
-            _playerOverlayFadeTimer.Interval = TimeSpan.FromMilliseconds(16);
-            _playerOverlayFadeTimer.Tick += AdvancePlayerOverlayFade;
-        }
-        if (!_playerOverlayFadeTimer.IsRunning)
-            _playerOverlayFadeTimer.Start();
-    }
-
-    private void AdvancePlayerOverlayFade(DispatcherQueueTimer sender, object args)
-    {
-        if (!sender.IsRunning)
-            return;
-
-        const double durationMilliseconds = 150;
-        double targetOpacity = _playerOverlayTargetVisible ? 1 : 0;
-        double progress = Stopwatch.GetElapsedTime(_playerOverlayFadeStarted).TotalMilliseconds / durationMilliseconds;
-        if (progress >= 1)
-        {
-            StopPlayerOverlayFade();
-            ApplyPlayerOverlayOpacity(targetOpacity);
-            return;
-        }
-
-        double remaining = 1 - progress;
-        double easedProgress = 1 - remaining * remaining * remaining;
-        ApplyPlayerOverlayOpacity(_playerOverlayFadeFrom + (targetOpacity - _playerOverlayFadeFrom) * easedProgress);
-    }
-
-    private void StopPlayerOverlayFade() => _playerOverlayFadeTimer?.Stop();
-
-    private void ApplyPlayerOverlayOpacity(double opacity)
-    {
-        bool visible = opacity > 0;
-        if (!visible)
-            PlayerOverlay.Opacity = 0;
-
-        // The native video overlaps XAML. Reserve the hole before showing the first frame and remove it after the last.
-        if (PlayerOverlay.IsHitTestVisible != visible)
-        {
-            PlayerOverlay.IsHitTestVisible = visible;
-            UpdateVideoHost();
-        }
-
-        if (visible)
-            PlayerOverlay.Opacity = opacity;
+        PlayerControls.Opacity = visible ? 1 : 0;
+        if (PlayerControls.IsHitTestVisible == visible) return;
+        PlayerControls.IsHitTestVisible = visible;
+        UpdateVideoHost();
     }
 
     private void RotateLeftClicked(object sender, RoutedEventArgs args) => RotatePlayer(-1);
@@ -300,13 +272,23 @@ public sealed partial class MainWindow
             _playerFullScreen = enabled;
             AppTitleBar.Visibility = enabled ? Visibility.Collapsed : _restoreTitleBar;
             MainNavigation.IsPaneVisible = !enabled && _restoreNavigationPane;
-            PlayerControls.Visibility = _hasVideo && !enabled ? Visibility.Visible : Visibility.Collapsed;
+            PlayerControls.Visibility = _hasVideo ? Visibility.Visible : Visibility.Collapsed;
+            Grid.SetRow(PlayerControls, enabled ? 1 : 2);
+            PlayerControls.VerticalAlignment = enabled ? VerticalAlignment.Bottom : VerticalAlignment.Stretch;
+            PlayerControls.Margin = enabled ? new Thickness(0) : new Thickness(0, 12, 0, 0);
+            PlayerControls.Padding = enabled ? new Thickness(24, 8, 24, 16) : new Thickness(16, 8, 16, 12);
+            PlayerControls.CornerRadius = new CornerRadius(enabled ? 0 : 8);
+            PlayerControls.RequestedTheme = enabled ? ElementTheme.Dark : ElementTheme.Default;
             FullScreenIcon.Symbol = enabled ? Symbol.BackToWindow : Symbol.FullScreen;
             RefreshFullScreenLabel();
             double gutter = MirrorPage.ActualWidth >= 640 ? 40 : 24;
             MirrorLayout.Margin = enabled ? new Thickness(0) : new Thickness(gutter, 16, gutter, 24);
-            VideoHostSlot.Margin = new Thickness(enabled ? 0 : 4);
+            VideoHostSlot.Margin = new Thickness(0);
             PlayerFrame.CornerRadius = new CornerRadius(enabled ? 0 : 8);
+            PlayerFrame.Background = new SolidColorBrush(enabled ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.Transparent);
+            if (enabled && _hasVideo) _playerOverlayTimer.Start();
+            else _playerOverlayTimer.Stop();
+            UpdateMusicBackgroundState();
             if (_hasVideo)
                 ShowPlayerOverlay();
         }

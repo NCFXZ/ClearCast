@@ -10,12 +10,12 @@ namespace ClearCast;
 
 public sealed partial class SvgFrameAnimation : UserControl, IDisposable
 {
-    internal const int FrameCount = 80;
-    internal const int FramesPerSecond = 30;
+    internal const int FrameCount = 200;
+    internal const int FramesPerSecond = 25;
     private const int DecodeConcurrency = 4;
     private const int StartupBufferFrames = 6;
     private const double PreferredWidth = 480;
-    private const double AspectRatio = 498.0 / 324;
+    private const double AspectRatio = 1114.0 / 674;
 
     private readonly Image _image = new() { Stretch = Stretch.Uniform, UseLayoutRounding = true };
     private readonly Stopwatch _playback = new();

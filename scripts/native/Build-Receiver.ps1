@@ -122,7 +122,9 @@ $patches = @(
     (Join-Path $patchDirectory 'uxplay-first-pin-retry.patch'),
     (Join-Path $patchDirectory 'uxplay-pairing-dual-stack.patch'),
     (Join-Path $patchDirectory 'uxplay-pairing-cooldown-feedback.patch'),
-    (Join-Path $patchDirectory 'uxplay-audio-activity.patch')
+    (Join-Path $patchDirectory 'uxplay-audio-activity.patch'),
+    (Join-Path $patchDirectory 'uxplay-playback-controls.patch'),
+    (Join-Path $patchDirectory 'uxplay-device-name.patch')
 )
 # Use a fresh source tree when a patch changes.
 $hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '') +
@@ -191,9 +193,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the receiver DLL.' }
     foreach ($export in 'clearcast_receiver_start', 'clearcast_receiver_start_v2', 'clearcast_receiver_stop',
                          'clearcast_receiver_get_name',
-                         'clearcast_receiver_read_event', 'clearcast_receiver_read_stats',
+                         'clearcast_receiver_read_event', 'clearcast_receiver_read_stats', 'clearcast_receiver_read_video_frame',
                          'clearcast_receiver_set_decoder', 'clearcast_receiver_set_video_rotation',
-                         'clearcast_receiver_read_media', 'clearcast_receiver_read_artwork', 'clearcast_receiver_media_command') {
+                         'clearcast_receiver_read_media', 'clearcast_receiver_read_artwork', 'clearcast_receiver_media_command', 'clearcast_receiver_media_control') {
         if (-not ($receiverInfo -match "^\s*\[\s*\d+\].*\s$export\s*$")) {
             throw "Receiver DLL does not export $export."
         }

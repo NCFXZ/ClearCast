@@ -87,9 +87,11 @@ static void fixture_register(void *cls, const char *id, const char *key, const c
 void clearcast_media_verified(uint64_t id, const unsigned char *peer, int length, unsigned int zone) {}
 void clearcast_media_closed(uint64_t id) {}
 void clearcast_media_remote(uint64_t id, const char *dacp, const char *remote) {}
+void clearcast_media_client_name(uint64_t id, const char *name) {}
 bool clearcast_media_peer_verified(const unsigned char *peer, int length, unsigned int zone) { return false; }
 void clearcast_media_retain_peer(const unsigned char *peer, int length, unsigned int zone, bool retain) {}
 bool clearcast_direct_video_uri_allowed(const char *uri) { return false; }
+bool clearcast_direct_video_is_active(void) { return false; }
 uint64_t clearcast_diagnostic_connected(const char *remote) { static uint64_t id; return ++id; }
 void clearcast_diagnostic_closed(uint64_t id) {}
 void clearcast_diagnostic_request(uint64_t id, const char *method, const char *path) {}

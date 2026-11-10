@@ -58,6 +58,7 @@ public sealed partial class MainWindow
     {
         if (!condition) throw new InvalidOperationException(name);
         _uiTestChecks.Add(name);
+        File.AppendAllText(Path.Combine(_root, "ui-check-progress.log"), name + Environment.NewLine);
     }
 
     private static async Task UiWaitUntil(Func<bool> condition, string name, int timeoutMilliseconds = 10000)
@@ -359,15 +360,15 @@ public sealed partial class MainWindow
             LandingAnimation.LoadError is not null, "native SVG animation frames load", 15000);
         if (LandingAnimation.LoadError is { } loadError)
             throw new InvalidOperationException($"Native SVG preload failed after {LandingAnimation.LoadedFrameCount} frames.", loadError);
-        UiCheck(LandingAnimation.LoadError is null && LandingAnimation.LoadedFrameCount == 80,
-            "all 80 SVG frames decode through native SvgImageSource");
+        UiCheck(LandingAnimation.LoadError is null && LandingAnimation.LoadedFrameCount == SvgFrameAnimation.FrameCount,
+            "all supplied SVG frames decode through native SvgImageSource");
         await UiWaitUntil(() => LandingAnimation.IsAnimating, "landing SVG animation starts");
         await UiWaitUntil(() => LandingAnimation.LoadedFrameCountAtFirstAdvance > 0,
             "progressive SVG animation presents its first advancing frame");
         UiCheck(LandingAnimation.LoadedFrameCountAtPlaybackStart is > 0 and < SvgFrameAnimation.FrameCount,
             "SVG animation starts after a small decoded buffer before full preload");
         UiCheck(LandingAnimation.LoadedFrameCountAtFirstAdvance < SvgFrameAnimation.FrameCount ||
-            LandingAnimation.AllFramesLoadedMilliseconds - LandingAnimation.PlaybackStartMilliseconds <= 33.4,
+            LandingAnimation.AllFramesLoadedMilliseconds - LandingAnimation.PlaybackStartMilliseconds <= 1000.0 / SvgFrameAnimation.FramesPerSecond + 0.1,
             "SVG animation advances before full preload unless all frames decode within one frame interval");
         var imageSource = UiDescendants<Image>(LandingAnimation).Single().Source as SvgImageSource;
         UiCheck(imageSource is not null,
@@ -550,9 +551,9 @@ public sealed partial class MainWindow
             previousFrame = frame;
             return observedWrap && LandingAnimation.CompletedLoops > loopsBefore &&
                 LandingAnimation.PresentedFrameCount > presentedBeforeWrap;
-        }, "native SVG animation visibly wraps to its first frames", 3500);
+        }, "native SVG animation visibly wraps to its first frames", (int)(1000.0 * SvgFrameAnimation.FrameCount / SvgFrameAnimation.FramesPerSecond + 1000));
         UiCheck(LandingAnimation.CurrentFrameIndex is >= 0 and < SvgFrameAnimation.FrameCount,
-            "native SVG animation stays within its 80-frame sequence");
+            "native SVG animation stays within its supplied frame sequence");
         _uiTestLayouts.Add(new
         {
             phase = "native SVG animation loop", frameBeforeWrap,
@@ -576,8 +577,8 @@ public sealed partial class MainWindow
         await UiWaitUntil(() => LandingAnimation.IsAnimating &&
             LandingAnimation.PresentedFrameCount > pausedPresentations,
             "returning to mirroring resumes SVG frames");
-        UiCheck(LandingAnimation.LoadedFrameCount == 80 && LandingAnimation.LoadError is null,
-            "navigation reuses the 80 decoded SVG frames");
+        UiCheck(LandingAnimation.LoadedFrameCount == SvgFrameAnimation.FrameCount && LandingAnimation.LoadError is null,
+            "navigation reuses the decoded SVG frames");
 
         UiCheck(AppWindow.Presenter is OverlappedPresenter, "animation window supports minimize and restore");
         var presenter = (OverlappedPresenter)AppWindow.Presenter;
@@ -657,7 +658,7 @@ public sealed partial class MainWindow
             SetPlayerFrameSize(320, 180);
             SetVideoAvailable(true);
             UiCheck(!LandingAnimation.IsAnimating, "active video pauses the landing SVG animation");
-            await UiWaitForStableLayout(VideoHostSlot, PlayerOverlay);
+            await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
             DisplaySizeButton.SelectedItem = OriginalDisplayItem;
             UpdateVideoHost();
             UiCheck(UiGetWindowRect(_videoHost!.Handle, out var actualSmall), "read owned player HWND geometry");
@@ -672,7 +673,9 @@ public sealed partial class MainWindow
             UiCheck(UiGetWindowRect(_videoHost.Handle, out var actualFit), "read fit-window HWND geometry");
             _uiTestLayouts.Add(new { playerWindowPhase = "fit host to slot", slotWidth = fitSlot.Width, slotHeight = fitSlot.Height,
                 actualWidth = actualFit.Width, actualHeight = actualFit.Height });
-            UiCheck(actualFit.Width == fitSlot.Width && actualFit.Height == fitSlot.Height, "fit host fills the UI video slot");
+            UiCheck(actualFit.Width <= fitSlot.Width && actualFit.Height <= fitSlot.Height &&
+                Math.Abs((double)actualFit.Width / actualFit.Height - 320.0 / 180) < 0.01,
+                "fit host preserves the full frame aspect inside the UI video slot");
 
             SetPlayerFrameSize(3840, 2160);
             DisplaySizeButton.SelectedItem = OriginalDisplayItem;
@@ -760,8 +763,8 @@ public sealed partial class MainWindow
                     new JsonSerializerOptions { WriteIndented = true }));
         }
 
-        // Fifteen seconds is more than five complete 80-frame loops. Exclude
-        // that warm-up before comparing process resources; do not force a GC.
+        // Exclude the initial warm-up before comparing process resources;
+        // do not force a GC or assume a fixed animation frame count.
         double warmupSeconds = Math.Min(15, seconds / 4.0);
         double windowSeconds = Math.Min(25, seconds / 3.0);
         var early = samples.Where(sample => sample.Seconds >= warmupSeconds &&
@@ -799,16 +802,18 @@ public sealed partial class MainWindow
             completedLoops = samples[^1].Loops - samples[0].Loops, samples, intervals,
             thresholdRationale = "Compare median windows after the initial warm-up without forced GC. " +
                 "Allow at most 16 MiB or eight RGBA frames of private-memory drift and eight handles; " +
-                "a repeated 80-frame cache or a handle retained on each loop exceeds these budgets. " +
-                "Presentation throughput must retain at least five sixths of the requested 30 fps."
+                "a repeated " + SvgFrameAnimation.FrameCount + "-frame cache or a handle retained on each loop exceeds these budgets. " +
+                "Presentation throughput must retain at least five sixths of the supplied frame rate."
         };
         _uiTestLayouts.Add(resourceReport);
         await File.WriteAllTextAsync(Path.Combine(output, "animation-soak-resources.json"),
             JsonSerializer.Serialize(resourceReport, new JsonSerializerOptions { WriteIndented = true }));
-        UiCheck(samples.All(sample => sample.LoadedFrames == 80 && sample.FrameIndex is >= 0 and < 80),
-            "animation soak keeps exactly the complete 80-frame cache");
-        UiCheck(intervals.All(interval => interval.frames > 0) && presentedFps is >= 25 and <= 31.5,
-            "animation soak keeps advancing near 30 fps throughout the sampling window");
+        UiCheck(samples.All(sample => sample.LoadedFrames == SvgFrameAnimation.FrameCount &&
+            sample.FrameIndex >= 0 && sample.FrameIndex < SvgFrameAnimation.FrameCount),
+            "animation soak keeps exactly the complete " + SvgFrameAnimation.FrameCount + "-frame cache");
+        UiCheck(intervals.All(interval => interval.frames > 0) && presentedFps >= SvgFrameAnimation.FramesPerSecond * 5.0 / 6 &&
+            presentedFps <= SvgFrameAnimation.FramesPerSecond * 1.05,
+            "animation soak keeps advancing near the supplied frame rate throughout the sampling window");
         UiCheck(privateGrowth <= memoryGrowthBudget, "animation soak private memory stays within its bounded drift budget");
         UiCheck(handleGrowth <= handleGrowthBudget, "animation soak does not retain a handle on each loop");
 
@@ -864,8 +869,34 @@ public sealed partial class MainWindow
                 throw new InvalidOperationException("An explicitly marked disposable CLEARCAST_HOME is required.");
             Directory.CreateDirectory(output);
             await UiWaitUntil(() => WindowLayout.XamlRoot is not null, "window loading");
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKDROP_ONLY") == "1")
+            {
+                UiCheck(_receiver is null, "backdrop benchmark never starts a receiver or occupies its ports");
+                UiCheck(WindowLayout.KeyboardAcceleratorPlacementMode == Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden,
+                    "global Space shortcut does not create a misleading tooltip on disconnect");
+                _preferences = _preferences with { AutoFullScreen = false };
+                await UiWaitUntil(() => LandingAnimation.LoadedFrameCount == SvgFrameAnimation.FrameCount,
+                    "SVG decode settles before backdrop measurements", 15000);
+                ApplyMediaState(new ReceiverMediaState(1, ReceiverMediaKind.Video, true, "", "", "", 5_000, 60_000, 0, 0,
+                    MediaControls.PlayPause | MediaControls.Seek) { Source = "direct", ControlSession = 1, ContentRevision = 1, SeekEndMs = 60_000 });
+                SetPlayerFrameSize(1280, 720);
+                SetVideoAvailable(true);
+                await UiTestVideoBackdropAsync(output);
+                receiverStopped = true;
+                return;
+            }
             await UiWaitUntil(() => _receiverReady || ReceiverInfoBar.IsOpen, "receiver startup", 30000);
             UiCheck(_receiverReady, "receiver starts successfully");
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_STORE_ONLY") == "1")
+            {
+                await UiTestStoreMusicScreenshotsAsync(output);
+                return;
+            }
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_PLAYBACK_ONLY") == "1")
+            {
+                await UiTestLivePlaybackControlsAsync(output);
+                return;
+            }
             UiCheck(await StopReceiverAsync(), "receiver stops without blocking the window");
             receiverStopped = true;
 
@@ -876,6 +907,7 @@ public sealed partial class MainWindow
             StartAirPlay();
             await UiWaitUntil(() => _receiverReady || ReceiverInfoBar.IsOpen, "receiver restarts for music activity polling", 30000);
             UiCheck(_receiverReady, "receiver restarts successfully for fast music polling");
+            await UiTestLivePlaybackControlsAsync(output);
             await UiTestMusicFastPollingAsync();
             await UiTestStoreMusicScreenshotsAsync(output);
             UiCheck(await StopReceiverAsync(), "receiver stops cleanly after fast music polling validation");

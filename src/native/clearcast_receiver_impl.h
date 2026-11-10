@@ -17,6 +17,8 @@
 #include "lib/global.h"
 #include "lib/mdnsd/mdnsd.h"
 #include "clearcast_media_http.h"
+#include "clearcast_video_frame.h"
+namespace { void write_diagnostic(const char* format, ...) noexcept; }
 #include "clearcast_media_audio.h"
 
 extern "C" void clearcast_decoder_result(int decoder, int error);
@@ -57,6 +59,7 @@ std::string diagnostic_previous_path;
 uint64_t diagnostic_connection_id = 0;
 HANDLE worker_thread = nullptr;
 GstBaseSink* stats_sink = nullptr;
+uint64_t video_frame_generation = 0;
 int requested_rotation = 0;
 int applied_rotation = -1;
 std::array<ReceiverEvent, 64> events;
@@ -158,6 +161,7 @@ void set_stats_sink(GstElement* sink) {
     }
     if (stats_sink != previous) {
         applied_rotation = -1;
+        ++video_frame_generation;
     }
     if (previous) {
         gst_object_unref(previous);
@@ -487,6 +491,9 @@ int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread
     }
     logger_set_callback(render_logger, log_callback, nullptr);
     logger_set_level(render_logger, LOGGER_INFO);
+    // Pure ALAC music must honor the sender's NTP presentation schedule.
+    // Playing decoded packets immediately makes audio lead the sender's lyrics.
+    audio_sync = true;
     if (!audio_renderer_init(render_logger, audiosink.c_str(), &audio_sync, &video_sync, audio_rtp_pipeline.c_str())
         || !initialize_video()) {
         return ERROR_NOT_SUPPORTED;
@@ -874,4 +881,31 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_stats(
         gst_object_unref(pad);
     }
     return 1;
+}
+
+extern "C" __declspec(dllexport) int clearcast_receiver_read_video_frame(
+    unsigned char* pixels, int capacity, uint64_t* generation) {
+    if (!pixels || capacity < clearcast_video_frame::bytes || !generation) return 0;
+    *generation = 0;
+    GstBaseSink* sink;
+    uint64_t epoch;
+    {
+        ExclusiveLock lock(stats_lock);
+        if (!mirror_active || !stats_sink || clearcast_stopping) return 0;
+        sink = GST_BASE_SINK(gst_object_ref(stats_sink));
+        epoch = video_frame_generation;
+    }
+    GstSample* sample = gst_base_sink_get_last_sample(sink);
+    std::array<unsigned char, clearcast_video_frame::bytes> frame;
+    int copied = clearcast_video_frame::copy(sample, frame.data(), int(frame.size()));
+    if (sample) gst_sample_unref(sample);
+    {
+        ExclusiveLock lock(stats_lock);
+        if (copied && stats_sink == sink && epoch == video_frame_generation && !clearcast_stopping) {
+            std::memcpy(pixels, frame.data(), frame.size());
+            *generation = epoch;
+        } else copied = 0;
+    }
+    gst_object_unref(sink);
+    return copied;
 }

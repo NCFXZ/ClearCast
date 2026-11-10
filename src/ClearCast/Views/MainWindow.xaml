@@ -8,7 +8,10 @@
         <MicaBackdrop Kind="BaseAlt" />
     </Window.SystemBackdrop>
 
-    <Grid x:Name="WindowLayout">
+    <Grid x:Name="WindowLayout" KeyboardAcceleratorPlacementMode="Hidden">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="Space" Invoked="PlaybackSpaceInvoked" />
+        </Grid.KeyboardAccelerators>
         <Grid.Resources>
             <ResourceDictionary>
                 <ResourceDictionary.ThemeDictionaries>
@@ -31,6 +34,49 @@
                 <Style x:Key="AccentTextActionButtonStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
                     <Setter Property="MinWidth" Value="{StaticResource ActionControlMinWidth}" />
                     <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
+                </Style>
+                <Style x:Key="PlayerActionButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+                    <Setter Property="Width" Value="36" />
+                    <Setter Property="Height" Value="36" />
+                    <Setter Property="Padding" Value="0" />
+                </Style>
+                <Style x:Key="PlaybackSeekBarStyle" TargetType="local:PlaybackSeekBar">
+                    <Setter Property="UseSystemFocusVisuals" Value="True" />
+                    <Setter Property="SmallChange" Value="1" />
+                    <Setter Property="LargeChange" Value="10" />
+                    <Setter Property="Background" Value="{ThemeResource SliderTrackFill}" />
+                    <Setter Property="Foreground" Value="{ThemeResource SliderTrackValueFill}" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="local:PlaybackSeekBar">
+                                <Grid x:Name="Track" Background="Transparent" MinHeight="32">
+                                    <VisualStateManager.VisualStateGroups>
+                                        <VisualStateGroup x:Name="CommonStates">
+                                            <VisualState x:Name="Normal" />
+                                            <VisualState x:Name="PointerOver" />
+                                            <VisualState x:Name="Pressed" />
+                                            <VisualState x:Name="Disabled">
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetName="Track" Storyboard.TargetProperty="Opacity" To="0.4" Duration="0" />
+                                                </Storyboard>
+                                            </VisualState>
+                                        </VisualStateGroup>
+                                    </VisualStateManager.VisualStateGroups>
+                                    <Rectangle Height="4" Margin="10,0"
+                                        Fill="{TemplateBinding Background}" RadiusX="2" RadiusY="2" VerticalAlignment="Center" />
+                                    <Rectangle x:Name="ProgressFill" Width="0" Height="4" Fill="{TemplateBinding Foreground}"
+                                        RadiusX="2" RadiusY="2" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False">
+                                        <Rectangle.RenderTransform><TranslateTransform X="10" /></Rectangle.RenderTransform>
+                                    </Rectangle>
+                                    <Border x:Name="Thumb" Width="20" Height="20" VerticalAlignment="Center" HorizontalAlignment="Left"
+                                        Background="{TemplateBinding Foreground}" CornerRadius="10" IsHitTestVisible="False"
+                                        BorderBrush="{ThemeResource SliderThumbBorderBrush}" BorderThickness="1">
+                                        <Border.RenderTransform><TranslateTransform /></Border.RenderTransform>
+                                    </Border>
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
                 </Style>
             </ResourceDictionary>
         </Grid.Resources>
@@ -263,9 +309,9 @@
                             </InfoBar.ActionButton>
                         </InfoBar>
                         <Grid Grid.Row="1">
-                            <Border x:Name="PlayerFrame" Background="Black" CornerRadius="8" Visibility="Collapsed"
+                            <Border x:Name="PlayerFrame" Background="Transparent" CornerRadius="8" Visibility="Collapsed"
                                 DoubleTapped="PlayerFrameDoubleTapped" />
-                            <Grid x:Name="VideoHostSlot" Margin="4" />
+                            <Grid x:Name="VideoHostSlot" />
                             <ScrollViewer
                                 x:Name="VideoPlaceholder"
                                 HorizontalContentAlignment="Stretch"
@@ -330,6 +376,9 @@
                                     <StackPanel Spacing="6">
                                         <ProgressBar x:Name="MusicProgress" Minimum="0" Maximum="1" Value="0"
                                             AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}" />
+                                        <local:PlaybackSeekBar x:Name="MusicSeekSlider" Minimum="0" Maximum="1000" Value="0" Visibility="Collapsed"
+                                            Style="{StaticResource PlaybackSeekBarStyle}"
+                                            AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}" />
                                         <Grid ColumnDefinitions="*,Auto">
                                             <TextBlock x:Name="MusicElapsed" Style="{StaticResource CaptionTextBlockStyle}"
                                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -362,45 +411,72 @@
                                 </StackPanel>
                                 </Grid>
                             </ScrollViewer>
-                            <StackPanel x:Name="PlayerOverlay" Orientation="Horizontal" Spacing="6" Margin="0,0,10,10"
-                                HorizontalAlignment="Right" VerticalAlignment="Bottom" RequestedTheme="Dark"
-                                GotFocus="PlayerOverlayGotFocus" Opacity="0" IsHitTestVisible="False" Visibility="Collapsed">
-                                <StackPanel.Resources>
-                                    <Style TargetType="local:PlayerOverlayButton" BasedOn="{StaticResource DefaultButtonStyle}" />
-                                </StackPanel.Resources>
-                                <local:PlayerOverlayButton x:Name="RotateLeftButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
-                                    AutomationProperties.Name="{x:Bind Texts.RotateLeft, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{x:Bind Texts.RotateLeft, Mode=OneWay}" Click="RotateLeftClicked">
-                                    <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateLeftButton}"
-                                        StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                                        Data="M 4.5,12 A 7.5,7.5 0 1 1 12,19.5 M 2,10.5 L 4.5,13 L 7,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
-                                </local:PlayerOverlayButton>
-                                <local:PlayerOverlayButton x:Name="RotateRightButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
-                                    AutomationProperties.Name="{x:Bind Texts.RotateRight, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{x:Bind Texts.RotateRight, Mode=OneWay}" Click="RotateRightClicked">
-                                    <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateRightButton}"
-                                        StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                                        Data="M 19.5,12 A 7.5,7.5 0 1 0 12,19.5 M 17,10.5 L 19.5,13 L 22,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
-                                </local:PlayerOverlayButton>
-                                <local:PlayerOverlayButton x:Name="FullScreenButton" Width="36" Height="36" Padding="0" FocusVisualMargin="-3"
-                                    Click="PlayerFullScreenClicked">
-                                    <SymbolIcon x:Name="FullScreenIcon" Symbol="FullScreen" />
-                                </local:PlayerOverlayButton>
-                            </StackPanel>
                         </Grid>
-                        <Grid x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" ColumnSpacing="12" Visibility="Collapsed">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center" Spacing="4">
-                                <TextBlock x:Name="StatusText" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
-                                <TextBlock x:Name="StreamText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-                            </StackPanel>
-                            <Button x:Name="PlayerStopButton" Grid.Column="1" VerticalAlignment="Center" Click="DisconnectClicked"
-                                Style="{StaticResource TextActionButtonStyle}"
-                                Content="{x:Bind Texts.Disconnect, Mode=OneWay}" />
-                        </Grid>
+                        <Border x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" Padding="16,8,16,12"
+                            CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" Visibility="Collapsed"
+                            SizeChanged="PlayerControlsSizeChanged" GotFocus="PlayerControlsGotFocus"
+                            PointerEntered="PlayerControlsPointerEntered" PointerExited="PlayerControlsPointerExited">
+                            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
+                                <Grid x:Name="VideoTransport" Visibility="Collapsed" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                                    <TextBlock x:Name="VideoElapsedText" FontSize="12" VerticalAlignment="Center" />
+                                    <local:PlaybackSeekBar x:Name="VideoSeekSlider" Grid.Column="1" Minimum="0" Maximum="1000" Value="0"
+                                        Style="{StaticResource PlaybackSeekBarStyle}"
+                                        AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}" />
+                                    <TextBlock x:Name="VideoRemainingText" Grid.Column="2" FontSize="12" VerticalAlignment="Center" />
+                                </Grid>
+                                <Grid Grid.Row="1" ColumnDefinitions="*,Auto,*" ColumnSpacing="12">
+                                    <Button x:Name="PlayerStopButton" Style="{StaticResource SubtleButtonStyle}" Click="DisconnectClicked"
+                                        HorizontalAlignment="Left" VerticalAlignment="Center" MinHeight="36"
+                                        Content="{x:Bind Texts.Disconnect, Mode=OneWay}" />
+                                    <StackPanel x:Name="VideoPlaybackActions" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                        <Button x:Name="VideoSkipBackwardButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoSkipBackwardClicked"
+                                            AutomationProperties.Name="{x:Bind Texts.SkipBackward10, Mode=OneWay}"
+                                            ToolTipService.ToolTip="{x:Bind Texts.SkipBackward10, Mode=OneWay}">
+                                            <Grid Width="24" Height="24">
+                                                <Path Stroke="{Binding Foreground, ElementName=VideoSkipBackwardButton}" StrokeThickness="1.7"
+                                                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                                    Data="M21,11 A8,8 0 0 0 5,7 L2,10 M2,5 L2,10 L7,10" />
+                                                <TextBlock Text="10" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Bottom" />
+                                            </Grid>
+                                        </Button>
+                                        <Button x:Name="VideoPlayPauseButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoPlayPauseClicked">
+                                            <SymbolIcon x:Name="VideoPlayPauseIcon" Symbol="Pause" />
+                                        </Button>
+                                        <Button x:Name="VideoSkipForwardButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoSkipForwardClicked"
+                                            AutomationProperties.Name="{x:Bind Texts.SkipForward10, Mode=OneWay}"
+                                            ToolTipService.ToolTip="{x:Bind Texts.SkipForward10, Mode=OneWay}">
+                                            <Grid Width="24" Height="24">
+                                                <Path Stroke="{Binding Foreground, ElementName=VideoSkipForwardButton}" StrokeThickness="1.7"
+                                                    StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                                    Data="M3,11 A8,8 0 0 1 19,7 L22,10 M22,5 L22,10 L17,10" />
+                                                <TextBlock Text="10" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Bottom" />
+                                            </Grid>
+                                        </Button>
+                                    </StackPanel>
+                                    <StackPanel x:Name="PlayerActions" Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                        <Button x:Name="RotateLeftButton" Style="{StaticResource PlayerActionButtonStyle}"
+                                            AutomationProperties.Name="{x:Bind Texts.RotateLeft, Mode=OneWay}"
+                                            ToolTipService.ToolTip="{x:Bind Texts.RotateLeft, Mode=OneWay}" Click="RotateLeftClicked">
+                                            <Path Width="22" Height="22" Stroke="{Binding Foreground, ElementName=RotateLeftButton}"
+                                                StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                                Data="M 4.5,12 A 7.5,7.5 0 1 1 12,19.5 M 2,10.5 L 4.5,13 L 7,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
+                                        </Button>
+                                        <Button x:Name="RotateRightButton" Style="{StaticResource PlayerActionButtonStyle}"
+                                            AutomationProperties.Name="{x:Bind Texts.RotateRight, Mode=OneWay}"
+                                            ToolTipService.ToolTip="{x:Bind Texts.RotateRight, Mode=OneWay}" Click="RotateRightClicked">
+                                            <Path Width="22" Height="22" Stroke="{Binding Foreground, ElementName=RotateRightButton}"
+                                                StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                                Data="M 19.5,12 A 7.5,7.5 0 1 0 12,19.5 M 17,10.5 L 19.5,13 L 22,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
+                                        </Button>
+                                        <Button x:Name="FullScreenButton" Style="{StaticResource PlayerActionButtonStyle}" Click="PlayerFullScreenClicked">
+                                            <SymbolIcon x:Name="FullScreenIcon" Symbol="FullScreen" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock x:Name="VideoControlHint" Grid.Row="2" Visibility="Collapsed" TextWrapping="Wrap"
+                                    FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Grid>
+                        </Border>
                     </Grid>
                 </Grid>
 
@@ -499,7 +575,7 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE740;" FontSize="20" />
+                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE799;" FontSize="20" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.DisplaySizeLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -517,11 +593,7 @@
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                         <Grid ColumnDefinitions="24,*,Auto" ColumnSpacing="16">
-                                            <Viewbox Width="20" Height="20" VerticalAlignment="Center">
-                                                <Path Width="24" Height="24" Stroke="{ThemeResource TextFillColorPrimaryBrush}"
-                                                    StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                                    Data="M3,9 L3,3 L9,3 M15,3 L21,3 L21,9 M21,15 L21,21 L15,21 M9,21 L3,21 L3,15" />
-                                            </Viewbox>
+                                            <SymbolIcon Symbol="FullScreen" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.AutoFullScreenLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Text="{x:Bind Texts.AutoFullScreenDescription, Mode=OneWay}" TextWrapping="Wrap"

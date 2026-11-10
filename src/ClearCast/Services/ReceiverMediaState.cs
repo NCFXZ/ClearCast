@@ -6,7 +6,7 @@ namespace ClearCast;
 internal enum ReceiverMediaKind { None, Audio, Video }
 
 [Flags]
-internal enum MediaControls { None = 0, PlayPause = 1, Previous = 2, Next = 4 }
+internal enum MediaControls { None = 0, PlayPause = 1, Previous = 2, Next = 4, Seek = 8 }
 
 internal readonly record struct ReceiverAudioBeat(ulong Sequence, float Strength, int AgeMs)
 {
@@ -55,6 +55,20 @@ internal sealed record ReceiverMediaState(
 
     public ulong Session { get; init; }
     public bool Connected { get; init; }
+    public string DeviceName { get; init; } = "";
+    public string Source { get; init; } = "";
+    public ulong ControlSession { get; init; }
+    public ulong ContentRevision { get; init; }
+    public long SeekStartMs { get; init; }
+    public long SeekEndMs { get; init; }
+    public bool IsDirectVideo => Kind == ReceiverMediaKind.Video && Source == "direct";
+    public bool IsLive { get; init; }
+    public bool CanControlVideo => IsDirectVideo && !IsLive && DurationMs > 0;
+    public bool CanSeek => Controls.HasFlag(MediaControls.Seek) && ControlSession != 0 && ContentRevision != 0 && SeekEndMs > SeekStartMs;
+    internal double SeekSliderValue(long position) => CanSeek
+        ? Math.Clamp((double)(position - SeekStartMs) / (SeekEndMs - SeekStartMs) * 1000, 0, 1000) : 0;
+    internal long SeekPosition(double sliderValue) => CanSeek && double.IsFinite(sliderValue)
+        ? SeekStartMs + (long)Math.Round(Math.Clamp(sliderValue, 0, 1000) / 1000 * (SeekEndMs - SeekStartMs)) : PositionMs;
     public ReceiverAudioActivity AudioActivity { get; init; }
 
     internal static ReceiverMediaState Empty { get; } = new(0, ReceiverMediaKind.None, false, "", "", "", 0, 0, 0, 0, MediaControls.None);
@@ -118,14 +132,44 @@ internal sealed record ReceiverMediaState(
                     return false;
                 connected = connectedValue.GetBoolean();
             }
+            string deviceName = "";
+            if (root.TryGetProperty("deviceName", out _) && (!TryText(root, "deviceName", out deviceName) ||
+                deviceName.Length > 512 || deviceName.Any(char.IsControl))) return false;
 
             position = Math.Clamp(position, 0, duration > 0 ? duration : MaximumDurationMs);
+            string source = kind == ReceiverMediaKind.Audio ? "audio" : "";
+            if (root.TryGetProperty("source", out _) && (!TryText(root, "source", out source) ||
+                source is not ("none" or "audio" or "direct" or "mirror") ||
+                (source is "direct" or "mirror" && kind != ReceiverMediaKind.Video) ||
+                (source == "audio" && kind != ReceiverMediaKind.Audio) || (source == "none" && kind != ReceiverMediaKind.None))) return false;
+            ulong controlSession = 0, content = 0;
+            bool isLive = false;
+            if (root.TryGetProperty("isLive", out var liveValue))
+            {
+                if (liveValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+                isLive = liveValue.GetBoolean();
+                if (isLive && source != "direct") return false;
+            }
+            long seekStart = 0, seekEnd = duration;
+            if ((root.TryGetProperty("controlSession", out _) && !TryUInt64(root, "controlSession", out controlSession)) ||
+                (root.TryGetProperty("contentRevision", out _) && !TryUInt64(root, "contentRevision", out content)) ||
+                (root.TryGetProperty("seekStartMs", out _) && !TryInt64(root, "seekStartMs", out seekStart)) ||
+                (root.TryGetProperty("seekEndMs", out _) && !TryInt64(root, "seekEndMs", out seekEnd)) ||
+                seekStart < 0 || seekEnd < seekStart || seekEnd > MaximumDurationMs) return false;
+            MediaControls allowed = kind == ReceiverMediaKind.Audio ? KnownControls :
+                source == "direct" && controlSession != 0 ? MediaControls.PlayPause : MediaControls.None;
+            if ((kind == ReceiverMediaKind.Audio || source == "direct") && controlSession != 0 && content != 0 && seekEnd > seekStart)
+                allowed |= MediaControls.Seek;
             state = new(revision, kind, kind != ReceiverMediaKind.None && playingValue.GetBoolean(),
                 title, artist, album, position, duration, artworkRevision, (int)artworkBytes,
-                kind == ReceiverMediaKind.Audio ? (MediaControls)(controls & (ulong)KnownControls) : MediaControls.None)
+                (MediaControls)(controls & (ulong)allowed))
             {
                 Session = session,
+                Source = source, ControlSession = controlSession, ContentRevision = content,
+                IsLive = isLive,
+                SeekStartMs = seekStart, SeekEndMs = seekEnd,
                 Connected = connected,
+                DeviceName = connected ? deviceName.Trim() : "",
                 AudioActivity = kind == ReceiverMediaKind.Audio && playingValue.GetBoolean() ? activity : default
             };
             return true;

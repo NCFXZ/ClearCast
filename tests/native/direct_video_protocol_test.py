@@ -3,7 +3,7 @@
 Synthetic local MP4/HLS only; no device, microphone or protected-media content.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
-from receiver_test_support import ROOT, Receiver, connect, verify_pairing
+from receiver_test_support import ROOT, Receiver, connect, request, verify_pairing
 from receiver_test_bootstrap import loaded_dependency_evidence
 
 import argparse
@@ -21,8 +21,10 @@ import time
 import uuid
 
 
-def http_request(sock, path, body=b"", method="POST", session="clearcast-direct-fixture", expected=200, cseq=False, protocol="HTTP/1.1"):
+def http_request(sock, path, body=b"", method="POST", session="clearcast-direct-fixture", expected=200, cseq=False, protocol="HTTP/1.1", headers=None):
     fields = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+    if headers:
+        fields.update(headers)
     if session is not None:
         fields["X-Apple-Session-ID"] = session
     if cseq:
@@ -49,6 +51,47 @@ def http_request(sock, path, body=b"", method="POST", session="clearcast-direct-
         data += part
     assert status == expected, (path, status, expected)
     return data
+
+
+def start_media_server(work, blocked=None):
+    blocked = blocked if blocked is not None else {"media": False}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if blocked["media"]:
+                self.send_error(404)
+                return
+            filename = work / self.path.split("?", 1)[0].lstrip("/")
+            if filename.parent != work or not filename.is_file():
+                self.send_error(404)
+                return
+            data = filename.read_bytes()
+            start, end = 0, len(data) - 1
+            requested = self.headers.get("Range", "")
+            partial = requested.startswith("bytes=")
+            if partial:
+                first, _, last = requested[6:].partition("-")
+                start = int(first or "0")
+                end = min(end, int(last) if last else end)
+            self.send_response(206 if partial else 200)
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl" if filename.suffix == ".m3u8" else "video/mp2t" if filename.suffix == ".ts" else "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(max(0, end - start + 1)))
+            if partial:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.end_headers()
+            try:
+                self.wfile.write(data[start:end + 1])
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    return server, worker
 
 
 def main():
@@ -84,45 +127,12 @@ def main():
             subprocess.run([str(value) for value in command], check=True, capture_output=True, env=environment, timeout=30)
 
         blocked = {"media": False}
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_):
-                pass
-
-            def do_GET(self):
-                if blocked["media"]:
-                    self.send_error(404)
-                    return
-                filename = work / self.path.split("?", 1)[0].lstrip("/")
-                if filename.parent != work or not filename.is_file():
-                    self.send_error(404)
-                    return
-                data = filename.read_bytes()
-                start, end = 0, len(data) - 1
-                requested = self.headers.get("Range", "")
-                partial = requested.startswith("bytes=")
-                if partial:
-                    first, _, last = requested[6:].partition("-")
-                    start = int(first or "0")
-                    end = min(end, int(last) if last else end)
-                self.send_response(206 if partial else 200)
-                self.send_header("Content-Type", "application/vnd.apple.mpegurl" if filename.suffix == ".m3u8" else "video/mp2t" if filename.suffix == ".ts" else "video/mp4")
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Content-Length", str(max(0, end - start + 1)))
-                if partial:
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
-                self.end_headers()
-                try:
-                    self.wfile.write(data[start:end + 1])
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        worker = threading.Thread(target=server.serve_forever, daemon=True)
-        worker.start()
+        server, worker = start_media_server(work, blocked)
         base = f"http://127.0.0.1:{server.server_port}"
         receiver = Receiver(runtime=args.runtime, state=work / "state")
         receiver.dll.clearcast_receiver_read_media.argtypes = [c.c_void_p, c.c_int]
         receiver.dll.clearcast_receiver_read_stats.argtypes = [c.POINTER(c.c_uint64), c.POINTER(c.c_uint64), c.POINTER(c.c_int), c.POINTER(c.c_int)]
+        receiver.dll.clearcast_receiver_read_video_frame.argtypes = [c.c_void_p, c.c_int, c.POINTER(c.c_uint64)]
         receiver.start()
 
         def snapshot():
@@ -155,13 +165,17 @@ def main():
         assert snapshot()["kind"] == "none"
         checks.append("Unauthenticated HTTP1.1/HTTP1.0/RTSP media variants with and without CSeq are rejected")
         with connect() as discovery:
-            data = http_request(discovery, "/server-info", method="GET", session=None)
+            data = http_request(discovery, "/server-info", method="GET", session=None, headers={"X-Apple-Client-Name": "Unverified device"})
             assert plistlib.loads(data)["features"] & 1
+        assert snapshot().get("deviceName", "") == ""
         checks.append("Unauthenticated server discovery remains available")
 
         with connect() as paired:
             private, server_key = receiver.pair(paired)
             verify_pairing(paired, private, server_key)
+            http_request(paired, "/server-info", method="GET", headers={"X-Apple-Client-Name": "Test iPhone"})
+            assert snapshot()["deviceName"] == "Test iPhone"
+            checks.append("Only a verified connection supplies the connected sender name")
             for protocol, sequence in variants:
                 with connect("127.0.0.2") as outsider:
                     http_request(outsider, "/play", body(base + "/video.mp4"), expected=401, cseq=sequence, protocol=protocol)
@@ -180,6 +194,14 @@ def main():
                     return rendered.value > 1 and (width.value, height.value) == (320, 180)
                 wait(frames_presented)
                 checks.append("Common D3D11 sink reports presented frames and decoded dimensions")
+                backdrop = c.create_string_buffer(4097)
+                backdrop[4096] = b"\xA5"
+                epoch = c.c_uint64()
+                wait(lambda: receiver.dll.clearcast_receiver_read_video_frame(backdrop, 4096, c.byref(epoch)) == 4096)
+                assert epoch.value > 0 and len(set(backdrop.raw[:4096])) > 8 and backdrop[4096] == b"\xA5"
+                checks.append("Actual decoded D3D11 frame supplies a bounded 32x32 BGRA backdrop sample")
+                assert receiver.dll.clearcast_receiver_read_video_frame(backdrop, 4095, c.byref(epoch)) == 0
+                checks.append("Backdrop sample rejects an undersized destination without overflow")
                 for protocol, sequence in variants:
                     with connect() as wrong_session:
                         http_request(wrong_session, "/rate?value=0", session="different-owner", expected=401, cseq=sequence, protocol=protocol)
@@ -193,6 +215,19 @@ def main():
                 time.sleep(.3)
                 assert abs(snapshot()["positionMs"] - paused) < 250
                 checks.append("HTTP pause stops playback position")
+                # A URL player must not depend on mirror/audio /feedback heartbeats.
+                until = time.monotonic() + 19
+                while time.monotonic() < until:
+                    info = plistlib.loads(http_request(control, "/playback-info", method="GET"))
+                    assert info["rate"] == 0 and snapshot()["kind"] == "video"
+                    time.sleep(.2)
+                checks.append("Paused direct video survives beyond the mirror heartbeat limit without feedback")
+                with connect() as auxiliary:
+                    verify_pairing(auxiliary, private, server_key)
+                    request(auxiliary, "/auxiliary", method="FLUSH")
+                    request(auxiliary, "/auxiliary", method="TEARDOWN")
+                assert snapshot()["kind"] == "video"
+                checks.append("Auxiliary RTSP flush teardown and socket closure retain the direct-video owner")
                 http_request(control, "/scrub?position=3")
                 http_request(control, "/rate?value=1")
                 wait(lambda: snapshot()["playing"] is True and snapshot()["positionMs"] >= 2500)
@@ -200,6 +235,22 @@ def main():
                 info = plistlib.loads(http_request(control, "/playback-info", method="GET"))
                 assert info["duration"] > 5 and info["position"] >= 2.5
                 checks.append("Playback info returns the actual media duration and position")
+                current = snapshot()
+                assert current["source"] == "direct" and current["controls"] & 1
+                receiver.dll.clearcast_receiver_media_control.argtypes = [c.c_uint64, c.c_uint64, c.c_int, c.c_int64]
+                def desktop(command, value=0, state=None):
+                    state = state or snapshot()
+                    return receiver.dll.clearcast_receiver_media_control(state["controlSession"], state["contentRevision"], command, value)
+                assert desktop(1) == 0
+                wait(lambda: not snapshot()["playing"])
+                wait(lambda: snapshot()["controls"] & 8)
+                assert desktop(4, 1000) == 0
+                wait(lambda: snapshot()["positionMs"] < 1600)
+                assert desktop(4, -1) == 87 and desktop(4, 600_000_001) != 0
+                assert desktop(1) == 0
+                wait(lambda: snapshot()["playing"])
+                checks.append("Desktop pause seek and resume operate the actual pipeline and validate range")
+                old_session = snapshot()
                 http_request(control, "/stop")
                 wait(lambda: snapshot()["kind"] == "none")
                 assert any(event[0] == 4 for event in observed)
@@ -208,6 +259,8 @@ def main():
                 http_request(control, "/play", body(base + "/stream.m3u8"))
                 wait(lambda: snapshot()["kind"] == "video" and any(event[0] == 3 for event in observed))
                 checks.append("HLS restarts through the same authenticated connection and host")
+                assert desktop(4, 1000, old_session) != 0
+                checks.append("A delayed desktop command cannot seek a replacement session")
                 observed.clear()
                 blocked["media"] = True
                 assert receiver.dll.clearcast_receiver_set_decoder(0) == 0
@@ -225,12 +278,22 @@ def main():
                 wait(lambda: snapshot()["kind"] == "none", timeout=14)
                 checks.append("HLS end of stream returns to waiting without fatal receiver restart")
                 assert not any(event[0] == 5 for event in observed)
+                playlist = (work / "stream.m3u8").read_text(encoding="utf-8")
+                (work / "live.m3u8").write_text(playlist.replace("#EXT-X-ENDLIST", "").replace("#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-PLAYLIST-TYPE:EVENT"), encoding="utf-8")
+                http_request(control, "/play", body(base + "/live.m3u8"))
+                try:
+                    wait(lambda: snapshot()["kind"] == "video" and snapshot().get("isLive", False))
+                finally:
+                    report["liveState"] = snapshot()
+                checks.append("A live HLS playlist reports live status separately from its seek window")
+                http_request(control, "/stop")
         report["passed"] = True
         report["checks"] = checks
         report["presentedFramesBeforePause"] = rendered.value
         report["geometry"] = [width.value, height.value]
     except Exception as error:
         report["error"] = str(error)
+        print("Direct-video test failure:", repr(error), flush=True)
         raise
     finally:
         if receiver:

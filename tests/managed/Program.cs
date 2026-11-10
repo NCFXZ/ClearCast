@@ -170,6 +170,37 @@ static object RunTests(string root)
         media.ArtworkBytes == 512 && media.Controls == (MediaControls.PlayPause | MediaControls.Previous | MediaControls.Next),
         "complete UTF-8 media snapshot parses without losing metadata");
     Check(media.Session == 0, "media snapshots without the optional session remain compatible");
+    byte[] ControlJson(string fields) => Encoding.UTF8.GetBytes(validMediaJson[..^1] + fields + "}");
+    Check(ReceiverMediaState.TryParse(ControlJson(",\"source\":\"audio\",\"controlSession\":12,\"contentRevision\":7,\"seekStartMs\":0,\"seekEndMs\":120000"), out var readOnly) &&
+        !readOnly.CanSeek, "a duration alone cannot authorize music seeking");
+    var seekJson = Encoding.UTF8.GetString(ControlJson(",\"source\":\"audio\",\"controlSession\":12,\"contentRevision\":7,\"seekStartMs\":0,\"seekEndMs\":120000")).Replace("\"controls\":7", "\"controls\":15");
+    Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(seekJson), out var seekMusic) && seekMusic.CanSeek &&
+        seekMusic.ControlSession == 12 && seekMusic.ContentRevision == 7, "music seeking requires explicit capability range and session");
+    Check(seekMusic.SeekSliderValue(60_000) == 500 && seekMusic.SeekPosition(500) == 60_000 &&
+        seekMusic.SeekPosition(double.NaN) == seekMusic.PositionMs && seekMusic.SeekPosition(-1) == 0 &&
+        seekMusic.SeekPosition(1001) == 120_000, "normalized seek mapping rejects non-finite input and clamps boundaries");
+    var rollingSeek = seekMusic with { SeekStartMs = 60_000, SeekEndMs = 604_800_000 };
+    Check(rollingSeek.SeekPosition(0) == 60_000 && rollingSeek.SeekPosition(1000) == 604_800_000 &&
+        rollingSeek.SeekSliderValue(604_800_000) == 1000, "long and nonzero live ranges preserve bounded UI coordinates");
+    var directJson = seekJson.Replace("\"kind\":\"audio\"", "\"kind\":\"video\"").Replace("\"source\":\"audio\"", "\"source\":\"direct\"");
+    Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(directJson), out var seekVideo) && seekVideo.IsDirectVideo &&
+        seekVideo.CanSeek && seekVideo.Controls == (MediaControls.PlayPause | MediaControls.Seek), "direct video exposes only supported video controls");
+    Check(seekVideo.CanControlVideo && !(seekVideo with { DurationMs = 0 }).CanControlVideo,
+        "desktop video transport requires a known on-demand source");
+    Check((seekVideo with { Controls = MediaControls.PlayPause }).CanControlVideo &&
+        !(seekVideo with { Controls = MediaControls.PlayPause }).CanSeek,
+        "finite video can pause even when seeking is unsupported");
+    Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(directJson[..^1] + ",\"isLive\":true}"), out var liveVideo) &&
+        liveVideo.IsLive && liveVideo.CanSeek && !liveVideo.CanControlVideo, "live DVR capability does not expose on-demand playback controls");
+    Check(!ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(directJson[..^1] + ",\"isLive\":\"true\"}"), out _),
+        "live status must be a boolean");
+    Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(directJson.Replace("\"direct\"", "\"mirror\"")), out var mirrorControl) &&
+        mirrorControl.Controls == MediaControls.None && !mirrorControl.CanSeek, "screen mirroring cannot acquire transport controls");
+    foreach (string invalid in new[] {seekJson.Replace("\"seekEndMs\":120000", "\"seekEndMs\":-1"),
+        seekJson.Replace("\"seekStartMs\":0", "\"seekStartMs\":120001"),
+        seekJson.Replace("\"controlSession\":12", "\"controlSession\":true"),
+        seekJson.Replace("\"source\":\"audio\"", "\"source\":\"direct\"")})
+        Check(!ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(invalid), out _), "malformed or mismatched playback capabilities rejected");
     Check(media.Connected && !ReceiverMediaState.Empty.Connected &&
         ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "video" }), out var legacyVideoConnection) && legacyVideoConnection.Connected &&
         ReceiverMediaState.TryParse(MediaJson(mediaSnapshot with { kind = "none" }), out var legacyIdleConnection) && !legacyIdleConnection.Connected,
@@ -191,6 +222,14 @@ static object RunTests(string root)
         Check(!ReceiverMediaState.TryParse(ConnectionJson(invalidConnection), out var rejectedConnection) &&
             rejectedConnection == ReceiverMediaState.Empty,
             "nonboolean or duplicate connection state is rejected without partial state");
+    byte[] NamedConnection(string name, bool connected = true) => Encoding.UTF8.GetBytes(
+        Encoding.UTF8.GetString(ConnectionJson(connected ? "true" : "false", idleMediaJson))[..^1] + ",\"deviceName\":" + name + "}");
+    Check(ReceiverMediaState.TryParse(NamedConnection("\" Test iPhone \""), out var namedConnection) && namedConnection.DeviceName == "Test iPhone",
+        "an authenticated sender name is parsed and trimmed without changing playback capabilities");
+    Check(ReceiverMediaState.TryParse(NamedConnection("\"Test iPhone\"", false), out var noDevice) && noDevice.DeviceName == "",
+        "a disconnected snapshot clears the old sender label");
+    foreach (string invalidName in new[] { "42", "null", "\"line\\nbreak\"", JsonSerializer.Serialize(new string('x', 513)) })
+        Check(!ReceiverMediaState.TryParse(NamedConnection(invalidName), out _), "invalid sender names cannot enter the connected label");
     Check(media.AudioActivity == default && !media.AudioActivity.IsFresh(TimeSpan.Zero),
         "legacy media without audio analysis uses non-reactive background motion");
     byte[] ActivityJson(string activity, string? source = null) => Encoding.UTF8.GetBytes(

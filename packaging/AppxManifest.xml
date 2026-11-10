@@ -5,7 +5,7 @@
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap uap10 rescap">
   <Identity Name="NCFX.ClearCast" Publisher="CN=CC9C4962-FFC8-44D9-A2C0-B446CBFD375A"
-            Version="1.2.0.0" ProcessorArchitecture="x64" />
+            Version="1.2.1.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>ClearCast</DisplayName>
     <PublisherDisplayName>F. Zhu</PublisherDisplayName>

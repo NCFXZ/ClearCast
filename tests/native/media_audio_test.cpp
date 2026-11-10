@@ -19,8 +19,13 @@ static bool clearcast_mirror_media_active(){return test_mirror_active;}
 static bool clearcast_direct_video_snapshot(bool& playing, int64_t& position, int64_t& duration) {
     playing = false; position = duration = 0; return test_direct_active;
 }
+static bool clearcast_direct_video_controls(uint64_t& session, int& controls, int64_t& start, int64_t& end, bool& live) {
+    live = false;
+    session = 0; controls = 0; start = end = 0; return test_direct_active;
 }
-extern "C" void clearcast_direct_video_stop() {}
+}
+static int test_direct_stop_calls = 0;
+extern "C" void clearcast_direct_video_stop() { ++test_direct_stop_calls; }
 static int checks = 0, failures = 0;
 static void check(bool value, const char* message) {
     ++checks;
@@ -52,13 +57,21 @@ static void connection_cases() {
     check(!connected(), "ready receiver has no authenticated connection or media session");
     clearcast_media_audio_setup(1001,peer,4,0,0,nullptr,nullptr);
     check(!connected() && !state.configured, "unverified SETUP cannot report connected");
+    clearcast_media_client_name(1001,"Unknown device");
+    check(snapshot().find("Unknown device") == std::string::npos, "unverified names are not published");
     clearcast_media_verified(1001,peer,4,0);
+    clearcast_media_client_name(1001,"Test iPhone");
+    check(snapshot().find("\"deviceName\":\"Test iPhone\"") != std::string::npos, "verified connection publishes its sender name");
+    clearcast_media_client_name(1001,"bad\nname");
+    clearcast_media_client_name(1001,std::string(513,'x').c_str());
+    check(snapshot().find("\"deviceName\":\"Test iPhone\"") != std::string::npos, "invalid sender names preserve the established label");
     check(connected() && !state.configured && !state.active,
         "live pair-verified control reports connected before any media SETUP");
     clearcast_media_verified(1002,peer,4,0);
     clearcast_media_closed(1001);
     check(connected(), "closing one authenticated sibling retains the other live connection");
     clearcast_media_closed(1002);
+    check(snapshot().find("\"deviceName\":\"\"") != std::string::npos, "last control closure clears the online sender label");
     check(!connected() && clearcast_media_peer_verified(peer,4,0),
         "60-second peer authorization grace does not report an online connection");
     clearcast_media_audio_setup(1003,peer,4,0,0,nullptr,nullptr);
@@ -112,6 +125,57 @@ static DWORD WINAPI serve(void* pointer) {
     if (!server.response.empty()) send(client,server.response.data(),int(server.response.size()),0);
     closesocket(client);
     return 0;
+}
+static void seek_case(bool honored) {
+    using namespace clearcast_media;
+    TestServer server;
+    server.listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in address = {}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    check(bind(server.listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 &&
+        listen(server.listener, 4) == 0, "seek fixture listens on a private loopback port");
+    int length = sizeof(address); getsockname(server.listener, reinterpret_cast<sockaddr*>(&address), &length);
+    const unsigned char peer[] = {127,0,0,1};
+    clearcast_media_verified(1200, peer, 4, 0);
+    clearcast_media_audio_setup(1200, peer, 4, 0, 0, "AABBCCDDEEFF0011", "12345");
+    clearcast_media_audio_packet(1200);
+    state.controls = 15; state.duration = 120000; state.port = ntohs(address.sin_port); stopping = false;
+    uint64_t content = state.content_revision;
+    check(clearcast_media_seek_audio(1200, content + 1, 45000) == ERROR_CANCELLED, "stale track cannot issue a seek");
+    std::thread worker([&] {
+        for (int index = 0; index < (honored ? 2 : 4); ++index) {
+            fd_set pending; FD_ZERO(&pending); FD_SET(server.listener, &pending); timeval timeout = {3,0};
+            if (select(0, &pending, nullptr, nullptr, &timeout) <= 0) return;
+            SOCKET client = accept(server.listener, nullptr, nullptr);
+            if (client == INVALID_SOCKET) return;
+            DWORD receive_timeout = 1500;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&receive_timeout), sizeof(receive_timeout));
+            std::string received;
+            while (received.find("\r\n\r\n") == std::string::npos && received.size() < 4096) {
+                char buffer[1024]; int count = recv(client, buffer, sizeof(buffer), 0);
+                if (count <= 0) break;
+                received.append(buffer, count);
+            }
+            server.received += received;
+            auto integer = [](uint32_t value) { return std::vector<unsigned char>{
+                static_cast<unsigned char>(value >> 24), static_cast<unsigned char>(value >> 16),
+                static_cast<unsigned char>(value >> 8), static_cast<unsigned char>(value)}; };
+            std::vector<unsigned char> body;
+            if (index) {
+                body = tag("cast", integer(120000)); append(body, tag("cant", integer(honored ? 75000 : 110000)));
+                body = tag("cmgt", body);
+            }
+            std::string response = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+            if (!body.empty()) response.append(reinterpret_cast<const char*>(body.data()), body.size());
+            send(client, response.data(), int(response.size()), 0); closesocket(client);
+        }
+    });
+    int result = clearcast_media_seek_audio(1200, content, 45000);
+    worker.join(); closesocket(server.listener);
+    check(server.received.find("setproperty?dacp.playingtime=45000") != std::string::npos,
+        "music seek sends the bounded millisecond DACP property");
+    check(honored ? result == 0 && state.position == 45000 : result == ERROR_NOT_SUPPORTED && !(state.controls & 8),
+        "music seek requires actual position confirmation and removes an ignored capability");
+    clearcast_media_closed(1200);
 }
 static void control_case(const std::string& response,int expected,int command=1,int delay=0,bool ipv6=false,int expected_state=-1) {
     using namespace clearcast_media;
@@ -330,6 +394,16 @@ int main(int argc,char** argv) {
     clearcast_media_verified(1, peer, 4, 0);
     check(clearcast_media_peer_verified(peer, 4, 0), "verified peer admitted");
     clearcast_media_remote(1, "0123456789ABCDEF", "1234567890");
+    test_direct_active = true;
+    test_direct_stop_calls = 0;
+    clearcast_media_audio_setup(1, peer, 4, 0, 0, nullptr, nullptr);
+    check(test_direct_stop_calls == 0, "auxiliary audio SETUP must not stop an active direct video");
+    clearcast_media_audio_stop(1, 0);
+    clearcast_media_closed(1);
+    check(test_direct_stop_calls == 0, "auxiliary audio FLUSH and socket closure must not stop direct video");
+    test_direct_active = false;
+    clearcast_media_verified(1, peer, 4, 0);
+    clearcast_media_remote(1, "0123456789ABCDEF", "1234567890");
     clearcast_media_audio_setup(1, peer, 4, 0, 0, nullptr, nullptr);
     check(state.dacp == "0123456789ABCDEF" && state.remote == "1234567890", "credentials survive two-phase setup");
     check(snapshot().find("\"kind\":\"none\"") != std::string::npos, "SETUP does not fake active audio");
@@ -457,6 +531,8 @@ int main(int argc,char** argv) {
     check(!state.configured, "unverified peer cannot configure media");
     if(argc>1&&!strcmp(argv[1],"--network")) {
         WSADATA data;check(WSAStartup(MAKEWORD(2,2),&data)==0,"Winsock test host initialized");
+        seek_case(true);
+        seek_case(false);
         control_case("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",0);
         control_case("HTTP/1.1 204 No Content\r\n\r\n",0,2);
         control_case("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",ERROR_ACCESS_DENIED);

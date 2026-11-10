@@ -47,9 +47,27 @@ public sealed partial class MainWindow
             _receiverTimer.Stop();
             ReceiverInfoBar.IsOpen = false;
             _preferences = _preferences with { AutoFullScreen = false };
+            Texts.SetReceiverName("ClearCast PC");
+            async Task CapturePage(string locale, string theme, string page)
+            {
+                int width = page == "settings" ? 2560 : 1920;
+                int height = page == "settings" ? 1440 : 1080;
+                AppWindow.Resize(new SizeInt32(width, height));
+                await UiWaitForStableLayout(page == "settings" ? SettingsPage : MirrorPage);
+                await Task.Delay(150);
+                var frame = await Task.Run(() => UiCaptureOwnedWindow(window));
+                UiCheck(frame.Width == width && frame.Height == height, "store page uses the actual owned window at its capture size " + page);
+                string name = locale + "-" + page + "-" + theme;
+                await UiSaveCompositorFrameAsync(storeOutput, name, frame);
+                string file = Path.Combine(storeOutput, name + ".png");
+                captures.Add(new { locale, theme, page, file, width = frame.Width, height = frame.Height,
+                    sha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(file))) });
+            }
             foreach (bool english in new[] { false, true })
             foreach (bool dark in new[] { false, true })
             {
+                ApplyMediaState(ReceiverMediaState.Empty);
+                SetReceiverStatus("等待 AirPlay 连接");
                 await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
                 LanguageButton.SelectedItem = english ? EnglishLanguageItem : ChineseLanguageItem;
                 ThemeButton.SelectedItem = dark ? DarkThemeItem : LightThemeItem;
@@ -61,6 +79,10 @@ public sealed partial class MainWindow
                 string locale = english ? "en-US" : "zh-CN";
                 string theme = dark ? "dark" : "light";
                 string prefix = "store-" + locale + "-" + theme;
+                await UiWaitUntil(() => LandingAnimation.LoadedFrameCount == SvgFrameAnimation.FrameCount,
+                    "store waiting illustration finishes decoding", 15000);
+                if (english) UiCheckEnglishVisibleText(MirrorPage, "store waiting " + prefix);
+                await CapturePage(locale, theme, "waiting");
                 var music = new ReceiverMediaState((ulong)(8_000 + (english ? 100 : 0) + (dark ? 1 : 0)),
                     ReceiverMediaKind.Audio, true, english ? "Drifting Light" : "流光",
                     "ClearCast Studio", english ? "Evening Sketches" : "暮色片段", 84_000, 234_000,
@@ -94,6 +116,9 @@ public sealed partial class MainWindow
                     title = music.Title, artist = music.Artist, album = music.Album,
                     controls = "none", sourceFrame = captured
                 });
+                await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
+                if (english) UiCheckEnglishVisibleText(SettingsPage, "store settings " + prefix);
+                await CapturePage(locale, theme, "settings");
             }
             var provenance = new
             {
@@ -125,6 +150,7 @@ public sealed partial class MainWindow
             }
             finally { _settingsReady = previousSettingsReady; }
             bool english = previousPreferences.Language == AppLanguage.English;
+            Texts.SetReceiverName(NativeReceiver.AdvertisedName);
             Texts.SetEnglish(english);
             WindowLayout.Language = english ? "en-US" : "zh-CN";
             ApplyAppTheme();

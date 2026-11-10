@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     private readonly string _root = FindRoot();
     private readonly DispatcherQueueTimer _receiverTimer;
     private readonly DispatcherQueueTimer? _musicActivityTimer;
+    private readonly DispatcherQueueTimer? _videoBackdropTimer;
     private readonly DispatcherQueueTimer _pairingTimer;
     private readonly DispatcherQueueTimer _playerOverlayTimer;
     private ThemeSettings? _captionThemeSettings;
@@ -48,18 +49,14 @@ public sealed partial class MainWindow : Window
     private int _latestPairingGeneration;
     private int _pairingProofRejections;
     private bool _pairingTerminalFeedback;
-    private int _streamWidth;
-    private int _streamHeight;
     private long _sampledAt;
-    private ulong _previousRendered;
-    private ulong _previousDropped;
-    private ulong _earlierDropped;
 
     public MainWindow()
     {
         _preferences = ReceiverPreferences.Load(_root);
         Texts.SetEnglish(_preferences.Language == AppLanguage.English);
         InitializeComponent();
+        InitializePlaybackControls();
         ApplyAppTheme();
         WindowLayout.Language = Texts.IsEnglish ? "en-US" : "zh-CN";
         string icon = Path.Combine(AppContext.BaseDirectory, "Assets", "ClearCast.ico");
@@ -107,6 +104,9 @@ public sealed partial class MainWindow : Window
         _musicActivityTimer = DispatcherQueue.CreateTimer();
         _musicActivityTimer.Interval = TimeSpan.FromMilliseconds(50);
         _musicActivityTimer.Tick += (_, _) => PollMusicAudioActivity();
+        _videoBackdropTimer = DispatcherQueue.CreateTimer();
+        _videoBackdropTimer.Interval = TimeSpan.FromMilliseconds(33);
+        _videoBackdropTimer.Tick += (_, _) => PollVideoBackdrop();
         _pairingTimer = DispatcherQueue.CreateTimer();
         _pairingTimer.Interval = TimeSpan.FromMinutes(1);
         _pairingTimer.IsRepeating = false;
@@ -126,9 +126,9 @@ public sealed partial class MainWindow : Window
                 _captionThemeSettings.Changed -= CaptionSystemThemeChanged;
             _receiverTimer.Stop();
             _musicActivityTimer?.Stop();
+            _videoBackdropTimer?.Stop();
             _pairingTimer.Stop();
             _playerOverlayTimer.Stop();
-            StopPlayerOverlayFade();
             LandingAnimation.Dispose();
             MusicBackground.Dispose();
             _motionSettings.AnimationsEnabledChanged -= MusicMotionChanged;
@@ -464,16 +464,18 @@ public sealed partial class MainWindow : Window
             return;
 
         _hasVideo = available;
+        ResetVideoBackdrop();
+        _ = MusicBackground.SetArtworkAsync(available ? null : _musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
         VideoPlaceholder.Visibility = available || _hasMusic ? Visibility.Collapsed : Visibility.Visible;
         MusicPanel.Visibility = _hasMusic && !available ? Visibility.Visible : Visibility.Collapsed;
         UpdateLandingAnimationState();
-        PlayerFrame.Visibility = PlayerControls.Visibility = PlayerOverlay.Visibility =
+        PlayerFrame.Visibility = PlayerControls.Visibility =
             available ? Visibility.Visible : Visibility.Collapsed;
         UpdateReceiverButtons();
+        UpdatePlaybackControls();
         if (available)
         {
             ShowPlayerOverlay();
-            _playerOverlayTimer.Start();
             DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateVideoHost);
             ApplyAutoFullScreenAtVideoStart();
         }
@@ -481,12 +483,13 @@ public sealed partial class MainWindow : Window
         {
             _playerOverlayTimer.Stop();
             _lastPlayerPointer = null;
-            SetPlayerOverlayVisible(false, animate: false);
+            SetPlayerOverlayVisible(false);
             SetPlayerFullScreen(false);
             _playerFrameSize = default;
             _playerRotation = 0;
             _videoHost?.Hide();
         }
+        UpdateMusicBackgroundState();
     }
 
     private void UpdateVideoHost()
@@ -533,6 +536,9 @@ public sealed partial class MainWindow : Window
 
     private async void StartAirPlay()
     {
+#if CLEARCAST_UI_TESTS
+        if (UiTestsAreConfigured() && Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKDROP_ONLY") == "1") return;
+#endif
         if (_receiver is not null || _startingReceiver || _closing || _closed)
             return;
         _startingReceiver = true;
@@ -599,6 +605,7 @@ public sealed partial class MainWindow : Window
     {
         _receiverTimer.Stop();
         _musicActivityTimer?.Stop();
+        _videoBackdropTimer?.Stop();
         MusicBackground.ResetAudioActivity();
         PlayerStopButton.IsEnabled = DecoderButton.IsEnabled = false;
         HidePairingCode();
@@ -762,7 +769,8 @@ public sealed partial class MainWindow : Window
     private void SetReceiverStatus(string status)
     {
         _receiverStatus = status;
-        StatusText.Text = LandingTitle.Text = Texts.Translate(status);
+        LandingTitle.Text = status == "AirPlay 已连接" && _mediaState.DeviceName.Length > 0
+            ? Texts.Get(_mediaState.DeviceName + "已连接", _mediaState.DeviceName + " connected") : Texts.Translate(status);
     }
 
     private void SetPairingPrompt(string message)
@@ -790,7 +798,7 @@ public sealed partial class MainWindow : Window
         if (!idleStatus && !(_mediaState.Connected && _receiverStatus == "正在打开屏幕镜像画面…"))
             return;
         string status = _mediaState.Connected ? "AirPlay 已连接" : "等待 AirPlay 连接";
-        if (_receiverStatus != status) SetReceiverStatus(status);
+        SetReceiverStatus(status);
     }
 
     private async void PollReceiver(DispatcherQueueTimer sender, object args)
@@ -843,11 +851,7 @@ public sealed partial class MainWindow : Window
                     HidePairingCode();
                     if (update.Width > 0 && update.Height > 0)
                     {
-                        _streamWidth = update.Width;
-                        _streamHeight = update.Height;
                         SetPlayerFrameSize(update.Width, update.Height);
-                        if (!_hasVideo)
-                            SetStreamStatus();
                     }
                     SetReceiverStatus("AirPlay 已连接");
                     if (!_hasVideo && ReferenceEquals(_selectedPage, SettingsPage))
@@ -896,43 +900,15 @@ public sealed partial class MainWindow : Window
 
         if (stats.Width > 0 && stats.Height > 0)
         {
-            _streamWidth = stats.Width;
-            _streamHeight = stats.Height;
             SetPlayerFrameSize(stats.Width, stats.Height);
         }
 
-        int? fps = _sampledAt != 0 && stats.Rendered >= _previousRendered
-            ? (int)Math.Round((stats.Rendered - _previousRendered) / Stopwatch.GetElapsedTime(_sampledAt, now).TotalSeconds)
-            : null;
-        if (stats.Dropped < _previousDropped)
-            _earlierDropped += _previousDropped;
         _sampledAt = now;
-        _previousRendered = stats.Rendered;
-        _previousDropped = stats.Dropped;
-        SetStreamStatus(fps, _earlierDropped + stats.Dropped);
-    }
-
-    private void SetStreamStatus(int? fps = null, ulong? dropped = null)
-    {
-        _streamFps = fps;
-        _streamDropped = dropped;
-        string dimensions = _streamWidth > 0 && _streamHeight > 0 ? $"{_streamWidth} × {_streamHeight}" : "";
-        StreamText.Text = dimensions.Length > 0 && fps is int rate
-            ? Texts.Get($"{dimensions} · {rate} 帧", $"{dimensions} · {rate} fps")
-            : dimensions;
-        string? detail = dropped is ulong count
-            ? Texts.Get($"播放时跳过了 {count} 帧。", $"{count} {(count == 1 ? "frame" : "frames")} skipped during playback.")
-            : null;
-        if (!Equals(ToolTipService.GetToolTip(StreamText), detail))
-            ToolTipService.SetToolTip(StreamText, detail);
     }
 
     private void ResetStreamStats()
     {
-        _streamWidth = _streamHeight = 0;
         _sampledAt = 0;
-        _previousRendered = _previousDropped = _earlierDropped = 0;
-        SetStreamStatus();
     }
 
     private static int ErrorCode(Exception error) => error is Win32Exception native ? native.NativeErrorCode : error.HResult;
@@ -986,7 +962,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private static string FindRoot()
+    internal static string FindRoot()
     {
         string? configured = Environment.GetEnvironmentVariable("CLEARCAST_HOME");
         if (Directory.Exists(configured))

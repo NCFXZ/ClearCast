@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $StorePublishDirectory,
     [Parameter(Mandatory)] [string] $ComplianceDirectory,
     [Parameter(Mandatory)] [string] $ValidatedReceiverSha256,
-    [string] $Version = '1.2.0.0',
+    [string] $Version = '1.2.1.0',
     [Parameter(Mandatory)] [string] $OutputPath
 )
 $ErrorActionPreference = 'Stop'
@@ -72,7 +72,7 @@ try {
     $backupFrame = [IO.File]::ReadAllBytes($frame)
     Check-Rejected 'Missing animation frame' { Remove-Item -LiteralPath $frame } { [IO.File]::WriteAllBytes($frame, $backupFrame) } '*Missing animation frame*'
     $extra = Join-Path $work 'store\Assets\MirroringAnimation\extra.svg'
-    Check-Rejected 'Unexpected animation frame' { [IO.File]::WriteAllText($extra, '<svg/>') } { Remove-Item -LiteralPath $extra } '*exactly 80 SVG frames*'
+    Check-Rejected 'Unexpected animation frame' { [IO.File]::WriteAllText($extra, '<svg/>') } { Remove-Item -LiteralPath $extra } '*exactly 200 SVG frames*'
     $parser = Join-Path $work 'store\receiver\libgstcodecparsers-1.0-0.dll'
     $backupParser = [IO.File]::ReadAllBytes($parser)
     Check-Rejected 'Tampered parser binary' { [IO.File]::WriteAllBytes($parser, [byte[]]@(1, 2, 3)) } { [IO.File]::WriteAllBytes($parser, $backupParser) } '*hash does not match*'

@@ -14,6 +14,10 @@
 
 namespace {
 static bool clearcast_mirror_media_active() { return false; }
+static bool clearcast_direct_video_controls(uint64_t& session, int& controls, int64_t& start, int64_t& end, bool& live) {
+    live = false;
+    session = 0; controls = 0; start = end = 0; return false;
+}
 static bool clearcast_direct_video_snapshot(bool &playing, int64_t &position, int64_t &duration) {
     playing = false; position = duration = 0; return false;
 }

@@ -14,6 +14,7 @@
     <Compile Include="../../src/ClearCast/Services/ReceiverNetwork.cs" Link="ReceiverNetwork.cs" />
     <Compile Include="../../src/ClearCast/Services/ReceiverPreferences.cs" Link="ReceiverPreferences.cs" />
     <Compile Include="../../src/ClearCast/Services/ReceiverMediaState.cs" Link="ReceiverMediaState.cs" />
+    <Compile Include="../../src/ClearCast/Services/ReceiverVideoFrame.cs" Link="ReceiverVideoFrame.cs" />
     <Compile Include="../../src/ClearCast/Controls/MusicPalette.cs" Link="MusicPalette.cs" />
     <Compile Include="../../src/ClearCast/Controls/MusicMotion.cs" Link="MusicMotion.cs" />
     <Compile Include="../../src/ClearCast/Controls/ArtworkFlow.cs" Link="ArtworkFlow.cs" />

@@ -25,7 +25,7 @@ internal sealed class NativeVideoHost : IDisposable
 
     private (int X, int Y, int Width, int Height, bool Visible)? _lastLayout;
     private (uint Time, int X, int Y)? _lastClick;
-    private (RectInt32? Bounds, RectInt32? Exclusion) _windowRegion;
+    private (RectInt32? Bounds, RectInt32? Exclusion, int Radius) _windowRegion;
     private bool _presentationSuspended;
     private readonly nint _parent;
     private readonly DispatcherQueue _dispatcher;
@@ -35,6 +35,7 @@ internal sealed class NativeVideoHost : IDisposable
     public nint Handle { get; private set; }
     public event Action? DoubleClicked;
     public event Action? EscapePressed;
+    public event Action? PlayPausePressed;
 
     public NativeVideoHost(nint parent, DispatcherQueue dispatcher)
     {
@@ -47,7 +48,7 @@ internal sealed class NativeVideoHost : IDisposable
             throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建屏幕镜像画面区域。");
     }
 
-    public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null)
+    public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null, int cornerRadius = 0)
     {
         if (Handle == 0)
             return false;
@@ -56,12 +57,13 @@ internal sealed class NativeVideoHost : IDisposable
         var layout = (X: bounds.X, Y: bounds.Y, Width: Math.Max(1, bounds.Width),
             Height: Math.Max(1, bounds.Height), Visible: visible);
         RectInt32? localExclusion = null;
+        if (cornerRadius > 0) clip ??= new RectInt32(0, 0, layout.Width, layout.Height);
         if (exclusion is { } area)
         {
             localExclusion = new RectInt32(area.X - layout.X, area.Y - layout.Y, area.Width, area.Height);
             clip ??= new RectInt32(0, 0, layout.Width, layout.Height);
         }
-        if (!ApplyRegion(clip, localExclusion))
+        if (!ApplyRegion(clip, localExclusion, cornerRadius))
             return false;
         if (_lastLayout == layout)
             return true;
@@ -123,15 +125,16 @@ internal sealed class NativeVideoHost : IDisposable
     private static bool HasClientSize(nint window, int width, int height) =>
         GetClientRect(window, out var bounds) && bounds.Width == width && bounds.Height == height;
 
-    private bool ApplyRegion(RectInt32? bounds, RectInt32? exclusion)
+    private bool ApplyRegion(RectInt32? bounds, RectInt32? exclusion, int radius)
     {
-        if (_windowRegion.Equals((bounds, exclusion)))
+        if (_windowRegion.Equals((bounds, exclusion, radius)))
             return true;
 
         nint region = 0;
         if (bounds is { } area)
         {
-            region = CreateRegion(area);
+            region = radius > 0 ? CreateRoundRectRgn(area.X, area.Y, area.X + area.Width,
+                area.Y + area.Height, radius * 2, radius * 2) : CreateRegion(area);
             if (region == 0)
                 return false;
         }
@@ -156,7 +159,7 @@ internal sealed class NativeVideoHost : IDisposable
             return false;
         }
         // A successful SetWindowRgn transfers ownership of the region to the system.
-        _windowRegion = (bounds, exclusion);
+        _windowRegion = (bounds, exclusion, radius);
         return true;
     }
 
@@ -223,6 +226,12 @@ internal sealed class NativeVideoHost : IDisposable
                 (message.Window == _parent || IsChild(_parent, message.Window)))
             {
                 _dispatcher.TryEnqueue(() => EscapePressed?.Invoke());
+            }
+            else if (message.Message == KeyDown && message.WParam == 0x20 &&
+                (message.LParam.ToInt64() & (1L << 30)) == 0 &&
+                (message.Window == Handle || IsChild(Handle, message.Window)))
+            {
+                _dispatcher.TryEnqueue(() => PlayPausePressed?.Invoke());
             }
         }
         return CallNextHookEx(0, code, operation, data);
@@ -300,6 +309,9 @@ internal sealed class NativeVideoHost : IDisposable
 
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern nint CreateRectRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll", ExactSpelling = true)]
+    private static extern nint CreateRoundRectRgn(int left, int top, int right, int bottom, int ellipseWidth, int ellipseHeight);
 
     [DllImport("gdi32.dll", ExactSpelling = true)]
     private static extern int CombineRgn(nint destination, nint first, nint second, int mode);

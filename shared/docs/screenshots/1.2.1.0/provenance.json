@@ -1,0 +1,120 @@
+{
+  "applicationVersion": "1.2.1.0",
+  "capture": "Exact unedited owned-window captures from the actual WinUI application.",
+  "content": "Original vector illustration, original geometric music artwork, fictional track/device names and an original mathematical-gradient video with synthetic silence.",
+  "containsPrivateMedia": false,
+  "captures": [
+    {
+      "file": "en-US-music-dark.png",
+      "locale": "en-US",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "32bd292bda868ad511a8ffea69ea70507e90e53222e5e8617b73003cda2fdc25"
+    },
+    {
+      "file": "en-US-music-light.png",
+      "locale": "en-US",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "877116512250195d58a6ffa69518c7a14a4a25216ccdfab423510906067690d3"
+    },
+    {
+      "file": "en-US-settings-dark.png",
+      "locale": "en-US",
+      "width": 2560,
+      "height": 1440,
+      "sha256": "d3467eb9493f52fcfa03bd14c5c0cd423bde9f6727daff4a618c8ade50717a70"
+    },
+    {
+      "file": "en-US-settings-light.png",
+      "locale": "en-US",
+      "width": 2560,
+      "height": 1440,
+      "sha256": "c77208eff37571a4146bf63f45ebd373b9b460b090d6a3bd1e38e34226946f4b"
+    },
+    {
+      "file": "en-US-waiting-dark.png",
+      "locale": "en-US",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "3e4a66bb150f6f5c4f90574bc78b9531bf22eb41d264ae5d874fe4d8412759c8"
+    },
+    {
+      "file": "en-US-waiting-light.png",
+      "locale": "en-US",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "5971851873fb20d393117a5f0ceb0c9b3fd95dae0330e40b667376113be77aec"
+    },
+    {
+      "file": "zh-CN-music-dark.png",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "93d7b5d2096365d595141677de0ebb2a8b7ef5552d3784cfbaebebb42811711b"
+    },
+    {
+      "file": "zh-CN-music-light.png",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "94d856429c9bc1f49a9110c317b2739932e110dc7f705fdb7bba09bb1e705719"
+    },
+    {
+      "file": "zh-CN-settings-dark.png",
+      "locale": "zh-CN",
+      "width": 2560,
+      "height": 1440,
+      "sha256": "8338e971f8044670d64cebff512f6e4c032fd98e47c82cd1242b54bf509b4593"
+    },
+    {
+      "file": "zh-CN-settings-light.png",
+      "locale": "zh-CN",
+      "width": 2560,
+      "height": 1440,
+      "sha256": "4fc19153a91ba6f0ab9c8da80f16fdc72187803f7e6383f13feae6bc24395056"
+    },
+    {
+      "file": "zh-CN-waiting-dark.png",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "d5097d1f2687f294030c90f455326702aa9ba60e2a876a5c67fd85fe27780854"
+    },
+    {
+      "file": "zh-CN-waiting-light.png",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "e049852673f22ea668a3dc3cca03f987d93a6c64bad3a59ef22528fe9507606a"
+    },
+    {
+      "file": "en-US-video-fullscreen.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "78d0142f14d444e0c3c3f4dfcde64897d3dde9aed0637c783ad5f50178c2d648"
+    },
+    {
+      "file": "en-US-video-windowed.png",
+      "locale": "en-US",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "4fa960847073826875428c82ba1c11cb677e3ce0408917b979410068ce71d949"
+    },
+    {
+      "file": "zh-CN-video-fullscreen.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "9ce6e0809f45fc8a964eaea9bcd8d747bee63a075da56d57d3bcc58dbd2c6e1f"
+    },
+    {
+      "file": "zh-CN-video-windowed.png",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "4eb3d66039dbdcaf2d893568bed47067c6c411ef0bb0f65760cc0d834304b27c"
+    }
+  ]
+}

@@ -42,7 +42,7 @@ public sealed partial class MainWindow
         void CheckStatus(string canonical, string check)
         {
             string translated = Texts.Translate(canonical);
-            UiCheck(_receiverStatus == canonical && LandingTitle.Text == translated && StatusText.Text == translated,
+            UiCheck(_receiverStatus == canonical && LandingTitle.Text == translated,
                 check + " " + language);
         }
 
@@ -69,6 +69,10 @@ public sealed partial class MainWindow
 
             ApplyMediaState(connected);
             CheckStatus("AirPlay 已连接", "connection changes refresh idle text without a revision change");
+            ApplyMediaState(connected with { DeviceName = "Test iPhone" });
+            UiCheck(LandingTitle.Text == Texts.Get("Test iPhone已连接", "Test iPhone connected"),
+                "an authenticated sender name appears in the connected label " + language);
+            ApplyMediaState(connected);
             WaitForMirror();
             WaitForMirror();
             CheckStatus("AirPlay 已连接", "waiting for media preserves an established AirPlay connection");
@@ -133,8 +137,7 @@ public sealed partial class MainWindow
             LanguageButton.SelectedItem = previousEnglish ? ChineseLanguageItem : EnglishLanguageItem;
             await Task.Delay(40);
             UiCheck(Texts.IsEnglish != previousEnglish && _receiverStatus == "AirPlay 已连接" &&
-                LandingTitle.Text == (Texts.IsEnglish ? "AirPlay connected" : "AirPlay 已连接") &&
-                StatusText.Text == LandingTitle.Text,
+                LandingTitle.Text == (Texts.IsEnglish ? "AirPlay connected" : "AirPlay 已连接"),
                 "language selection immediately translates the canonical connected status " + language);
             LanguageButton.SelectedItem = previousLanguageItem;
             await Task.Delay(40);

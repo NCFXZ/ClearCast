@@ -103,7 +103,7 @@ function Check-InstalledPayload([string] $Directory, $Files, [string] $Name) {
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payloadRoot 'ClearCast.dll')).FileVersion
     if ($version -ne $configuration.packageVersion) { throw "$Name application file version does not match the release." }
     $frameCount = @(Get-ChildItem -LiteralPath (Join-Path $payloadRoot 'Assets\MirroringAnimation') -Filter '*.svg' -File).Count
-    if ($frameCount -ne 80) { throw "$Name must install exactly 80 SVG animation frames." }
+    if ($frameCount -ne 200) { throw "$Name must install exactly 200 SVG animation frames." }
     Add-Check $Name @{ directory = $payloadRoot; verifiedFileCount = @($Files).Count; animationFrameCount = $frameCount;
         applicationFileVersion = $version; receiverSha256 = ($Files | Where-Object relativePath -eq 'receiver\clearcast_receiver.dll').sha256;
         scannerSha256 = ($Files | Where-Object relativePath -eq 'receiver\gst-plugin-scanner.exe').sha256 }

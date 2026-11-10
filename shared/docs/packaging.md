@@ -4,15 +4,15 @@ Run commands from the repository root. Application sources live in `src/ClearCas
 
 ## Version and publish layouts
 
-The release, application/file version, WiX Bundle and Store identity use `1.2.0.0`. MSI ProductVersion uses `1.2.0`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
+The release, application/file version, WiX Bundle and Store identity use `1.2.1.0`. MSI ProductVersion uses `1.2.1`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
 
 Build the tested native receiver first, then publish separate WinUI layouts:
 
 ```powershell
 $repository = (Get-Location).Path
-$release = '.runtime/release-1.2.0.0'
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.2.0.0
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.2.0.0 `
+$release = '.runtime/release-1.2.1.0'
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.2.1.0
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.2.1.0 `
   -p:BaseIntermediateOutputPath="$repository/$release/store-obj/" -p:BaseOutputPath="$repository/$release/store-bin/" `
   -p:ProjectPriFileName=resources.pri -p:ProjectPriIndexName=NCFX.ClearCast
 ```
@@ -27,7 +27,7 @@ Authenticate the previous corresponding-source bundle against its published SHA-
 python scripts/packaging/Prepare-RuntimeNotices.py --base $previousSourceBundle `
   --base-sha256 $previousSourceSha256 --msys-root .runtime/msys64 `
   --runtime-directory .runtime/receiver --additional-source-directory $officialMsysSourceDirectory `
-  --output-directory $notices --version 1.2.0.0
+  --output-directory $notices --version 1.2.1.0
 ```
 
 The output must be a new directory. An optional `--package-audit` supplies an independent owner audit; otherwise the tool audits the installed database. Each native PE and CA file must match its package owner or controlled manifest. New sources must match the package/version and the signed binary package's BUILDINFO recipe digest. Fetch exact archives from the official MSYS2 source repository while preserving TLS and package signature checks. Separately check embedded upstream archives/patches against recipe checksums; `SKIP` signature items require their stated provenance treatment.
@@ -43,14 +43,14 @@ Use WiX 5.0.2, its matching `WixToolset.Bal.wixext` extension, and Windows SDK x
 ```powershell
 ./scripts/packaging/Build-Packages.ps1 -PublishDirectory "$release/desktop" `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices `
-  -OutputDirectory "$release/packages" -Version 1.2.0.0 `
+  -OutputDirectory "$release/packages" -Version 1.2.1.0 `
   -WixPath $wix -WixBalExtensionPath $bal -MakeAppxPath $makeappx `
   -ValidatedReceiverSha256 $testedReceiverSha256 -AlsoBuildMsix
 ```
 
 Defaults produce a self-contained EXE and unsigned Store APPX. `-AlsoBuildMsix` invokes MakeAppx separately on the same staging tree; `-StoreFormat msix` selects MSIX as primary. Compare every uncompressed entry and identity when producing both; outer ZIP hashes may differ. Partner Center signs the submitted container. Do not rename an extension to imitate another format.
 
-`-ValidateOnly` checks inputs without creating staging/output. Checks bind version/receiver hash, controlled binaries, scanner, legal files, 80 SVG frames and complete native inventory to both layouts. Source coverage binds the inventory text SHA, total/PE/package counts, additional source archives and matching package records. `-PreflightFixture` permits disposable subset tests only with `-ValidateOnly`; it cannot create packages. `-StoreOnly` rebuilds the selected Store format without replacing the EXE.
+`-ValidateOnly` checks inputs without creating staging/output. Checks bind version/receiver hash, controlled binaries, scanner, legal files, 200 SVG frames and complete native inventory to both layouts. Source coverage binds the inventory text SHA, total/PE/package counts, additional source archives and matching package records. `-PreflightFixture` permits disposable subset tests only with `-ValidateOnly`; it cannot create packages. `-StoreOnly` rebuilds the selected Store format without replacing the EXE.
 
 Staging is recreated from current payload and exact notices; stale generated notice trees are excluded before the current tree is copied. WiX 5 cabinet input paths must be shorter than 260 characters; the builder rejects longer paths before invocation. Keep output roots/license paths short rather than altering system settings. The failure is described in the matching [WiX issue](https://github.com/wixtoolset/issues/issues/9115).
 
@@ -68,7 +68,7 @@ foreach ($entry in $coverage.additionalSources.PSObject.Properties) {
   $additional += "$($entry.Name)=$($entry.Value.path)"
 }
 python scripts/packaging/Update-CorrespondingSource.py --base $previousSourceBundle `
-  --app-source $applicationSourceZip --commit $commitSha --version 1.2.0.0 `
+  --app-source $applicationSourceZip --commit $commitSha --version 1.2.1.0 `
   --output $updatedSourceBundle --notice-directory $notices @additional
 ```
 
@@ -76,7 +76,7 @@ The updater verifies base checksums, replaces app source/commit/hash metadata an
 
 ## Disposable installation checks
 
-On a host with Windows Sandbox available, use the SHA-verified public 1.1.0 EXE, replacement EXE, actual APPX, final layouts, complete notices and SDK x64 tools:
+On a host with Windows Sandbox available, use the SHA-verified public 1.2.0.0 EXE, replacement EXE, actual APPX, final layouts, complete notices and SDK x64 tools:
 
 ```powershell
 tests/packaging/New-SandboxValidation.ps1 -PreviousSetupPath $previousSetup `
@@ -84,7 +84,7 @@ tests/packaging/New-SandboxValidation.ps1 -PreviousSetupPath $previousSetup `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices -SdkToolsDirectory $sdkTools
 ```
 
-The default previous version is `1.1.0.0`; its public installer SHA is pinned and checked on host and guest. Schema 3 binds new EXE/Store outer hashes and every expected shipped file, including notices/runtime/PRI/Store-generated assets. MakeAppx member names are URI-decoded once to compare installed filenames.
+Pass `-PreviousVersion 1.2.0.0` and its independently verified `-PreviousSetupSha256` for this release. The helper also retains its pinned 1.1.0.0 default for older upgrade checks; both host and guest verify the selected baseline. Schema 3 binds new EXE/Store outer hashes and every expected shipped file, including notices/runtime/PRI/Store-generated assets. MakeAppx member names are URI-decoded once to compare installed filenames.
 
 Launch the returned `.wsb` and wait for its result. Inputs/scripts/tools are mapped read-only; a new result directory is writable. Networking, clipboard, microphone, camera and printer access are disabled. The guest checks old installation/version, upgrade, one per-user MSI registration, downgrade rejection, repair, launch/close/uninstall and clean current install. It signs only a guest APPX copy using a temporary guest-trusted certificate, checks Store installation/hashes/launch/removal, removes certificate/private key and shuts down. Registration snapshots remain available on failure.
 

@@ -58,10 +58,12 @@ internal static class NativeReceiver
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_set_decoder", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_event", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_stats", out _) ||
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_video_frame", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_set_video_rotation", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_media", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_artwork", out _) ||
-            !NativeLibrary.TryGetExport(module, "clearcast_receiver_media_command", out _))
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_media_command", out _) ||
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_media_control", out _))
         {
             NativeLibrary.Free(module);
             RemoveDllDirectory(cookie);
@@ -99,6 +101,9 @@ internal static class NativeReceiver
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_read_stats", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int ReadStats(out ulong rendered, out ulong dropped, out int width, out int height);
 
+    [DllImport(LibraryName, EntryPoint = "clearcast_receiver_read_video_frame", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int ReadVideoFrame([Out] byte[] pixels, int capacity, out ulong generation);
+
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_read_media", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int ReadMedia([Out] byte[] buffer, int capacity);
 
@@ -107,6 +112,9 @@ internal static class NativeReceiver
 
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_media_command", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int MediaCommand(int command);
+
+    [DllImport(LibraryName, EntryPoint = "clearcast_receiver_media_control", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int MediaControl(ulong session, ulong content, int command, long value);
 
     [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern nint LoadLibraryExW(string fileName, nint file, uint flags);

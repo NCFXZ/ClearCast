@@ -50,6 +50,8 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string ExitFullScreen => Get("退出全屏", "Exit full screen");
     public string RotateLeft => Get("向左旋转 90°", "Rotate left 90°");
     public string RotateRight => Get("向右旋转 90°", "Rotate right 90°");
+    public string SkipBackward10 => Get("后退 10 秒", "Back 10 seconds");
+    public string SkipForward10 => Get("前进 10 秒", "Forward 10 seconds");
     public string OriginalSize => Get("原始大小", "Actual size");
 
     public string GeneralHeading => Get("常规", "General");

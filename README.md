@@ -8,7 +8,7 @@
 
 ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕内容，或从兼容的播放器投放音乐和视频。
 
-![ClearCast 中文音乐界面](shared/docs/screenshots/1.2.0.0/zh-CN-music-dark.png)
+![ClearCast 中文音乐界面](shared/docs/screenshots/1.2.1.0/zh-CN-music-dark.png)
 
 将设备与电脑连接到同一局域网，在设备的「屏幕镜像」或播放器的 AirPlay 选项中选择 ClearCast。两台设备所在的局域网需要允许设备相互访问。
 
@@ -27,7 +27,7 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 4. 视频画面上的控件可旋转画面或切换全屏；双击画面可切换全屏，按 Esc 可退出全屏。音乐界面显示发送端提供的曲目信息；只有发送端支持时才显示播放控件，否则可继续在发送设备上操作。点击「断开投放」后，应用会继续等待下一次连接。
 5. 在「设置 → 播放显示」中选择默认显示大小，或开启「投屏时自动全屏」。自动全屏从下一次视频投放开始生效；当前播放中切换设置不会立即改变窗口。在「设置 → 接收」中选择解码方式；连接期间切换解码方式会保留 AirPlay 连接，画面可能短暂停顿。
 
-播放进度用于查看，不能拖动定位。封面、曲目信息和播放控制取决于发送设备及播放器提供的能力，支持情况可能因应用和内容而异。音乐与视频的使用方法、协议范围和验证边界见 [AirPlay 媒体说明](shared/docs/AIRPLAY_MEDIA.md)。
+可定位的直接视频支持播放/暂停、进度拖动及前后跳转 10 秒。音乐进度在发送端支持并确认定位时可拖动，否则保持只读；空格键切换当前可用的播放/暂停。封面、曲目信息和控制能力取决于发送设备、播放器及内容。音乐与视频的使用方法、协议范围和验证边界见 [AirPlay 媒体说明](shared/docs/AIRPLAY_MEDIA.md)。
 
 设备已连接但尚未播放时，AirPlay 页显示“AirPlay 已连接”；播放结束后仍连接的设备保持该提示，断开后恢复等待。
 
@@ -65,7 +65,7 @@ shared/docs/            测试与打包说明、法律文档和发行说明
 
 ClearCast 支持 Windows x64。除安装包外，也可从源码发布为免安装文件夹；输出内包含 .NET、Windows App SDK 和接收组件。已有 `.runtime\app\ClearCast.exe` 时可直接使用。
 
-从源码构建时，先按下一节准备接收组件，再在仓库根目录用 .NET 10 SDK 执行以下命令。 [Windows App SDK 自包含发布](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
+从源码构建时，先按下一节准备接收组件，再在仓库根目录用 `global.json` 指定的 .NET 10.0.404 SDK（或同功能带更新补丁）执行以下命令。 [Windows App SDK 自包含发布](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 
 ```powershell
 dotnet publish .\src\ClearCast\ClearCast.csproj -c Release -r win-x64 -o .\.runtime\app
@@ -107,7 +107,7 @@ pwsh -File .\scripts\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 
 接收端直接解码并显示视频。开始接收时，根据 Windows 报告的网卡链路速率选择初始画质。自动或硬件解码时，有线速率达到 100 Mb/s 或 Wi-Fi 协商速率达到 400 Mb/s 会请求 4K HEVC；低于 50 Mb/s 请求 720p，其余情况请求 1080p。三档均请求每秒 30 帧；软件解码最高请求 1080p。链路速率是本机到网络的连接速率，实际画质与帧率由设备和传输条件决定。
 
-播放状态采用 `1920 × 888 · 30 帧` 的格式，优先显示解码尺寸，帧率根据播放器实际显示帧数采样。悬停可查看播放器跳过的帧数。
+非全屏视频保留完整比例和圆角，空余区域由覆盖整个应用的柔和动态背景填充，镜头变化平滑过渡。控制栏放在画面下方，支持的点播视频提供进度、暂停和前后 10 秒；空格键触发当前可用的播放/暂停。镜像与直播只显示断开、旋转和全屏。
 
 在 iPhone、iPad 和 Mac 上分别验证默认画质、横竖屏、全屏和断开重连。比较 Wi-Fi 和有线网络时，可在「AirPlay」页查看解码尺寸和播放帧率。
 
@@ -135,7 +135,7 @@ Mirror your screen, or play AirPlay music and video on a Windows PC.
 
 ClearCast turns your Windows PC into an AirPlay receiver for screen sharing and media from compatible players.
 
-![ClearCast music view in English](shared/docs/screenshots/1.2.0.0/en-US-music-dark.png)
+![ClearCast music view in English](shared/docs/screenshots/1.2.1.0/en-US-music-dark.png)
 
 Connect your device and PC to the same local network, then select ClearCast in Screen Mirroring or your player’s AirPlay menu. The network must allow the two devices to communicate with each other.
 
@@ -154,7 +154,7 @@ Connect your device and PC to the same local network, then select ClearCast in S
 4. Use the video controls to rotate the picture or enter full screen. Double-click the picture to toggle full screen, or press Esc to leave it. The music view shows the details supplied by the sender; playback controls appear only when the sender provides them; otherwise, use the sending device. Select **Disconnect** to end the session and wait for another connection.
 5. Choose a default picture size or enable **Automatically enter full screen** in **Settings → Playback**. The option applies to the next video session; changing it during playback does not immediately change the window. Choose a decoder in **Settings → Receiving**. Changing the decoder during a session keeps the AirPlay connection; the picture may pause briefly.
 
-The progress display is read-only. Artwork, track details, and playback controls depend on what the device and player provide, so compatibility varies by app and content. See the [AirPlay media guide](shared/docs/AIRPLAY_MEDIA.md) for usage, protocol scope, and validation limits.
+Seekable direct video supports play/pause, progress dragging, and 10-second skips. Music seeking is available when the sender supports and confirms it; otherwise progress remains read-only. Space toggles available playback controls. Artwork, metadata, and controls depend on the sending device, player, and content. See the [AirPlay media guide](shared/docs/AIRPLAY_MEDIA.md) for usage, protocol scope, and validation limits.
 
 The AirPlay page shows **AirPlay connected** when a device is connected without playing media. It keeps this status after playback ends while the connection remains active, and returns to waiting when the device disconnects.
 
@@ -192,7 +192,7 @@ Open the root `ClearCast.slnx` for development. Run the commands below from the 
 
 ClearCast supports Windows x64. Alongside the installer, a source build can produce a portable folder containing .NET, Windows App SDK, and the receiver runtime. An existing `.runtime\app\ClearCast.exe` can be launched directly.
 
-First prepare the receiver runtime below, then publish from the repository root with the .NET 10 SDK. [Windows App SDK self-contained deployment](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
+First prepare the receiver runtime below, then publish from the repository root with .NET SDK 10.0.404 or a newer patch in the same feature band, as specified by `global.json`. [Windows App SDK self-contained deployment](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 
 ```powershell
 dotnet publish .\src\ClearCast\ClearCast.csproj -c Release -r win-x64 -o .\.runtime\app
@@ -234,7 +234,7 @@ The security-component scripts verify pinned official source SHA-256 values and 
 
 ClearCast decodes and displays incoming video directly. At startup, it chooses an initial quality request from the adapter link speed reported by Windows. Automatic and hardware decoding request 4K HEVC for Ethernet links of at least 100 Mb/s or negotiated Wi-Fi links of at least 400 Mb/s. Links below 50 Mb/s request 720p; other links request 1080p. All three modes request 30 frames per second. Software decoding requests at most 1080p. Link speed describes the local network connection; the device and transmission conditions determine the actual picture quality and frame rate.
 
-Playback status uses a format such as `1920 × 888 · 30 fps`. It prioritizes decoded dimensions and samples the frame rate from frames actually presented by the player. Hover over the status to view frames skipped by the player.
+Windowed video keeps its full aspect ratio and rounded corners, with a soft animated background filling the whole app and smoothing scene changes. The controls sit below the video. Seekable video offers progress, pause, and ten-second skip buttons; Space toggles supported playback. Mirroring and live video show only disconnect, rotation, and full screen.
 
 Check default quality, orientation changes, full screen, and reconnection separately on iPhone, iPad, and Mac. Use the decoded dimensions and playback frame rate on the AirPlay page when comparing Wi-Fi and Ethernet.
 

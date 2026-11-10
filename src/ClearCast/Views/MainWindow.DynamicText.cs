@@ -8,8 +8,6 @@ public sealed partial class MainWindow
     private string _pairingResetFeedback = "";
     private string _receiveErrorMessage = "";
     private string _copyErrorLabel = "复制详情";
-    private int? _streamFps;
-    private ulong? _streamDropped;
 
     private void RefreshDynamicText()
     {
@@ -20,7 +18,6 @@ public sealed partial class MainWindow
         ReceiverInfoBar.Message = Texts.Translate(_receiveErrorMessage);
         CopyErrorButton.Content = Texts.Translate(_copyErrorLabel);
         RefreshFullScreenLabel();
-        SetStreamStatus(_streamFps, _streamDropped);
         RefreshMusicText();
     }
 }

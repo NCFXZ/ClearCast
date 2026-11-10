@@ -48,14 +48,20 @@ public sealed partial class MainWindow
     private void UpdateMusicBackgroundState()
     {
         UpdateMusicAudioActivity();
-        bool active = !_closed && !_closing && _hasMusic && !_hasVideo &&
+        bool active = !_closed && !_closing && (_hasMusic && !_hasVideo || _hasVideo && !_playerFullScreen) &&
             _captionThemeSettings?.HighContrast != true && AppWindow.IsVisible &&
             WindowLayout.XamlRoot?.IsHostVisible == true &&
             AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
         MusicBackground.SetActive(active, active && _mediaState.Playing && _motionSettings.AnimationsEnabled);
+        if (_videoBackdropTimer is { } videoTimer)
+        {
+            bool fastVideo = active && _hasVideo && _receiver is not null && _stopTask is null;
+            if (fastVideo && !videoTimer.IsRunning) videoTimer.Start();
+            else if (!fastVideo) videoTimer.Stop();
+        }
         if (_musicActivityTimer is { } timer)
         {
-            bool fast = MusicBackground.IsAnimating && _receiver is not null && _stopTask is null;
+            bool fast = _hasMusic && !_hasVideo && MusicBackground.IsAnimating && _receiver is not null && _stopTask is null;
             if (fast && !timer.IsRunning) timer.Start();
             else if (!fast) timer.Stop();
         }
@@ -101,7 +107,10 @@ public sealed partial class MainWindow
 
     private async void RefreshMusicBackgroundTheme()
     {
-        await MusicBackground.SetArtworkAsync(_musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
+        if (_hasVideo && _videoBackdropPixels is { } pixels)
+            await MusicBackground.SetVideoFrameAsync(pixels, WindowLayout.ActualTheme == ElementTheme.Dark, _motionSettings.AnimationsEnabled);
+        else
+            await MusicBackground.SetArtworkAsync(_hasVideo ? null : _musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
         UpdateMusicBackgroundState();
     }
 
@@ -111,7 +120,8 @@ public sealed partial class MainWindow
     private void ApplyMediaState(ReceiverMediaState state)
     {
         bool wasMusic = _hasMusic;
-        bool sourceChanged = state.Kind != _mediaState.Kind || state.Session != _mediaState.Session;
+        bool sourceChanged = state.Kind != _mediaState.Kind || state.Session != _mediaState.Session ||
+            state.ControlSession != _mediaState.ControlSession || state.ContentRevision != _mediaState.ContentRevision;
         bool trackChanged = wasMusic && state.Kind == ReceiverMediaKind.Audio &&
             (state.Title != _mediaState.Title || state.Artist != _mediaState.Artist || state.Album != _mediaState.Album);
         long expectedPosition = _mediaState.PositionAt(_mediaSnapshotAt == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(_mediaSnapshotAt));
@@ -121,14 +131,17 @@ public sealed partial class MainWindow
             MusicBackground.ResetAudioActivity();
         if (sourceChanged)
         {
+            if (_hasVideo || state.Kind == ReceiverMediaKind.Video) ResetVideoBackdrop();
             ++_mediaCommandGeneration;
             _mediaCommandPending = false;
             _mediaControlError = "";
+            _playbackControlError = "";
         }
         bool changed = state.Revision != _mediaState.Revision || state.Kind != _mediaState.Kind || state.Session != _mediaState.Session ||
             state.Playing != _mediaState.Playing || state.Controls != _mediaState.Controls ||
             state.Title != _mediaState.Title || state.Artist != _mediaState.Artist || state.Album != _mediaState.Album;
         _mediaState = state;
+        if (sourceChanged) CancelPlaybackSeek();
         _mediaSnapshotAt = Stopwatch.GetTimestamp();
         _hasMusic = state.Kind == ReceiverMediaKind.Audio;
         if (changed)
@@ -156,7 +169,7 @@ public sealed partial class MainWindow
             int generation = ++_artworkGeneration;
             MusicArtwork.Source = null;
             _musicArtworkBytes = null;
-            _ = MusicBackground.SetArtworkAsync(null, WindowLayout.ActualTheme == ElementTheme.Dark);
+            if (!_hasVideo) _ = MusicBackground.SetArtworkAsync(null, WindowLayout.ActualTheme == ElementTheme.Dark);
             MusicArtworkPlaceholder.Visibility = Visibility.Visible;
             if (revision != 0 && _receiver is { } receiver)
                 _ = LoadMusicArtworkAsync(receiver, revision, state.ArtworkBytes, generation);
@@ -166,6 +179,7 @@ public sealed partial class MainWindow
         UpdateMusicLayout();
         UpdateMusicBackgroundState();
         RefreshIdleConnectionStatus();
+        UpdatePlaybackControls();
     }
 
     private void RefreshMusicText()
@@ -184,7 +198,7 @@ public sealed partial class MainWindow
     {
         bool ready = _hasMusic && _receiver is not null && !_mediaCommandPending &&
             !_resettingPairings && !_startingReceiver && !_closing && _stopTask is null;
-        bool hasControls = _hasMusic && _mediaState.Controls != MediaControls.None;
+        bool hasControls = _hasMusic && (_mediaState.Controls & ~MediaControls.Seek) != MediaControls.None;
         MusicTransportControls.Visibility = hasControls ? Visibility.Visible : Visibility.Collapsed;
         MusicPlayPauseButton.Visibility = _mediaState.Controls.HasFlag(MediaControls.PlayPause) ? Visibility.Visible : Visibility.Collapsed;
         MusicPreviousButton.Visibility = _mediaState.Controls.HasFlag(MediaControls.Previous) ? Visibility.Visible : Visibility.Collapsed;
@@ -211,6 +225,7 @@ public sealed partial class MainWindow
         MusicProgress.Value = _mediaState.DurationMs > 0 ? Math.Min(position, _mediaState.DurationMs) : 0;
         MusicElapsed.Text = FormatMusicTime(position);
         MusicDuration.Text = _mediaState.DurationMs > 0 ? FormatMusicTime(_mediaState.DurationMs) : "—:—";
+        UpdatePlaybackControls();
     }
 
     private static string FormatMusicTime(long milliseconds)
@@ -257,7 +272,7 @@ public sealed partial class MainWindow
                 MusicArtwork.Source = image;
                 MusicArtworkPlaceholder.Visibility = Visibility.Collapsed;
                 _musicArtworkBytes = bytes;
-                await MusicBackground.SetArtworkAsync(bytes, WindowLayout.ActualTheme == ElementTheme.Dark);
+                if (!_hasVideo) await MusicBackground.SetArtworkAsync(bytes, WindowLayout.ActualTheme == ElementTheme.Dark);
                 UpdateMusicBackgroundState();
             }
         }
@@ -267,7 +282,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private async void MusicPlayPauseClicked(object sender, RoutedEventArgs args) => await SendMusicCommandAsync(MediaCommand.PlayPause);
+    private async void MusicPlayPauseClicked(object sender, RoutedEventArgs args) => await ToggleCurrentPlaybackAsync();
     private async void MusicPreviousClicked(object sender, RoutedEventArgs args) => await SendMusicCommandAsync(MediaCommand.Previous);
     private async void MusicNextClicked(object sender, RoutedEventArgs args) => await SendMusicCommandAsync(MediaCommand.Next);
 
@@ -288,7 +303,10 @@ public sealed partial class MainWindow
         UpdateMusicControls();
         try
         {
-            await receiver.SendMediaCommandAsync(command);
+            if (_mediaState.ControlSession != 0)
+                await receiver.ControlMediaAsync(_mediaState, command);
+            else
+                await receiver.SendMediaCommandAsync(command);
         }
         catch (Win32Exception)
         {

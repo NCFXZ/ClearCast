@@ -1,0 +1,45 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -728,7 +728,13 @@
+     }
+ }
+ 
++extern "C" bool clearcast_direct_video_is_active();
++
+ static gboolean feedback_callback(gpointer loop) {
++#ifdef CLEARCAST_IN_PROCESS
++    // URL playback, including pause, has its own media/control lifecycle.
++    if (clearcast_direct_video_is_active()) { missed_feedback = 0; return TRUE; }
++#endif
+     if (open_connections) {
+         if (missed_feedback_limit && missed_feedback > missed_feedback_limit) {
+             LOGI("***ERROR lost connection with client (network problem?)");
+@@ -2918,6 +2924,9 @@
+ 
+ extern "C" void audio_process (void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
+ #ifdef CLEARCAST_IN_PROCESS
++    if (clearcast_direct_video_is_active()) return;
++#endif
++#ifdef CLEARCAST_IN_PROCESS
+     if (data && data->data_len > 0) clearcast_media_audio_packet(data->clearcast_source_id);
+ #endif
+     if (dump_audio) {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -34,6 +34,7 @@
+     int using_screen, const char *dacp, const char *remote);
+ extern void clearcast_media_audio_parameter(uint64_t id, const char *type, const void *buffer, int length);
+ extern void clearcast_media_audio_stop(uint64_t id, int ended);
++extern bool clearcast_direct_video_is_active();
+ #endif
+ 
+ typedef void (*raop_handler_t)(raop_conn_t *, http_request_t *,
+@@ -1528,7 +1529,7 @@
+         }
+         /* shut down any HLS connections */
+         int hls_count = httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_HLS);
+-        if (hls_count) {
++        if (hls_count && !clearcast_direct_video_is_active()) {
+             raop->callbacks.video_reset(raop->callbacks.cls, RESET_TYPE_HLS_SHUTDOWN);
+         }
+     }

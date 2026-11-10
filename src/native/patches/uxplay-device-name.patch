@@ -1,0 +1,30 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -37,6 +37,7 @@
+ #include <windows.h>
+ #include <math.h>
+ #include "clearcast_pairing_peer.h"
+ extern void clearcast_media_verified(uint64_t, const unsigned char*, int, unsigned int);
++extern void clearcast_media_client_name(uint64_t, const char*);
+ extern void clearcast_media_closed(uint64_t);
+ extern void clearcast_media_remote(uint64_t, const char*, const char*);
+@@ -646,6 +647,7 @@
+             clearcast_media_verified(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id);
+             clearcast_media_remote(conn->diagnostic_id, http_request_get_header(request, "DACP-ID"),
+                 http_request_get_header(request, "Active-Remote"));
++            clearcast_media_client_name(conn->diagnostic_id, http_request_get_header(request, "X-Apple-Client-Name"));
+         }
+ #endif
+     } else {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -928,6 +928,9 @@
+         if (raop->callbacks.report_client_request) {
+             raop->callbacks.report_client_request(raop->callbacks.cls, deviceID, model, name, &admit_client);
+         }
++#ifdef CLEARCAST_IN_PROCESS
++        if (admit_client) clearcast_media_client_name(conn->diagnostic_id, name);
++#endif
+         if (admit_client && deviceID && name && raop->callbacks.register_client) {
+             char *client_device_id = NULL;
+             char *client_pk = NULL;   /* encoded as null-terminated  base64 string, must be freed*/
