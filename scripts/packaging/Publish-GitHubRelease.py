@@ -75,7 +75,9 @@ def main():
     release = request('GET', f'/repos/{REPO}/releases/tags/{TAG}')
     if release is None:
         drafts = request('GET', f'/repos/{REPO}/releases?per_page=100')
-        matches = [item for item in drafts if item.get('draft') and item.get('tag_name') == TAG and
+        # GitHub can give an unpublished release a provisional untagged-* name.
+        matches = [item for item in drafts if item.get('draft') and
+                   (item.get('tag_name') == TAG or (item.get('tag_name') or '').startswith('untagged-')) and
                    item.get('target_commitish') == args.commit and item.get('name') == 'ClearCast ' + VERSION]
         if len(matches) > 1:
             raise RuntimeError('Ambiguous release draft; refusing to choose one.')
@@ -95,7 +97,8 @@ def main():
                 'tag_name': TAG, 'target_commitish': args.commit, 'name': 'ClearCast ' + VERSION,
                 'body': notes, 'draft': True, 'prerelease': False})
         else:
-            release = request('PATCH', f'/repos/{REPO}/releases/{release["id"]}', {'body': notes})
+            release = request('PATCH', f'/repos/{REPO}/releases/{release["id"]}', {
+                'tag_name': TAG, 'target_commitish': args.commit, 'body': notes})
         known = {item['name']: item for item in request('GET', release['assets_url'].removeprefix('https://api.github.com'))}
         upload = urllib.parse.urlsplit(release['upload_url'].split('{', 1)[0])
         if upload.scheme != 'https' or upload.hostname != 'uploads.github.com':
@@ -140,14 +143,16 @@ def main():
         for path in args.asset:
             if present[path.name].get('digest') != 'sha256:' + digest(path):
                 raise RuntimeError('Draft asset digest mismatch: ' + path.name)
-        release = request('PATCH', f'/repos/{REPO}/releases/{release["id"]}', {'draft': False, 'make_latest': 'true'})
+        release = request('PATCH', f'/repos/{REPO}/releases/{release["id"]}', {
+            'tag_name': TAG, 'target_commitish': args.commit, 'draft': False, 'make_latest': 'true'})
     if not release:
         raise RuntimeError('Release not found.')
     assets = request('GET', release['assets_url'].removeprefix('https://api.github.com'))
     tag = request('GET', f'/repos/{REPO}/git/ref/tags/{TAG}')
     if not release['draft'] and (not tag or tag['object'].get('type') != 'commit' or tag['object'].get('sha') != args.commit):
         raise RuntimeError('Published release tag does not match the source commit.')
-    report = {'releaseId': release['id'], 'tag': TAG, 'htmlUrl': release['html_url'], 'draft': release['draft'],
+    report = {'releaseId': release['id'], 'tag': TAG, 'actualTagName': release.get('tag_name'),
+              'htmlUrl': release['html_url'], 'draft': release['draft'],
               'commit': args.commit, 'tagObject': tag.get('object') if tag else None,
               'assets': [{key: item.get(key) for key in ('name', 'size', 'digest', 'browser_download_url')} for item in assets]}
     (QA / ('github-' + args.action + '-results.json')).write_text(json.dumps(report, indent=2), encoding='utf-8')

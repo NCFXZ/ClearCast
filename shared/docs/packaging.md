@@ -99,6 +99,7 @@ Launch the returned `.wsb` and wait for its result. Inputs/scripts/tools are map
 ```powershell
 python tests/packaging/test_source_bundle.py
 python tests/packaging/test_runtime_notices.py
+python tests/packaging/test_github_release.py
 tests/packaging/Test-PackagePreflight.ps1 -PublishDirectory "$release/desktop" `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices `
   -ValidatedReceiverSha256 $testedReceiverSha256 -OutputPath $preflightReport
@@ -108,5 +109,7 @@ tests/packaging/Test-RuntimeNoticeCoverage.ps1 -PublishDirectory "$release/deskt
 ```
 
 Preflight mutates disposable payload subsets to verify version, receiver, scanner, SVG and controlled-library/notice rejection. Coverage tests copy notices only and use real layouts read-only to reject stale text, empty/count-mismatched coverage, wrong source/record hashes and fixture misuse. Neither generates packages or uses receiver ports.
+
+The GitHub release test uses fake HTTP and credentials with a temporary workspace. It checks retrying GitHub's provisional `untagged-*` drafts, explicit final tag/commit selection, and refusal of ambiguous drafts or mismatched assets without making network requests. Published assets remain immutable; release records may be updated separately on the main branch.
 
 Keep current toolchains, official sources/signed package cache, controlled prefixes/manifests, release artifacts/source bundle, previous upgrade baseline and final evidence. Unused superseded publish/bin/obj copies, old receiver build-key trees and failed staging/Sandbox inputs are cleanup candidates after necessary reports are retained. Reproducible caches are optional caches, not unused source code. Review an explicit size/path list and verify every deletion stays under `.runtime/`; preserve user pairing state and the only copy of release/source evidence.
