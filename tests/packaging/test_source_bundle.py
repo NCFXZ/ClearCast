@@ -154,6 +154,18 @@ class SourceBundleTests(unittest.TestCase):
         self.assertIn("Private/generated state", result.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_rejects_private_state_in_base_without_replacing_output(self):
+        for member in (".clearcast-state/receiver.pem", "distribution-notices/licenses/.RUNTIME/ui-error.log",
+                       "source/.Git/config"):
+            with self.subTest(member=member):
+                self.make_base(extra={member: b"private fixture; must not ship"})
+                self.output.write_bytes(b"existing release")
+                result = self.run_tool()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Private/generated state in base source", result.stderr)
+                self.assertEqual(self.output.read_bytes(), b"existing release")
+                self.assertFalse((self.work / "compliance").exists())
+
     def test_rejects_archive_traversal(self):
         self.make_base(extra={"distribution-notices/../../escape": b"fixture"})
         result = self.run_tool()
@@ -189,6 +201,18 @@ class SourceBundleTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unsafe archive path", result.stderr)
         self.assertFalse(self.output.exists())
+
+    def test_rejects_private_additional_source_member(self):
+        self.make_base()
+        source = self.work / "extra.tar.xz"
+        source.write_bytes(b"fixture source")
+        for member in (".clearcast-state/source.tar.xz", "source/.RUNTIME/extra.tar.xz", ".Git/extra.tar.xz"):
+            with self.subTest(member=member):
+                self.output.write_bytes(b"existing release")
+                result = self.run_tool(["--additional-source", member + "=" + str(source)])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Private/generated state in additional source", result.stderr)
+                self.assertEqual(self.output.read_bytes(), b"existing release")
 
     def test_adds_http_source_with_exact_patch_and_manifest_notices(self):
         self.make_base()

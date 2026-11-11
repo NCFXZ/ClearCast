@@ -352,6 +352,14 @@
                                 HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled"
                                 HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" SizeChanged="MusicViewportChanged">
                                 <Grid x:Name="MusicLayout">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition x:Name="MusicLyricsColumn" Width="0" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition x:Name="MusicLyricsRow" Height="0" />
+                                </Grid.RowDefinitions>
                                 <StackPanel x:Name="MusicContent" MaxWidth="560" Margin="20,24" Spacing="12"
                                     HorizontalAlignment="Center" VerticalAlignment="Center" SizeChanged="MusicContentSizeChanged">
                                     <Border x:Name="MusicDiagnosticsPanel" Visibility="Collapsed" Padding="8,6" CornerRadius="6"
@@ -392,7 +400,9 @@
                                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                         </Grid>
                                     </StackPanel>
-                                    <StackPanel x:Name="MusicTransportControls" Orientation="Horizontal" Spacing="16" HorizontalAlignment="Center">
+                                    <!-- Full screen and lyrics sit beside the transport controls, or beside disconnect without them. -->
+                                    <Grid x:Name="MusicActionRow" ColumnDefinitions="*,Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8">
+                                    <StackPanel x:Name="MusicTransportControls" Grid.Column="1" Orientation="Horizontal" Spacing="16" HorizontalAlignment="Center">
                                         <Button x:Name="MusicPreviousButton" Width="44" Height="44" Padding="0" Click="MusicPreviousClicked"
                                             Style="{StaticResource SubtleButtonStyle}" VerticalAlignment="Center"
                                             AutomationProperties.Name="{x:Bind Texts.MusicPrevious, Mode=OneWay}"
@@ -410,11 +420,76 @@
                                             <SymbolIcon Symbol="Next" />
                                         </Button>
                                     </StackPanel>
-                                    <TextBlock x:Name="MusicControlHint" TextAlignment="Center" TextWrapping="Wrap"
+                                    <TextBlock x:Name="MusicControlHint" Grid.Row="1" Grid.ColumnSpan="3" TextAlignment="Center" TextWrapping="Wrap"
                                         Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <Button x:Name="MusicDisconnectButton" Content="{x:Bind Texts.Disconnect, Mode=OneWay}"
-                                        Style="{StaticResource SubtleButtonStyle}" HorizontalAlignment="Center" Click="DisconnectClicked" />
+                                    <Button x:Name="MusicFullScreenButton" Width="40" Height="40" Padding="0" Click="PlayerFullScreenClicked"
+                                        Style="{StaticResource SubtleButtonStyle}" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                        <SymbolIcon x:Name="MusicFullScreenIcon" Symbol="FullScreen" />
+                                    </Button>
+                                    <Button x:Name="MusicDisconnectButton" Grid.Row="2" Grid.Column="1" Content="{x:Bind Texts.Disconnect, Mode=OneWay}"
+                                        Style="{StaticResource SubtleButtonStyle}" HorizontalAlignment="Center" VerticalAlignment="Center" Click="DisconnectClicked" />
+                                    <!-- Subtle checked colors match the other icon actions; high contrast keeps system toggle colors. -->
+                                    <ToggleButton x:Name="MusicLyricsButton" Grid.Column="2" Width="40" Height="40" Padding="0"
+                                        HorizontalAlignment="Right" VerticalAlignment="Center" Click="MusicLyricsClicked">
+                                        <ToggleButton.Resources>
+                                            <ResourceDictionary>
+                                                <ResourceDictionary.ThemeDictionaries>
+                                                    <ResourceDictionary x:Key="Default">
+                                                        <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="TextFillColorPrimaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="TextFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="TextFillColorDisabledBrush" />
+                                                    </ResourceDictionary>
+                                                    <ResourceDictionary x:Key="Light">
+                                                        <StaticResource x:Key="ToggleButtonBackground" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundPressed" ResourceKey="SubtleFillColorTertiaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundChecked" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedPointerOver" ResourceKey="SubtleFillColorTertiaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedPressed" ResourceKey="SubtleFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundChecked" ResourceKey="TextFillColorPrimaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedPointerOver" ResourceKey="TextFillColorPrimaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedPressed" ResourceKey="TextFillColorSecondaryBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrush" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushPressed" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushChecked" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedPointerOver" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedPressed" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBackgroundCheckedDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonBorderBrushCheckedDisabled" ResourceKey="SubtleFillColorTransparentBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundDisabled" ResourceKey="TextFillColorDisabledBrush" />
+                                                        <StaticResource x:Key="ToggleButtonForegroundCheckedDisabled" ResourceKey="TextFillColorDisabledBrush" />
+                                                    </ResourceDictionary>
+                                                    <ResourceDictionary x:Key="HighContrast" />
+                                                </ResourceDictionary.ThemeDictionaries>
+                                            </ResourceDictionary>
+                                        </ToggleButton.Resources>
+                                        <FontIcon Glyph="&#xE90B;" FontSize="18" />
+                                    </ToggleButton>
+                                    </Grid>
                                 </StackPanel>
+                                <local:LyricsView x:Name="MusicLyrics" Visibility="Collapsed" MaxWidth="720"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Top" />
                                 </Grid>
                             </ScrollViewer>
                             <Border x:Name="VideoDiagnosticsPanel" Visibility="Collapsed" Padding="8,6" CornerRadius="8"

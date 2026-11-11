@@ -22,6 +22,7 @@ internal sealed class NativeVideoHost : IDisposable
     private const uint KeyDown = 0x0100;
     private const uint LeftButtonDown = 0x0201;
     private const uint LeftButtonDoubleClick = 0x0203;
+    internal const int MaximumQueuedInput = 64;
 
     private (int X, int Y, int Width, int Height, bool Visible)? _lastLayout;
     private (uint Time, int X, int Y)? _lastClick;
@@ -34,6 +35,10 @@ internal sealed class NativeVideoHost : IDisposable
     private readonly DispatcherQueue _dispatcher;
     private readonly HookProcedure _observeMessage;
     private readonly Dictionary<uint, nint> _inputHooks = [];
+    private readonly object _inputGate = new();
+    private readonly Queue<(nint Window, Action Action)> _pendingInput = [];
+    private bool _inputDrainQueued;
+    private int _inputGeneration;
 
     public nint Handle { get; private set; }
     public event Action? DoubleClicked;
@@ -244,10 +249,16 @@ internal sealed class NativeVideoHost : IDisposable
             UnhookWindowsHookEx(hook);
         _inputHooks.Clear();
         _lastClick = null;
+        lock (_inputGate)
+        {
+            ++_inputGeneration;
+            _pendingInput.Clear();
+        }
     }
 
     private nint ObserveMessage(int code, nuint operation, nint data)
     {
+        int generation = Volatile.Read(ref _inputGeneration);
         // PM_REMOVE means the window will process this queued message only once.
         if (code >= 0 && operation == 1 && data != 0)
         {
@@ -255,41 +266,77 @@ internal sealed class NativeVideoHost : IDisposable
             if (message.Message is LeftButtonDown or LeftButtonDoubleClick &&
                 (message.Window == Handle || IsChild(Handle, message.Window)))
             {
-                QueueInput(() => CheckDoubleClick(message));
+                QueueInput(() => CheckDoubleClick(message), generation);
             }
             else if (message.Message == KeyDown && message.WParam == 0x1B &&
                 (message.LParam & (1 << 30)) == 0 &&
                 (message.Window == _parent || IsChild(_parent, message.Window)))
             {
-                QueueInput(() => EscapePressed?.Invoke());
+                QueueInput(() => EscapePressed?.Invoke(), generation);
             }
             else if (message.Message == KeyDown && message.WParam == 0x20 &&
                 (message.LParam.ToInt64() & (1L << 30)) == 0 &&
                 (message.Window == Handle || IsChild(Handle, message.Window)))
             {
-                QueueInput(() => PlayPausePressed?.Invoke());
+                QueueInput(() => PlayPausePressed?.Invoke(), generation);
             }
             else if (message.Message == KeyDown && message.WParam == 0x7B &&
                 (message.LParam.ToInt64() & (1L << 30)) == 0 &&
                 (message.Window == Handle || IsChild(Handle, message.Window)))
             {
-                QueueInput(() => DiagnosticsPressed?.Invoke());
+                QueueInput(() => DiagnosticsPressed?.Invoke(), generation);
             }
         }
         return CallNextHookEx(0, code, operation, data);
     }
 
-    private void QueueInput(Action action)
+    private void QueueInput(Action action, int generation)
     {
         nint expected = Handle;
-        if (expected != 0) _dispatcher.TryEnqueue(() =>
+        if (expected == 0) return;
+        lock (_inputGate)
         {
+            if (Handle != expected || generation != _inputGeneration || _pendingInput.Count == MaximumQueuedInput) return;
+            _pendingInput.Enqueue((expected, action));
+            if (_inputDrainQueued) return;
+            _inputDrainQueued = true;
+            if (_dispatcher.TryEnqueue(DrainInput)) return;
+            _inputDrainQueued = false;
+            _pendingInput.Clear();
+        }
+    }
+
+    private void DrainInput()
+    {
+        for (int processed = 0; processed < MaximumQueuedInput; processed++)
+        {
+            (nint Window, Action Action) pending;
+            lock (_inputGate)
+            {
+                if (!_pendingInput.TryDequeue(out pending))
+                {
+                    _inputDrainQueued = false;
+                    return;
+                }
+            }
             // A queued message from a retired decoder host must not control its replacement.
-            if (Handle == expected) action();
-        });
+            if (Handle == pending.Window) pending.Action();
+        }
+        lock (_inputGate)
+        {
+            if (_pendingInput.Count > 0 && _dispatcher.TryEnqueue(DrainInput)) return;
+            _inputDrainQueued = false;
+            _pendingInput.Clear();
+        }
     }
 #if CLEARCAST_UI_TESTS
-    internal void UiQueueInput(Action action) => QueueInput(action);
+    internal void UiQueueInput(Action action) => QueueInput(action, Volatile.Read(ref _inputGeneration));
+    internal Action UiCaptureInputCallback(Action action)
+    {
+        int generation = Volatile.Read(ref _inputGeneration);
+        return () => QueueInput(action, generation);
+    }
+    internal int UiQueuedInputCount { get { lock (_inputGate) return _pendingInput.Count; } }
 #endif
 
     private void CheckDoubleClick(WindowMessage message)

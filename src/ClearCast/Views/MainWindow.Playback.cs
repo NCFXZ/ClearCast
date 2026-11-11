@@ -102,6 +102,13 @@ public sealed partial class MainWindow
 
     private async void PlaybackPreviewKeyDown(object sender, KeyRoutedEventArgs args)
     {
+        // Video full screen handles Escape in its native HWND; music full screen is all XAML.
+        if (args.Key == VirtualKey.Escape && _playerFullScreen && !_hasVideo)
+        {
+            args.Handled = true;
+            SetPlayerFullScreen(false);
+            return;
+        }
         if (args.Key != VirtualKey.Space || !ShouldHandlePlaybackSpace) return;
         args.Handled = true;
         if (!args.KeyStatus.WasKeyDown && CanToggleCurrentPlayback) await ToggleCurrentPlaybackAsync();

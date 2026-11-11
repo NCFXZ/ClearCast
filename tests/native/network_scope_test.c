@@ -170,8 +170,21 @@ int main(void) {
     CHECK(clearcast_network_scope_select(ipv4("127.0.0.1")) == 0);
     CHECK(clearcast_network_scope_ipv4() == ipv4("127.0.0.1"));
     CHECK(clearcast_network_scope_is_current());
+    for (int ipv6 = 0; ipv6 <= 1; ++ipv6) {
+        SOCKET client = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        CHECK(client != INVALID_SOCKET);
+        CHECK(clearcast_network_scope_prepare_unicast((int)client, ipv6) == 0);
+        DWORD selected = 0; int length = sizeof(selected);
+        CHECK(getsockopt(client, ipv6 ? IPPROTO_IPV6 : IPPROTO_IP,
+            ipv6 ? IPV6_UNICAST_IF : IP_UNICAST_IF, (char *)&selected, &length) == 0);
+        // Winsock accepts IPv4 indices in network order, but returns host order.
+        CHECK(selected == (ipv6 ? clearcast_scope.if6 : clearcast_scope.if4));
+        closesocket(client);
+    }
     CHECK(clearcast_network_scope_select(ipv4("203.0.113.19")) != 0);
     CHECK(!clearcast_network_scope_ipv4() && !clearcast_network_scope_is_current());
+    CHECK(clearcast_network_scope_prepare_unicast(0, 0) == -1 && WSAGetLastError() == WSAENETDOWN);
+    CHECK(clearcast_network_scope_prepare_unicast(0, 1) == -1 && WSAGetLastError() == WSAENETDOWN);
     unsigned char v6[16]; unsigned int index = 999;
     CHECK(!clearcast_network_scope_ipv6(v6, &index) && !index);
     clearcast_network_scope_clear();

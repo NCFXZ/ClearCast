@@ -854,6 +854,28 @@ public sealed partial class MainWindow
             UiCheck(MusicArtwork.Source is null && MusicArtworkPlaceholder.Visibility == Visibility.Visible,
                 "invalid artwork leaves a harmless placeholder");
 
+            foreach (var fixture in new[]
+            {
+                (Codec: BitmapEncoder.JpegEncoderId, Width: 16u, Height: 8u, Supported: true),
+                (Codec: BitmapEncoder.PngEncoderId, Width: 4000u, Height: 1u, Supported: true),
+                (Codec: BitmapEncoder.PngEncoderId, Width: 1u, Height: 4000u, Supported: true),
+                (Codec: BitmapEncoder.PngEncoderId, Width: 4097u, Height: 1u, Supported: false),
+                (Codec: BitmapEncoder.PngEncoderId, Width: 1u, Height: 4097u, Supported: false),
+                (Codec: BitmapEncoder.PngEncoderId, Width: 4001u, Height: 4000u, Supported: false),
+                (Codec: BitmapEncoder.GifEncoderId, Width: 1u, Height: 1u, Supported: false)
+            })
+            {
+                byte[] bytes = await UiCreateSolidArtworkAsync(fixture.Codec, fixture.Width, fixture.Height);
+                ApplyMediaState(audio with { Revision = _mediaState.Revision + 1,
+                    ArtworkRevision = _artworkRevision + 1, ArtworkBytes = bytes.Length });
+                await ApplyMusicArtworkAsync(bytes, _artworkGeneration, null);
+                UiCheck(fixture.Supported
+                    ? MusicArtwork.Source is BitmapImage { DecodePixelWidth: > 0 and <= 640, DecodePixelHeight: > 0 and <= 640 } &&
+                        ReferenceEquals(_musicArtworkBytes, bytes) && MusicArtworkPlaceholder.Visibility == Visibility.Collapsed
+                    : MusicArtwork.Source is null && _musicArtworkBytes is null && MusicArtworkPlaceholder.Visibility == Visibility.Visible,
+                    $"artwork preflight and bounded preview handle {fixture.Codec} {fixture.Width}x{fixture.Height} (supported: {fixture.Supported})");
+            }
+
             byte[] screenshotArtwork = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "Assets", "ClearCast.png"));
             foreach (bool english in new[] { false, true })
             {
@@ -900,6 +922,7 @@ public sealed partial class MainWindow
                     if (logicalWidth == 1120)
                         await UiTestOwnedCompositorCaptureAsync(output, prefix);
                 }
+                await UiTestMusicLyricsAsync(output, english);
             }
 
             byte[] rhythmArtwork = await UiCreateRhythmArtworkAsync();
@@ -916,9 +939,12 @@ public sealed partial class MainWindow
             await UiWaitForStableLayout(MusicPanel, MusicArtworkFrame);
             await UiTestOwnedCompositorCaptureAsync(output, "en-light-rhythm-texture");
             await UiTestBeatMotionAsync(output);
+            TogglePlayerFullScreen();
+            UiCheck(_playerFullScreen && AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen, "music full screen is active before audio ends");
             ApplyMediaState(ReceiverMediaState.Empty);
             UiCheck(!_hasMusic && MusicPanel.Visibility == Visibility.Collapsed && VideoPlaceholder.Visibility == Visibility.Visible,
                 "ending audio clears the music card and restores the landing view");
+            UiCheck(!_playerFullScreen && AppWindow.Presenter.Kind != AppWindowPresenterKind.FullScreen, "ending audio exits music full screen");
             UiCheck(!MusicBackground.IsActive && !MusicBackground.IsAnimating && MusicBackground.AnimationChannelCount == 0,
                 "ending audio removes the app-wide music backdrop and its animation");
             await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
@@ -1141,11 +1167,26 @@ public sealed partial class MainWindow
             imageGate.TrySetResult(true);
             clearGate.TrySetResult(true);
             disposeImageGate.TrySetResult(true);
-            backdrop.Dispose();
+            await backdrop.DisposeAsync();
             WindowLayout.Children.Remove(backdrop);
         }
         _uiTestLayouts.Add(new { kind = "rendering-backpressure", burst = 5000, svgWorkerLimit = 4,
             backdropWorkerLimit = 1, pendingRequestLimit = 1 });
+    }
+
+    private static async Task<byte[]> UiCreateSolidArtworkAsync(Guid codec, uint width, uint height)
+    {
+        using var stream = new InMemoryRandomAccessStream();
+        var encoder = await BitmapEncoder.CreateAsync(codec, stream);
+        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96,
+            new byte[checked((int)(width * height * 4))]);
+        await encoder.FlushAsync();
+        stream.Seek(0);
+        using var reader = new DataReader(stream);
+        await reader.LoadAsync((uint)stream.Size);
+        byte[] bytes = new byte[checked((int)stream.Size)];
+        reader.ReadBytes(bytes);
+        return bytes;
     }
 
     private static async Task<byte[]> UiCreateRhythmArtworkAsync(bool muted = false)
@@ -1192,6 +1233,7 @@ public sealed partial class MainWindow
         UiCheck(MusicBackground.TextureFrameCount == 32 && MusicBackground.RateControlledChannelCount == 1,
             "audio-reactive artwork shares exactly one compositor playback-rate controller");
         var source = _mediaState;
+        byte[]? sourceArtwork = _musicArtworkBytes;
         long starts = MusicBackground.AnimationStartCount;
         MusicBackground.ResetAudioActivity();
         async Task Feed(float energy, float density, int windows)
@@ -1238,6 +1280,15 @@ public sealed partial class MainWindow
             expiredRate, appliedRate, quietPhaseBefore, quietPhaseAfter, densePhaseBefore, densePhaseAfter,
             note = "Synthetic activity drives the real XAML bridge/controller; decoded PCM analysis is verified by separate native fixtures." });
         ApplyMediaState(source with { AudioActivity = default });
+        // Session changes correctly invalidate artwork. With the receiver stopped,
+        // this fixture must supply its cover again before the following beat test.
+        if (sourceArtwork is not null)
+            await ApplyMusicArtworkAsync(sourceArtwork, _artworkGeneration, _receiver);
+        UpdateMusicBackgroundState();
+        if (_captionThemeSettings?.HighContrast != true && _motionSettings.AnimationsEnabled &&
+            _mediaState.Playing && MusicBackground.IsActive)
+            await UiWaitUntil(() => MusicBackground.HasArtworkFlow && MusicBackground.IsAnimating,
+                "rhythm fixture restores its real artwork flow before the following beat test");
     }
 
     private void UiCheckAppWideMusicBackdrop(string page)
@@ -1274,6 +1325,333 @@ public sealed partial class MainWindow
             "native full-screen switch track aligns to the card right inset and vertical center " + prefix);
     }
 
+    private UiOfflineLyricsHandler? _uiLyricsHandler;
+
+    private sealed class UiOfflineLyricsHandler : System.Net.Http.HttpMessageHandler
+    {
+        private int _requests;
+        internal int Requests => Volatile.Read(ref _requests);
+        internal Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? Respond;
+
+        // Automatic lookups in the harness never leave the machine; every query is "not found".
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,
+            CancellationToken token)
+        {
+            Interlocked.Increment(ref _requests);
+            if (Respond is { } respond) return respond(request, token);
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound) { RequestMessage = request });
+        }
+    }
+
+    private async Task UiTestLyricsLookupAsync(string output)
+    {
+        var handler = _uiLyricsHandler!;
+        static System.Net.Http.HttpResponseMessage Reply(object body) => new(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent(System.Text.Json.JsonSerializer.Serialize(body),
+                System.Text.Encoding.UTF8, "application/json")
+        };
+        _preferences = _preferences with { ShowLyrics = true, AutoFullScreen = false };
+        var audio = new ReceiverMediaState(1, ReceiverMediaKind.Audio, false, "Early synced", "Test artist", "Test album",
+            45_000, 180_000, 0, 0, MediaControls.None);
+        handler.Respond = (_, _) => Task.FromResult(Reply(new
+        {
+            trackName = "Early synced", artistName = "Test artist", albumName = "Test album",
+            duration = 180, syncedLyrics = "[00:20.00]Early first line\n[00:40.00]Early current line\n[01:00.00]Early next line"
+        }));
+        ApplyMediaState(audio);
+        await UiWaitUntil(() => !_lyricsPending, "early synced lyrics lookup completes");
+        UiCheck(!_lyricsFailed && LyricsAvailable && _lyricsOpen && MusicLyricsButton.IsEnabled,
+            "automatic lookup displays synced lyrics immediately after startup without disabling the session");
+        await UiWaitForStableLayout(MusicPanel, MusicContent, MusicLyrics);
+        UiCheck(UiDescendants<TextBlock>(MusicLyrics).Any(block => block.FontWeight.Weight == 700),
+            "early synced lyrics retain the Bold font weight");
+        var syncedLine = UiDescendants<TextBlock>(MusicLyrics).Single(block => block.Text == "Early first line");
+        var syncedTypography = (syncedLine.FontSize, syncedLine.LineHeight, syncedLine.Margin);
+        UpdateLyricsPosition();
+        UiCheck(MusicLyrics.ActiveLineIndex == 1, "early automatic lyrics follow the current playback position");
+        await UiCaptureAsync(output, "early-synced-lyrics");
+
+        handler.Respond = (_, _) => Task.FromResult(Reply(new { trackName = "Early plain", artistName = "Test artist",
+            albumName = "Test album", duration = 180, plainLyrics = "Plain first line\nPlain second line\n" +
+                string.Join('\n', Enumerable.Range(0, 30).Select(index => "Plain browsing line " + index)) }));
+        ApplyMediaState(audio with { Title = "Early plain" });
+        await UiWaitUntil(() => !_lyricsPending, "early plain lyrics lookup completes");
+        await UiWaitForStableLayout(MusicLyrics);
+        var plainLine = UiDescendants<TextBlock>(MusicLyrics).Single(block => block.Text == "Plain first line");
+        UiCheck(!_lyricsFailed && _lyrics is { Kind: LyricsKind.Plain } && _lyricsOpen && MusicLyricsButton.IsEnabled &&
+            plainLine.FontWeight.Weight == 700 && Math.Abs(plainLine.FontSize - syncedTypography.FontSize) < 0.01 &&
+            Math.Abs(plainLine.LineHeight - syncedTypography.LineHeight) < 0.01 && plainLine.Margin == syncedTypography.Margin,
+            "plain lyrics use the same size, Bold weight, line height and spacing as synced lyrics");
+        UiCheck(UiDescendants<TextBlock>(MusicLyrics).Any(block => block.Text.StartsWith("此歌词不支持滚动\n", StringComparison.Ordinal) &&
+            block.Text.EndsWith(Texts.LyricsSource, StringComparison.Ordinal)),
+            "plain lyrics display the scrolling notice and accuracy note on separate lines");
+        MusicLyrics.UiScrollBy(-96);
+        double plainOffset = MusicLyrics.UiManualOffset;
+        MusicLyrics.SetPosition(90_000);
+        UiCheck(plainOffset < 0 && MusicLyrics.UiManualOffset == plainOffset && MusicLyrics.ActiveLineIndex == -1,
+            "plain lyrics can be browsed manually and do not follow playback timestamps");
+        await UiCaptureAsync(output, "plain-lyrics-font-and-notice");
+
+        // An unknown duration can produce a miss without a network request. A later duration-only
+        // snapshot must retry the same track even when the native revision has not changed.
+        handler.Respond = (_, _) => Task.FromResult(Reply(new[] { new { trackName = "Late duration", albumName = "Test album",
+            duration = 180, plainLyrics = "Late duration line" } }));
+        ApplyMediaState(audio with { Title = "Late duration", Artist = "", DurationMs = 0 });
+        await UiWaitUntil(() => !_lyricsPending, "lookup with missing duration completes");
+        UiCheck(!LyricsAvailable && !MusicLyricsButton.IsEnabled, "a duration-dependent miss greys out the lyrics button");
+        ApplyMediaState(_mediaState with { DurationMs = 180_000 });
+        await UiWaitUntil(() => !_lyricsPending, "duration-only snapshot retries lookup");
+        UiCheck(!_lyricsFailed && LyricsAvailable && _lyricsOpen && MusicLyricsButton.IsEnabled,
+            "a duration-only snapshot restores lyrics after the initial miss");
+
+        var headersPending = new TaskCompletionSource<System.Net.Http.HttpResponseMessage>();
+        int inFlightSearches = 0;
+        handler.Respond = (request, _) => request.RequestUri!.AbsolutePath.EndsWith("/search")
+            ? ++inFlightSearches == 1 ? headersPending.Task : Task.FromResult(Reply(Array.Empty<object>()))
+            : Task.FromResult(Reply(new { trackName = "In-flight duration", artistName = "Test artist",
+                albumName = "Test album", duration = 180, plainLyrics = "Late metadata line" }));
+        int before = handler.Requests;
+        ApplyMediaState(audio with { Title = "In-flight duration", DurationMs = 0 });
+        await UiWaitUntil(() => handler.Requests > before, "initial duration-free search starts");
+        ApplyMediaState(_mediaState with { DurationMs = 180_000 });
+        headersPending.SetResult(Reply(Array.Empty<object>()));
+        await UiWaitUntil(() => !_lyricsPending, "duration arriving during a miss triggers a completed lookup");
+        UiCheck(!_lyricsFailed && LyricsAvailable && _lyricsOpen && MusicLyricsButton.IsEnabled &&
+            _lyricsLookupDurationMs == 180_000, "an in-flight miss retries with the late duration and restores the lyrics button");
+
+        handler.Respond = (_, _) => Task.FromResult(Reply(new[]
+        {
+            new LrclibRecord("FIND YOU", "邓紫棋", "Revelación", 256, SyncedLyrics: "[00:00.00]Other edition"),
+            new LrclibRecord("FIND YOU", "邓紫棋", "启示录", 256.112333, PlainLyrics: "当前专辑的合成歌词\n用于核对匹配与来源提示")
+        }));
+        ApplyMediaState(audio with { Title = "FIND YOU", Artist = "邓紫棋", Album = "启示录", DurationMs = 0 });
+        await UiWaitUntil(() => !_lyricsPending, "edition-aware lookup completes before duration arrives");
+        UiCheck(!_lyricsFailed && _lyrics is { Kind: LyricsKind.Plain } && _lyrics.Lines[0].Text == "当前专辑的合成歌词",
+            "automatic lookup prefers the requested album over another language edition with synced lyrics");
+        await UiWaitForStableLayout(MusicLyrics);
+        UiCheck(UiDescendants<TextBlock>(MusicLyrics).Any(block => block.Text.EndsWith(Texts.LyricsSource, StringComparison.Ordinal) &&
+            block.Text.StartsWith(Texts.LyricsNotScrollable + "\n", StringComparison.Ordinal) &&
+            block.Text.Contains("可能不准确", StringComparison.Ordinal) && block.TextWrapping == TextWrapping.Wrap),
+            "lyrics attribution includes the accuracy and timing notice with wrapping");
+        await UiCaptureAsync(output, "edition-matching-lyrics-notice");
+        bool originalEnglish = Texts.IsEnglish;
+        var originalSize = AppWindow.Size;
+        try
+        {
+            ApplyAppLanguage(true);
+            RefreshLyrics();
+            double scale = WindowLayout.XamlRoot.RasterizationScale;
+            AppWindow.Resize(new SizeInt32((int)Math.Round(640 * scale), (int)Math.Round(720 * scale)));
+            await UiWaitForStableLayout(MusicLyrics);
+            var notice = UiDescendants<TextBlock>(MusicLyrics).Single(block => block.Text.EndsWith(Texts.LyricsSource, StringComparison.Ordinal));
+            UiBounds noticeBounds = UiMeasure(notice), lyricsBounds = UiMeasure(MusicLyrics);
+            UiCheck(notice.Text.Contains("may be inaccurate", StringComparison.Ordinal) &&
+                notice.Text.StartsWith(Texts.LyricsNotScrollable + "\n", StringComparison.Ordinal) && noticeBounds.Height > 0 &&
+                noticeBounds.X + noticeBounds.Width <= lyricsBounds.X + lyricsBounds.Width + 1,
+                "the English accuracy notice remains inside the lyrics column in a narrow window");
+            await UiCaptureAsync(output, "lyrics-notice-en-narrow");
+        }
+        finally
+        {
+            ApplyAppLanguage(originalEnglish);
+            RefreshLyrics();
+            AppWindow.Resize(originalSize);
+        }
+
+        // Reuse the existing visual regression checks, keeping their parameters unchanged.
+        handler.Respond = null;
+        ApplyMediaState(audio with { Title = "Visual regression", PositionMs = 45_000 });
+        await UiWaitUntil(() => !_lyricsPending && !_lyricsClosing, "missing visual-regression fixture settles before visual checks");
+        await UiTestMusicLyricsAsync(output, false);
+        ApplyMediaState(ReceiverMediaState.Empty);
+    }
+
+    private async Task UiTestLyricsFixtureAsync(string output, string path)
+    {
+        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var record = System.Text.Json.JsonSerializer.Deserialize<LrclibRecord>(await File.ReadAllTextAsync(path), options)
+            ?? throw new InvalidDataException("Missing lyrics fixture.");
+        UiCheck(record.TrackName is { Length: > 0 } && record.ArtistName is { Length: > 0 } &&
+            LyricsClient.ToLyrics(record) is { Kind: LyricsKind.Synced }, "real-song fixture contains named synced lyrics");
+        _uiLyricsHandler!.Respond = (request, _) => Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new System.Net.Http.StringContent(request.RequestUri!.AbsolutePath.EndsWith("/search")
+                ? System.Text.Json.JsonSerializer.Serialize(new[] { record }, options)
+                : System.Text.Json.JsonSerializer.Serialize(record, options), System.Text.Encoding.UTF8, "application/json")
+        });
+        _preferences = _preferences with { ShowLyrics = true, AutoFullScreen = false };
+        var audio = new ReceiverMediaState(1, ReceiverMediaKind.Audio, true, record.TrackName!, record.ArtistName!, record.AlbumName ?? "",
+            0, (long)((record.Duration ?? 163) * 1000), 1, 1, MediaControls.None);
+        ApplyMediaState(audio);
+        byte[] artwork = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "Assets", "ClearCast.png"));
+        await ApplyMusicArtworkAsync(artwork, _artworkGeneration, null);
+        await UiWaitUntil(() => !_lyricsPending, "real-song automatic lookup completes");
+        UiCheck(!_lyricsFailed && _lyricsOpen && MusicLyricsButton.IsEnabled, "real-song lyrics display without a session failure");
+        await UiWaitForStableLayout(MusicPanel, MusicContent, MusicLyrics);
+        await Task.Delay(1500);
+        await UiCaptureAsync(output, "real-song-first-render");
+        for (int round = 0; round < 60; ++round)
+        {
+            ApplyMediaState(audio with { Revision = (ulong)(round + 2), PositionMs = (round * 2900) % audio.DurationMs });
+            if (round % 10 == 0)
+            {
+                double scale = WindowLayout.XamlRoot.RasterizationScale;
+                AppWindow.Resize(new SizeInt32((int)((round % 20 == 0 ? 640 : 1120) * scale), (int)(760 * scale)));
+            }
+            if (round % 15 == 0)
+            {
+                _lyrics = LyricsClient.ToLyrics(record);
+                UpdateLyricsPresentation(true);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+            await Task.Delay(150);
+        }
+        UiCheck(!_lyricsFailed && _lyricsOpen && MusicLyricsButton.IsEnabled,
+            "real-song lyric rendering survives playback, resizes, replacement and garbage collection");
+        for (int index = 0; index < 12; ++index)
+        {
+            _lyrics = index % 3 == 0 ? null : LyricsClient.ToLyrics(record);
+            _lyricsPending = _lyrics is null;
+            UpdateLyricsPresentation(true);
+        }
+        _lyrics = LyricsClient.ToLyrics(record);
+        _lyricsPending = false;
+        UpdateLyricsPresentation(true);
+        await Task.Delay(1000);
+        UiCheck(!_lyricsFailed && _lyricsOpen && MusicLyricsButton.IsEnabled,
+            "replacing lyric resources repeatedly before a frame commit remains safe");
+        await UiCaptureAsync(output, "real-song-after-stress");
+        ApplyMediaState(ReceiverMediaState.Empty);
+    }
+
+    private async Task UiTestMusicLyricsAsync(string output, bool english)
+    {
+        string theme = english ? "en-dark-" : "zh-light-";
+        await UiWaitUntil(() => !_lyricsPending && _lyricsTrack is not null, "automatic lyrics lookup completes for the synthetic track");
+        UiCheck(_uiLyricsHandler is { Requests: > 0 } && !LyricsAvailable && !MusicLyricsButton.IsEnabled &&
+            MusicLyrics.Visibility == Visibility.Collapsed, "a track without lyrics is looked up automatically and greys out the lyrics button");
+        _preferences = _preferences with { ShowLyrics = true };
+        UpdateLyricsPresentation(true);
+        UiCheck(!_lyricsOpen, "lyrics stay closed when none were found even if the preference is on");
+        // With sender playback control, full screen and lyrics move onto the transport row.
+        ApplyMediaState(_mediaState with { Revision = _mediaState.Revision + 1,
+            Controls = MediaControls.PlayPause | MediaControls.Previous | MediaControls.Next });
+        await UiWaitForStableLayout(MusicPanel, MusicContent, MusicTransportControls);
+        UiCheckMusicGeometry(theme + "transport");
+        await UiCaptureAsync(output, theme + "transport-music");
+        // Synthetic lyrics for the current track; the matching track key prevents another lookup.
+        _lyrics = Lyrics.ParseSynced(string.Join('\n', english
+            ? ["[00:20.00]Morning light across the floor", "[00:30.00]Quiet steps outside the door",
+                "[00:40.00]Every song I used to know", "[00:44.00]Plays again and lets me go and finds the open road",
+                "[00:52.00]Hold the line and sing along", "[01:00.00]Until the afternoon is gone", "[01:10.00]",
+                "[01:15.00]Morning light across the floor"]
+            : new[] { "[00:20.00]午后的光落在窗台", "[00:30.00]风把旧信轻轻翻开", "[00:40.00]那首歌还在耳边",
+                "[00:44.00]把时间慢慢放回从前", "[00:52.00]跟着旋律一起唱", "[01:00.00]直到黄昏落在肩上", "[01:10.00]",
+                "[01:15.00]午后的光落在窗台" }));
+        try
+        {
+            foreach (int logicalWidth in new[] { 640, 1120 })
+            {
+                double scale = WindowLayout.XamlRoot.RasterizationScale;
+                AppWindow.Resize(new SizeInt32((int)Math.Round(logicalWidth * scale), (int)Math.Round(720 * scale)));
+                await UiWaitForStableLayout(MusicPanel, MusicContent);
+                UpdateLyricsPresentation(true);
+                UiCheck(!UiDescendants<TextBlock>(MusicLyrics).Any(block => block.Text.Contains(Texts.LyricsNotScrollable, StringComparison.Ordinal)),
+                    "the plain-lyrics notice is removed when synced lyrics replace them " + logicalWidth);
+                UiCheck(_lyricsRequest is null && MusicLyricsButton.IsEnabled && MusicLyricsButton.IsChecked == true &&
+                    _lyricsOpen && MusicLyrics.Visibility == Visibility.Visible, "found lyrics open with the eased transition " + logicalWidth);
+                MusicPanel.ChangeView(null, 0, null, true);
+                await UiWaitForStableLayout(MusicPanel, MusicContent, MusicLyrics);
+                await Task.Delay(900);
+                UpdateLyricsPosition();
+                await Task.Delay(800);
+                UiCheckLyricsHighlight("windowed " + logicalWidth);
+                UiBounds content = UiMeasure(MusicContent), lyrics = UiMeasure(MusicLyrics), layout = UiMeasure(MusicLayout);
+                bool sideBySide = MusicPanel.ViewportWidth >= MusicLyricsSideBySideWidth;
+                _uiTestLayouts.Add(new { phase = "music lyrics", logicalWidth, english, sideBySide, content, lyrics, layout });
+                UiCheck(sideBySide == (logicalWidth == 1120), "lyrics sit beside the player at 1120 DIP and below it at 640 DIP");
+                UiCheck(sideBySide ? lyrics.X >= content.X + content.Width && lyrics.X + lyrics.Width <= layout.X + layout.Width + 1
+                    : lyrics.Y >= content.Y + content.Height && lyrics.Width <= layout.Width + 1,
+                    "lyrics do not overlap the artwork, metadata or controls " + logicalWidth);
+                UiCheck(lyrics.Height > 120, "lyrics area has a bounded visible height " + logicalWidth);
+                await UiCaptureAsync(output, theme + logicalWidth + "-music-lyrics");
+                if (logicalWidth == 1120)
+                    await UiTestOwnedCompositorCaptureAsync(output, theme + "lyrics");
+            }
+            TogglePlayerFullScreen();
+            await UiWaitForStableLayout(MusicPanel, MusicContent, MusicLyrics);
+            UiCheck(_playerFullScreen && AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen && !MainNavigation.IsPaneVisible &&
+                MusicFullScreenIcon.Symbol == Symbol.BackToWindow, "music full screen uses the shared presenter and hides navigation");
+            await Task.Delay(900);
+            UiCheckLyricsHighlight("full screen");
+            MusicLyrics.EffectsEnabled = false;
+            UiCheck(Enumerable.Range(0, 8).All(index => MusicLyrics.LineBlur(index) == 0),
+                "high contrast keeps every lyric line sharp and unfaded");
+            MusicLyrics.EffectsEnabled = true;
+            await UiCaptureAsync(output, theme + "fullscreen-music-lyrics");
+            await UiTestOwnedCompositorCaptureAsync(output, theme + "fullscreen-lyrics");
+            SetPlayerFullScreen(false);
+            await UiWaitForStableLayout(MusicPanel);
+            UiCheck(!_playerFullScreen && MusicFullScreenIcon.Symbol == Symbol.FullScreen, "music full screen exits to the window");
+            await UiTestLyricsTrackChangesAsync();
+            _preferences = _preferences with { ShowLyrics = false };
+            UpdateLyricsPresentation(true);
+            UiCheck(!_lyricsOpen && (_motionSettings.AnimationsEnabled
+                ? _lyricsClosing && MusicLyrics.Visibility == Visibility.Visible
+                : MusicLyrics.Visibility == Visibility.Collapsed), "closing lyrics fades the panel out in place before the layout settles");
+            await UiWaitUntil(() => !_lyricsClosing && MusicLyrics.Visibility == Visibility.Collapsed, "lyrics close animation completes");
+        }
+        finally
+        {
+            _preferences = _preferences with { ShowLyrics = false };
+            ResetLyrics();
+            UpdateLyricsPresentation(false);
+        }
+        UiCheck(MusicLyrics.Visibility == Visibility.Collapsed && !MusicLyricsButton.IsEnabled, "turning lyrics off restores the centered player");
+    }
+
+    private async Task UiTestLyricsTrackChangesAsync()
+    {
+        // Song changes replace lines that are on screen and release their visuals, surfaces and
+        // blur brushes; collections also release projected effect descriptions.
+        Lyrics original = _lyrics!;
+        for (int round = 0; round < 6; ++round)
+        {
+            var lines = Enumerable.Range(0, 40 + round * 10).Select(index => $"[{index / 6:00}:{index % 6 * 10:00}.00]Line {round}-{index}");
+            _lyrics = round % 3 == 2 ? null : Lyrics.ParseSynced(string.Join('\n', lines));
+            _lyricsPending = _lyrics is null;
+            UpdateLyricsPresentation(true);
+            await Task.Delay(round % 2 == 0 ? 50 : 700);
+            UpdateLyricsPosition();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            await Task.Delay(150);
+        }
+        _lyrics = original;
+        _lyricsPending = false;
+        UpdateLyricsPresentation(false);
+        await UiWaitForStableLayout(MusicPanel, MusicLyrics);
+        UiCheck(_lyricsOpen && MusicLyricsButton.IsEnabled, "repeated song changes keep lyrics usable");
+    }
+
+    private void UiCheckLyricsHighlight(string phase)
+    {
+        long position = _mediaState.PositionAt(_mediaSnapshotAt == 0 ? TimeSpan.Zero : Stopwatch.GetElapsedTime(_mediaSnapshotAt));
+        int active = _lyrics?.ActiveIndex(position) ?? -1;
+        int expected = active >= 0 && _lyrics!.Lines[active].Text.Length > 0 ? active : -1;
+        int neighbour = expected > 0 ? expected - 1 : 1;
+        _uiTestLayouts.Add(new { phase = "lyrics highlight " + phase, position, playing = _mediaState.Playing, active,
+            shown = MusicLyrics.ActiveLineIndex, blurAvailable = MusicLyrics.BlurAvailable, blurError = MusicLyrics.BlurError,
+            activeBlur = MusicLyrics.LineBlur(expected), neighbourBlur = MusicLyrics.LineBlur(neighbour) });
+        UiCheck(MusicLyrics.ActiveLineIndex == expected, "only the current lyric line is emphasized, and none during an interlude " + phase);
+        UiCheck(MusicLyrics.BlurAvailable, "the native Direct2D blur description is accepted by Composition " + phase);
+        UiCheck(expected < 0 || MusicLyrics.LineBlur(expected) == 0 && MusicLyrics.LineBlur(neighbour) > 0,
+            "the current line is sharp while neighbouring lines are blurred " + phase);
+    }
+
     private void UiCheckMusicGeometry(string prefix)
     {
         var artworkBorder = (FrameworkElement)((FrameworkElement)MusicArtwork.Parent).Parent;
@@ -1302,13 +1680,26 @@ public sealed partial class MainWindow
                 "music transport controls do not overlap text or one another " + prefix);
             UiCheck(previous.Width >= 44 && previous.Height >= 44 && playPause.Width >= 52 && playPause.Height >= 52 &&
                 next.Width >= 44 && next.Height >= 44, "music transport controls retain their touch target sizes " + prefix);
+            UiBounds transport = UiMeasure(MusicTransportControls), fullScreen = UiMeasure(MusicFullScreenButton),
+                lyrics = UiMeasure(MusicLyricsButton), disconnect = UiMeasure(MusicDisconnectButton);
+            UiCheck(Math.Abs(fullScreen.CenterY - transport.CenterY) <= 1 && Math.Abs(lyrics.CenterY - transport.CenterY) <= 1 &&
+                fullScreen.X + fullScreen.Width <= transport.X + 1 && transport.X + transport.Width <= lyrics.X + 1,
+                "full screen and lyrics flank the transport controls on their row " + prefix);
+            UiCheck(transport.Y + transport.Height <= disconnect.Y + 1, "disconnect sits alone below the transport row " + prefix);
         }
         else
         {
-            UiBounds progressGroup = UiMeasure((FrameworkElement)MusicProgress.Parent), disconnect = UiMeasure(MusicDisconnectButton);
+            // Without sender playback control, full screen and lyrics share the disconnect row.
+            UiBounds progressGroup = UiMeasure((FrameworkElement)MusicProgress.Parent), actions = UiMeasure(MusicActionRow),
+                fullScreen = UiMeasure(MusicFullScreenButton), disconnect = UiMeasure(MusicDisconnectButton),
+                lyrics = UiMeasure(MusicLyricsButton);
             UiCheck(MusicControlHint.Visibility == Visibility.Collapsed &&
-                Math.Abs(disconnect.Y - progressGroup.Y - progressGroup.Height - MusicContent.Spacing) <= 1,
-                "unsupported transport and hint leave no empty block below music progress " + prefix);
+                Math.Abs(actions.Y - progressGroup.Y - progressGroup.Height - MusicContent.Spacing) <= 1 &&
+                disconnect.Y >= actions.Y && disconnect.Y + disconnect.Height <= actions.Y + actions.Height + 1,
+                "unsupported transport and hint leave only the action row below music progress " + prefix);
+            UiCheck(Math.Abs(fullScreen.CenterY - disconnect.CenterY) <= 1 && Math.Abs(lyrics.CenterY - disconnect.CenterY) <= 1 &&
+                fullScreen.X + fullScreen.Width <= disconnect.X + 1 && disconnect.X + disconnect.Width <= lyrics.X + 1,
+                "full screen, disconnect and lyrics share one row from left to right " + prefix);
         }
     }
 }

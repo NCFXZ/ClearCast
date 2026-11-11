@@ -650,6 +650,7 @@ int main(int argc,char** argv) {
     check(!state.configured, "unverified peer cannot configure media");
     if(argc>1&&!strcmp(argv[1],"--network")) {
         WSADATA data;check(WSAStartup(MAKEWORD(2,2),&data)==0,"Winsock test host initialized");
+        check(clearcast_network_scope_select(htonl(INADDR_LOOPBACK))==0,"DACP network fixture selects loopback interface");
         seek_case(true);
         seek_case(false);
         control_case("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",0);
@@ -667,7 +668,7 @@ int main(int argc,char** argv) {
         control_case("HTTP/1.1 200 OK\r\nContent-Length: 65537\r\n\r\n",ERROR_INVALID_DATA,0);
         control_case("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",ERROR_INVALID_DATA,0);
         control_case("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nx",ERROR_INVALID_DATA,0);
-        WSACleanup();
+        clearcast_network_scope_clear(); WSACleanup();
     }
     activity_cases();
     beat_cases();

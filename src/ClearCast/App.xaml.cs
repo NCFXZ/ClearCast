@@ -13,21 +13,24 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
-        UnhandledException += (_, args) =>
+        UnhandledException += (_, args) => WriteUiError(args.Exception + Environment.NewLine + args.Message +
+            Environment.NewLine + LayoutErrorDetails());
+    }
+
+    /// <summary>Keeps the latest bounded UI failure detail for diagnosis.</summary>
+    internal static void WriteUiError(string message)
+    {
+        try
         {
-            try
-            {
-                string state = System.IO.Path.Combine(MainWindow.FindRoot(), ".clearcast-state");
-                System.IO.Directory.CreateDirectory(state);
-                string detail = DateTime.UtcNow.ToString("O") + Environment.NewLine + args.Exception +
-                    Environment.NewLine + args.Message + Environment.NewLine + LayoutErrorDetails();
-                System.IO.File.WriteAllText(System.IO.Path.Combine(state, "ui-error.log"), detail[..Math.Min(detail.Length, 8192)]);
-            }
-            catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
-            {
-                // Diagnostics must not replace the original UI exception.
-            }
-        };
+            string state = System.IO.Path.Combine(MainWindow.FindRoot(), ".clearcast-state");
+            System.IO.Directory.CreateDirectory(state);
+            string detail = DateTime.UtcNow.ToString("O") + Environment.NewLine + message;
+            System.IO.File.WriteAllText(System.IO.Path.Combine(state, "ui-error.log"), detail[..Math.Min(detail.Length, 8192)]);
+        }
+        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
+        {
+            // Diagnostics must not replace the original UI exception.
+        }
     }
 
     private static string LayoutErrorDetails()

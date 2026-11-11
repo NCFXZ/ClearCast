@@ -1066,7 +1066,53 @@ public sealed partial class MainWindow
                 !File.Exists(Path.Combine(_root, "clearcast-ui-test-state.marker")))
                 throw new InvalidOperationException("An explicitly marked disposable CLEARCAST_HOME is required.");
             Directory.CreateDirectory(output);
+            _uiLyricsHandler = new UiOfflineLyricsHandler();
+            _lyricsClient = new LyricsClient(_uiLyricsHandler);
             await UiWaitUntil(() => WindowLayout.XamlRoot is not null, "window loading");
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_ONLY") == "1")
+            {
+                UiCheck(_receiver is null, "lyrics regression never starts a receiver or occupies its ports");
+                receiverStopped = true;
+                if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_STRESS") is { Length: > 0 } lyricsStress)
+                {
+                    if (lyricsStress == "input")
+                    {
+                        await UiTestLyricsInputAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "performance")
+                    {
+                        await UiTestLyricsPerformanceAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "audit")
+                    {
+                        await UiTestControlAuditAsync();
+                        await UiTestLyricsBackpressureAuditAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "fullscreen")
+                    {
+                        await UiTestMusicFullScreenIsolationAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "backpressure")
+                    {
+                        await UiTestRenderingBackpressureAsync();
+                        await UiTestMusicArtworkBackpressureAsync();
+                        return;
+                    }
+                    await UiTestLyricsStressAsync(output, lyricsStress);
+                    return;
+                }
+                if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_FIXTURE") is { Length: > 0 } lyricsFixture)
+                {
+                    await UiTestLyricsFixtureAsync(output, lyricsFixture);
+                    return;
+                }
+                await UiTestLyricsLookupAsync(output);
+                return;
+            }
             if (Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKDROP_ONLY") == "1")
             {
                 UiCheck(_receiver is null, "backdrop benchmark never starts a receiver or occupies its ports");
@@ -1286,6 +1332,12 @@ public sealed partial class MainWindow
             _uiTestHeartbeatTimer?.Stop();
             try { if (!receiverStopped) receiverStopped = await StopReceiverAsync(); }
             catch (Exception error) { failure ??= error.ToString(); }
+            try
+            {
+                StopLyrics();
+                await MusicBackground.DisposeAsync();
+            }
+            catch (Exception error) { failure ??= error.ToString(); }
             Directory.CreateDirectory(output);
             File.WriteAllText(Path.Combine(output, "results.json"), JsonSerializer.Serialize(new
             {
@@ -1297,7 +1349,8 @@ public sealed partial class MainWindow
                 playerWindowMethod = "Actual UI event handlers and this test process's own HWND geometry/presenter/Escape hook, with synthetic frame dimensions; no video or audio pipeline exercised.",
                 limitation = "No synthetic test replaces physical iPhone/iPad/Mac video, audio, rotation or full-screen playback acceptance."
             }, new JsonSerializerOptions { WriteIndented = true }));
-            Close();
+            // Exercise the real system-close event as well as the explicit cleanup above.
+            UiPostMessage(WindowNative.GetWindowHandle(this), 0x0010, 0, 0);
         }
     }
 }

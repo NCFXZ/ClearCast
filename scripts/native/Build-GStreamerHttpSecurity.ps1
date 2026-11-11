@@ -55,11 +55,17 @@ if (-not (Test-Path -LiteralPath $ready)) {
     try {
         & git --work-tree=. apply --no-index $patch
         if ($LASTEXITCODE -ne 0) { throw 'Could not apply the controlled HTTP destination patch.' }
-        & git --work-tree=. apply --no-index --reverse --check $patch
-        if ($LASTEXITCODE -ne 0) { throw 'The HTTP destination patch was not applied to the source tree.' }
     } finally { Pop-Location }
     [IO.File]::WriteAllText($ready, $patchHash)
 }
+if ([IO.File]::ReadAllText($ready) -ne $patchHash) {
+    throw 'The cached HTTP source marker does not match the controlled patch.'
+}
+Push-Location -LiteralPath $source
+try {
+    & git --work-tree=. apply --no-index --reverse --check $patch
+    if ($LASTEXITCODE -ne 0) { throw 'The HTTP destination patch was not applied to the source tree.' }
+} finally { Pop-Location }
 $build = Join-Path $buildRoot 'build'
 $savedEnvironment = @{}
 foreach ($name in 'PATH','PYTHONPATH','CC','CXX','PKG_CONFIG') {

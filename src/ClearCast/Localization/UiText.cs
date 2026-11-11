@@ -100,6 +100,13 @@ internal sealed partial class UiText : INotifyPropertyChanged
     public string MusicNext => Get("下一首", "Next track");
     public string MusicArtwork => Get("专辑封面", "Album artwork");
     public string MusicProgress => Get("播放进度", "Playback progress");
+    public string MusicShowLyrics => Get("显示歌词", "Show lyrics");
+    public string MusicHideLyrics => Get("隐藏歌词", "Hide lyrics");
+    public string MusicLyrics => Get("歌词", "Lyrics");
+    public string LyricsSearching => Get("正在查找歌词…", "Looking for lyrics…");
+    public string LyricsNotFound => Get("未找到这首歌的歌词", "No lyrics found for this song");
+    public string LyricsSource => Get("歌词由 LRCLIB 提供，内容及时间轴可能不准确。", "Lyrics provided by LRCLIB. Lyrics and timing may be inaccurate.");
+    public string LyricsNotScrollable => Get("此歌词不支持滚动", "Scrolling is not supported for these lyrics.");
     public string MusicControlFailed => Get("无法发送播放指令，请在设备上操作。", "Couldn't send the playback command. Use your device to control playback.");
     public string PreferencesSaveError => Get("无法保存设置，这次更改仍可使用。", "Couldn't save your settings. Changes still apply for this session.");
 

@@ -10,12 +10,13 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 
 运行时资源限额、过载处理和安全边界见[稳定性与安全说明](shared/docs/RELIABILITY_SECURITY.md)。
 
-![ClearCast 中文音乐界面](shared/docs/screenshots/1.2.2.0/zh-CN-music-dark.png)
+![ClearCast 中文音乐界面](shared/docs/screenshots/1.3.0.0/zh-CN-music-dark.png)
 
 将设备与电脑连接到同一局域网，在设备的「屏幕镜像」或播放器的 AirPlay 选项中选择 ClearCast。两台设备所在的局域网需要允许设备相互访问。
 
 - 接收屏幕画面和声音。
 - 音乐投放时显示发送端提供的封面、曲名、歌手、专辑和播放进度；发送端支持控制时可播放、暂停及切换歌曲。由封面纹理生成的流动背景覆盖整个应用，随音乐节奏疏密平滑调速，并随强低频鼓点收放、自然回弹；浅色主题保留更鲜明的封面颜色，切换到「设置」或「关于」后仍继续流动，前景封面、文字和按钮保持稳定。
+- 自动从 LRCLIB 查找歌词，支持音乐全屏、逐行高亮和手动浏览；歌词内容及时间轴可能不准确，纯文本歌词会说明不支持滚动。
 - 支持全屏显示、向左或向右旋转 90°，以及等比缩放。
 - 可在设置中开启视频投放时自动全屏；默认关闭，纯音乐不会自动全屏。
 - 使用四位验证码配对，并管理已保存的设备。
@@ -139,7 +140,9 @@ Mirror your screen, or play AirPlay music and video on a Windows PC.
 
 ClearCast turns your Windows PC into an AirPlay receiver for screen sharing and media from compatible players.
 
-![ClearCast music view in English](shared/docs/screenshots/1.2.2.0/en-US-music-dark.png)
+![ClearCast music view in English](shared/docs/screenshots/1.3.0.0/en-US-music-dark.png)
+
+Music supports full screen and automatic lyrics from LRCLIB. Timed lyrics highlight line by line; plain lyrics can be browsed manually and show an unsupported-scrolling notice. Lyrics and timing may be inaccurate.
 
 Connect your device and PC to the same local network, then select ClearCast in Screen Mirroring or your player’s AirPlay menu. The network must allow the two devices to communicate with each other.
 

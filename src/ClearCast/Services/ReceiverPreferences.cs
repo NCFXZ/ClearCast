@@ -11,7 +11,8 @@ internal sealed record ReceiverPreferences(
     bool OriginalSize = false,
     AppTheme Theme = AppTheme.System,
     AppLanguage Language = AppLanguage.SimplifiedChinese,
-    bool AutoFullScreen = false)
+    bool AutoFullScreen = false,
+    bool ShowLyrics = false)
 {
     private static string FilePath(string root) => Path.Combine(root, ".clearcast-state", "preferences.json");
 

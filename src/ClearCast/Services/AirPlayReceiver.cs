@@ -91,6 +91,7 @@ internal sealed class AirPlayReceiver
     private const int SharingViolation = 32;
     private const int MaximumPairingFileBytes = 16 * 1024 * 1024;
     private const int MaximumPairings = 4096;
+    private const int MaximumPairingRowBytes = 4096;
 
     private readonly FileStream _stateLock;
     private readonly byte[] _mediaBuffer = new byte[8192];
@@ -159,7 +160,7 @@ internal sealed class AirPlayReceiver
         var pairings = new Dictionary<string, SavedPairing>(StringComparer.Ordinal);
         // Receiver records are below 1 KiB. Keep a bounded prefix even if a damaged
         // local file contains an oversized metadata line, while still retaining its key.
-        foreach (var row in ReadPairingRows(PairingPath(root), maximumRowBytes: 4096))
+        foreach (var row in ReadPairingRows(PairingPath(root)))
         {
             if (GetPairingKey(row.Span) is not { } id)
                 continue;
@@ -346,7 +347,7 @@ internal sealed class AirPlayReceiver
         }
     }
 
-    private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path, int? maximumRowBytes = null)
+    private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path)
     {
         FileStream stream;
         try
@@ -373,8 +374,7 @@ internal sealed class AirPlayReceiver
                     int end = Array.IndexOf(buffer, (byte)'\n', offset, count - offset);
                     int next = end == -1 ? count : end + 1;
                     int length = next - offset;
-                    int retained = maximumRowBytes is int limit
-                        ? Math.Min(length, Math.Max(0, limit - (int)row.Length)) : length;
+                    int retained = Math.Min(length, Math.Max(0, MaximumPairingRowBytes - (int)row.Length));
                     row.Write(buffer, offset, retained);
                     offset = next;
                     if (end != -1)

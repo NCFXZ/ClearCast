@@ -78,6 +78,7 @@ public sealed partial class MainWindow
             await Task.Delay(80);
             nint window = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var content = UiCompositorContentBounds(window, MusicContent);
+            var caption = UiCompositorContentBounds(window, AppTitleBar, padding: 0);
             var cover = UiCompositorContentBounds(window, MusicArtwork, padding: 0);
             int coverInset = (int)Math.Ceiling(12 * WindowLayout.XamlRoot.RasterizationScale);
             var baseline = await Task.Run(() => UiCaptureOwnedWindow(window));
@@ -112,6 +113,7 @@ public sealed partial class MainWindow
                 "owned-window impulse captures retain identical dimensions");
             int backgroundPeakChanged = 0, coverChanged = 0;
             long peakDifference = 0, settledDifference = 0;
+            long captionPeakDifference = 0, captionSettledDifference = 0;
             for (int index = 0; index < baseline.Pixels.Length; index += 4)
             {
                 int pixel = index / 4, x = pixel % baseline.Width, y = pixel / baseline.Width;
@@ -124,7 +126,15 @@ public sealed partial class MainWindow
                 if (x >= cover.Left + coverInset && x < cover.Right - coverInset &&
                     y >= cover.Top + coverInset && y < cover.Bottom - coverInset && difference > 0)
                     coverChanged++;
-                if (x < content.Left || x >= content.Right || y < content.Top || y >= content.Bottom)
+                // Window activation independently recolors the system caption. It is
+                // foreground UI, so measure it separately from the held background.
+                bool captionPixel = x >= caption.Left && x < caption.Right && y >= caption.Top && y < caption.Bottom;
+                if (captionPixel)
+                {
+                    captionPeakDifference += difference;
+                    captionSettledDifference += afterDifference;
+                }
+                if (!captionPixel && (x < content.Left || x >= content.Right || y < content.Top || y >= content.Bottom))
                 {
                     peakDifference += difference;
                     settledDifference += afterDifference;
@@ -137,6 +147,8 @@ public sealed partial class MainWindow
             await UiSaveCompositorFrameAsync(output, theme + "-beat-background-settled", settled);
             _uiTestLayouts.Add(new { phase = "strong-beat pixel evidence", theme, peakMilliseconds, reboundMilliseconds,
                 backgroundPeakChanged, coverChanged, peakDifference, settledDifference,
+                captionPeakDifference, captionSettledDifference,
+                caption = new { caption.Left, caption.Top, caption.Right, caption.Bottom },
                 cover = new { cover.Left, cover.Top, cover.Right, cover.Bottom },
                 content = new { content.Left, content.Top, content.Right, content.Bottom } });
             UiCheck(backgroundPeakChanged > 1000 && peakDifference > 10000,

@@ -119,6 +119,35 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('runtime file set', result.stderr)
 
+    def check_release_intro(self, baseline_version, newline='\n'):
+        retained = ('Third-party works retain their own notices and license terms.\n'
+            f'Dependency {baseline_version}; legacy dependency 1.1.0.\n'
+            '[Dependency source](https://example.test/releases/tag/v1.1.0)\n'
+            f'[Other source](https://github.com/other/ClearCast/releases/tag/v{baseline_version})\n')
+        baseline = (f'# ClearCast {baseline_version} third-party components\n\n'
+            f'[ClearCast {baseline_version} downloads and source]'
+            f'(https://github.com/NCFXZ/ClearCast/releases/tag/v{baseline_version})\n' + retained +
+            '\n## Native runtime inventory\nold inventory\n')
+        expected = ('# ClearCast 1.3.0.0 third-party components\n\n'
+            '[ClearCast 1.3.0.0 downloads and source]'
+            '(https://github.com/NCFXZ/ClearCast/releases/tag/v1.3.0.0)\n' + retained + '\n')
+        self.assertEqual(notices.release_intro(baseline.replace('\n', newline), '1.3.0.0'), expected)
+
+    def test_latest_release_intro_keeps_dependency_versions(self):
+        self.check_release_intro('1.2.2.0')
+
+    def test_older_release_intro_keeps_dependency_versions(self):
+        self.check_release_intro('1.2.0.0')
+
+    def test_release_intro_normalizes_crlf(self):
+        self.check_release_intro('1.2.2.0', '\r\n')
+
+    def test_release_intro_normalizes_repeated_carriage_returns(self):
+        for version in ('1.2.2.0', '1.2.0.0'):
+            for newline in ('\r\r\n', '\r\r\r\n'):
+                with self.subTest(version=version, newline=repr(newline)):
+                    self.check_release_intro(version, newline)
+
 
 if __name__ == '__main__':
     unittest.main()

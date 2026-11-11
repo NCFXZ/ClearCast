@@ -59,6 +59,8 @@ python .\tests\native\plugin_scanner_lifecycle_test.py
 
 ## 安全、稳定性与生命周期
 
+补充的 CTest `dacp_selected_network_scope` 使用模拟 socket 检查所选接口的 IPv4/IPv6 单播、组播、接口过滤收包和失败时停止；不打开网络端口。`selected_network_scope` 另在实际未连接 socket 上核对接口选项。`http_input_handler_bounds` 用真实 `/play` 处理器检查缺失 URL 的重复请求及 URL 分配失败后的 UUID 释放。实际 DACP 控制仍用 `clearcast_media_audio_test.exe --network` 的回环服务回归，跨网卡路由与真实设备需要另行验收。
+
 构建正式接收运行时后，关闭其他接收器，再运行独立状态下的真实 DLL 测试：
 
 ```powershell

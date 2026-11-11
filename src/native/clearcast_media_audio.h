@@ -13,6 +13,7 @@
 #include <cmath>
 #include <array>
 #include "clearcast_media_diagnostics.h"
+#include "clearcast_network_scope.h"
 
 namespace {
 static bool clearcast_direct_video_snapshot(bool&, int64_t&, int64_t&);
@@ -366,6 +367,21 @@ inline unsigned short discover(const Peer& peer, const std::string& dacp) {
     query.insert(query.end(), {0,0,33,0x80,1});
     Socket socket; socket.value = ::socket(peer.length == 4 ? AF_INET : AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
     if (socket.value == INVALID_SOCKET) return 0;
+    // DACP discovery follows the receiver's adapter, including global IPv6
+    // peers whose address carries no zone. Never use a default-route fallback.
+    unsigned int selected_scope = 0;
+    if (peer.length == 4) {
+        in_addr selected = {}; selected.s_addr = clearcast_network_scope_ipv4();
+        if (!selected.s_addr || setsockopt(socket.value, IPPROTO_IP, IP_MULTICAST_IF,
+            reinterpret_cast<const char*>(&selected), sizeof(selected)) == SOCKET_ERROR) return 0;
+    } else {
+        unsigned char selected[16];
+        if (!clearcast_network_scope_ipv6(selected, &selected_scope) || !selected_scope ||
+            (peer.zone && peer.zone != selected_scope) ||
+            setsockopt(socket.value, IPPROTO_IPV6, IPV6_MULTICAST_IF,
+                reinterpret_cast<const char*>(&selected_scope), sizeof(selected_scope)) == SOCKET_ERROR) return 0;
+    }
+    if (clearcast_network_scope_prepare_datagram(static_cast<int>(socket.value), peer.length == 16) == -1) return 0;
     sockaddr_storage local = {}; local.ss_family = peer.length == 4 ? AF_INET : AF_INET6;
     const int address_size = peer.length == 4 ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
     if (bind(socket.value, reinterpret_cast<sockaddr*>(&local), address_size) == SOCKET_ERROR) return 0;
@@ -377,17 +393,17 @@ inline unsigned short discover(const Peer& peer, const std::string& dacp) {
         multicast.sin_addr.s_addr = htonl(0xe00000fb);
         sendto(socket.value, reinterpret_cast<const char*>(query.data()), int(query.size()), 0,
             reinterpret_cast<sockaddr*>(&multicast), sizeof(multicast));
-    } else if (peer.zone) {
+    } else {
         sockaddr_in6 multicast = {}; multicast.sin6_family = AF_INET6; multicast.sin6_port = htons(5353);
-        multicast.sin6_scope_id = peer.zone; inet_pton(AF_INET6, "ff02::fb", &multicast.sin6_addr);
+        multicast.sin6_scope_id = selected_scope; inet_pton(AF_INET6, "ff02::fb", &multicast.sin6_addr);
         sendto(socket.value, reinterpret_cast<const char*>(query.data()), int(query.size()), 0,
             reinterpret_cast<sockaddr*>(&multicast), sizeof(multicast));
     }
     const uint64_t deadline = GetTickCount64() + 1500;
     while (socket_ready(socket.value, false, deadline)) {
         unsigned char packet[4096]; sockaddr_storage source = {}; int source_size = sizeof(source);
-        int count = recvfrom(socket.value, reinterpret_cast<char*>(packet), sizeof(packet), 0,
-            reinterpret_cast<sockaddr*>(&source), &source_size);
+        int count = clearcast_network_scope_recvfrom(static_cast<int>(socket.value), reinterpret_cast<char*>(packet), sizeof(packet),
+            reinterpret_cast<sockaddr*>(&source), &source_size, peer.length == 16);
         if (count <= 0 || source.ss_family != local.ss_family) continue;
         if (peer.length == 4) {
             auto* address = reinterpret_cast<sockaddr_in*>(&source);
@@ -458,6 +474,7 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
     if (dmap_supported) *dmap_supported = false;
     Socket socket; socket.value = ::socket(peer.length == 4 ? AF_INET : AF_INET6, SOCK_STREAM, IPPROTO_TCP);
     if (socket.value == INVALID_SOCKET) return WSAGetLastError();
+    if (clearcast_network_scope_prepare_unicast(static_cast<int>(socket.value), peer.length == 16) == -1) return WSAGetLastError();
     u_long nonblocking = 1;
     if (ioctlsocket(socket.value, FIONBIO, &nonblocking) == SOCKET_ERROR) return WSAGetLastError();
     auto address = peer.address(port); const uint64_t deadline = GetTickCount64() + 1200;

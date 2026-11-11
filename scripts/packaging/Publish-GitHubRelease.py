@@ -33,6 +33,19 @@ def digest(path):
     return value.hexdigest()
 
 
+def verify_assets(assets, paths):
+    if not paths:
+        raise RuntimeError('Expected assets must be provided for verification.')
+    present = {item['name']: item for item in assets}
+    expected = {path.name for path in paths}
+    if len(present) != len(assets) or len(expected) != len(paths) or set(present) != expected:
+        raise RuntimeError('Release asset set is not exact.')
+    for path in paths:
+        item = present[path.name]
+        if item.get('digest') != 'sha256:' + digest(path) or item.get('size') != path.stat().st_size:
+            raise RuntimeError('Release asset digest or size mismatch: ' + path.name)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('draft', 'publish', 'verify'))
@@ -92,6 +105,7 @@ def main():
         notes += '\n## 音乐界面 / Music view\n\n'
         for locale, label in (('zh-CN', '中文'), ('en-US', 'English')):
             notes += f'![{label}](https://raw.githubusercontent.com/{REPO}/{TAG}/shared/docs/screenshots/{VERSION}/{locale}-music-dark.png)\n\n'
+            notes += f'![{label} lyrics](https://raw.githubusercontent.com/{REPO}/{TAG}/shared/docs/screenshots/{VERSION}/{locale}-lyrics-dark.png)\n\n'
         if release is None:
             release = request('POST', f'/repos/{REPO}/releases', {
                 'tag_name': TAG, 'target_commitish': args.commit, 'name': 'ClearCast ' + VERSION,
@@ -135,19 +149,14 @@ def main():
     elif args.action == 'publish':
         if not release or not release['draft']:
             raise RuntimeError('Expected an existing verified draft release.')
-        if not args.asset:
-            raise RuntimeError('Expected assets must be provided before publication.')
-        present = {item['name']: item for item in request('GET', release['assets_url'].removeprefix('https://api.github.com'))}
-        if set(present) != {path.name for path in args.asset}:
-            raise RuntimeError('Draft asset set is not exact.')
-        for path in args.asset:
-            if present[path.name].get('digest') != 'sha256:' + digest(path):
-                raise RuntimeError('Draft asset digest mismatch: ' + path.name)
+        verify_assets(request('GET', release['assets_url'].removeprefix('https://api.github.com')), args.asset)
         release = request('PATCH', f'/repos/{REPO}/releases/{release["id"]}', {
             'tag_name': TAG, 'target_commitish': args.commit, 'draft': False, 'make_latest': 'true'})
     if not release:
         raise RuntimeError('Release not found.')
     assets = request('GET', release['assets_url'].removeprefix('https://api.github.com'))
+    if args.action == 'verify':
+        verify_assets(assets, args.asset)
     tag = request('GET', f'/repos/{REPO}/git/ref/tags/{TAG}')
     if not release['draft'] and (not tag or tag['object'].get('type') != 'commit' or tag['object'].get('sha') != args.commit):
         raise RuntimeError('Published release tag does not match the source commit.')

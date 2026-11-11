@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Windowing;
+using Windows.Graphics.Imaging;
 using Windows.UI.ViewManagement;
 using Windows.Storage.Streams;
 
@@ -40,23 +41,42 @@ public sealed partial class MainWindow
         double height = MusicPanel.ViewportHeight;
         if (width <= 0 || height <= 0)
             return;
+        // Lyrics sit beside the player when there is room, otherwise below it.
+        bool lyrics = LyricsShown, sideBySide = lyrics && width >= MusicLyricsSideBySideWidth;
+        double stackedLyrics = lyrics && !sideBySide ? Math.Clamp(height * 0.4, 200, 320) : 0;
+        double columnWidth = sideBySide ? width / 2 : width;
+        MusicLyrics.Visibility = lyrics || _lyricsClosing ? Visibility.Visible : Visibility.Collapsed;
+        MusicLyricsColumn.Width = sideBySide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        MusicLyricsRow.Height = new GridLength(stackedLyrics);
+        if (!_lyricsClosing)
+        {
+            // A closing panel keeps its previous box until its fade-out completes.
+            Grid.SetColumn(MusicLyrics, sideBySide ? 1 : 0);
+            Grid.SetRow(MusicLyrics, sideBySide ? 0 : 1);
+            MusicLyrics.HorizontalAlignment = HorizontalAlignment.Stretch;
+            MusicLyrics.Width = double.NaN;
+            MusicLyrics.Margin = sideBySide ? new Thickness(16, 48, 32, 48) : new Thickness(20, 0, 20, 24);
+            MusicLyrics.Height = Math.Max(0, (sideBySide ? height : stackedLyrics) - MusicLyrics.Margin.Top - MusicLyrics.Margin.Bottom);
+        }
         MusicLayout.MinHeight = height;
-        MusicContent.Width = Math.Max(0, Math.Min(560, width - 40));
+        MusicContent.Width = Math.Max(0, Math.Min(560, columnWidth - 40));
         double otherHeight = MusicContent.ActualHeight > MusicArtworkFrame.ActualHeight && MusicArtworkFrame.ActualHeight > 0
             ? MusicContent.ActualHeight - MusicArtworkFrame.ActualHeight + MusicContent.Margin.Top + MusicContent.Margin.Bottom
             : 320;
-        double artworkSize = Math.Max(144, Math.Min(480, Math.Min(width - 64, height - Math.Max(240, otherHeight))));
+        double artworkSize = Math.Max(144, Math.Min(480, Math.Min(columnWidth - 64, height - stackedLyrics - Math.Max(240, otherHeight))));
         MusicArtworkFrame.Width = MusicArtworkFrame.Height = artworkSize;
     }
 
     private void UpdateMusicBackgroundState()
     {
+        if (_closed) return;
         UpdateMusicAudioActivity();
         bool active = !_closed && !_closing && (_hasMusic && !_hasVideo || _hasVideo && !_playerFullScreen) &&
             _captionThemeSettings?.HighContrast != true && AppWindow.IsVisible &&
             WindowLayout.XamlRoot?.IsHostVisible == true &&
             AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
         MusicBackground.SetActive(active, active && _mediaState.Playing && _motionSettings.AnimationsEnabled);
+        MusicLyrics.EffectsEnabled = _captionThemeSettings?.HighContrast != true;
         if (_videoBackdropTimer is { } videoTimer)
         {
             bool fastVideo = active && _hasVideo && _receiver is not null && _stopTask is null;
@@ -158,6 +178,7 @@ public sealed partial class MainWindow
         bool changed = state.Revision != _mediaState.Revision || state.Kind != _mediaState.Kind || state.Session != _mediaState.Session ||
             state.Playing != _mediaState.Playing || state.Controls != _mediaState.Controls ||
             state.Title != _mediaState.Title || state.Artist != _mediaState.Artist || state.Album != _mediaState.Album;
+        bool lyricsDurationChanged = state.DurationMs != _mediaState.DurationMs;
         _mediaState = state;
         if (sourceChanged) CancelPlaybackSeek();
         _mediaSnapshotAt = Stopwatch.GetTimestamp();
@@ -167,6 +188,8 @@ public sealed partial class MainWindow
 
         MusicPanel.Visibility = _hasMusic && !_hasVideo ? Visibility.Visible : Visibility.Collapsed;
         VideoPlaceholder.Visibility = _hasMusic || _hasVideo ? Visibility.Collapsed : Visibility.Visible;
+        if (wasMusic && !_hasMusic && !_hasVideo)
+            SetPlayerFullScreen(false);
         if (_hasMusic && !wasMusic)
         {
             ReceiverInfoBar.IsOpen = false;
@@ -179,6 +202,8 @@ public sealed partial class MainWindow
         }
         if (changed)
             RefreshMusicText();
+        else if (lyricsDurationChanged)
+            RefreshLyrics();
 
         ulong revision = _hasMusic && state.ArtworkBytes > 0 ? state.ArtworkRevision : 0;
         if (sourceChanged || _artworkRevision != revision)
@@ -212,6 +237,7 @@ public sealed partial class MainWindow
             SetReceiverStatus(_mediaState.Playing ? Texts.MusicPlaying : Texts.MusicPaused);
         UpdateMusicControls();
         UpdateMusicProgress();
+        RefreshLyrics();
     }
 
     private void UpdateMusicControls()
@@ -233,6 +259,12 @@ public sealed partial class MainWindow
         ToolTipService.SetToolTip(MusicPlayPauseButton, label);
         MusicControlHint.Text = hasControls && _mediaControlError.Length > 0 ? Texts.MusicControlFailed : "";
         MusicControlHint.Visibility = MusicControlHint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        // Full screen and lyrics join the transport row, or the disconnect row when there is no transport.
+        Grid.SetRow(MusicFullScreenButton, hasControls ? 0 : 2);
+        Grid.SetRow(MusicLyricsButton, hasControls ? 0 : 2);
+        MusicControlHint.Margin = new Thickness(0, hasControls ? MusicContent.Spacing : 0, 0, 0);
+        MusicDisconnectButton.Margin = new Thickness(0,
+            hasControls || MusicControlHint.Visibility == Visibility.Visible ? MusicContent.Spacing : 0, 0, 0);
     }
 
     private void UpdateMusicProgress()
@@ -246,6 +278,7 @@ public sealed partial class MainWindow
         MusicElapsed.Text = FormatMusicTime(position);
         MusicDuration.Text = _mediaState.DurationMs > 0 ? FormatMusicTime(_mediaState.DurationMs) : "—:—";
         UpdatePlaybackControls();
+        UpdateLyricsPosition();
     }
 
     private static string FormatMusicTime(long milliseconds)
@@ -306,7 +339,16 @@ public sealed partial class MainWindow
             }
             if (!IsCurrentMusicArtwork(generation, expectedReceiver)) return;
             stream.Seek(0);
-            var image = new BitmapImage { DecodePixelWidth = 640 };
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            if (!IsCurrentMusicArtwork(generation, expectedReceiver) || !ArtworkImage.IsSupported(decoder)) return;
+            // Bound both dimensions before the XAML decoder sees sender-controlled artwork.
+            double scale = Math.Min(1, 640d / Math.Max(decoder.PixelWidth, decoder.PixelHeight));
+            var image = new BitmapImage
+            {
+                DecodePixelWidth = Math.Max(1, (int)Math.Round(decoder.PixelWidth * scale)),
+                DecodePixelHeight = Math.Max(1, (int)Math.Round(decoder.PixelHeight * scale))
+            };
+            stream.Seek(0);
             await image.SetSourceAsync(stream);
             if (IsCurrentMusicArtwork(generation, expectedReceiver))
             {

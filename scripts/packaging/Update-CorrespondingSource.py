@@ -54,7 +54,9 @@ def main():
     additional = {}
     for specification in args.additional_source:
         name, separator, filename = specification.partition("=")
-        safe_name(name)
+        parts = safe_name(name).parts
+        if {part.casefold() for part in parts} & {".clearcast-state", ".runtime", ".git"}:
+            raise ValueError(f"Private/generated state in additional source: {name}")
         if not separator or not name or name.endswith("/"):
             parser.error("--additional-source requires MEMBER=FILE")
         folded = name.casefold()
@@ -104,7 +106,9 @@ def main():
         if len(names) != len({name.casefold() for name in names}):
             raise ValueError("Base archive has duplicate or case-aliased paths")
         for name in names:
-            safe_name(name)
+            parts = safe_name(name).parts
+            if {part.casefold() for part in parts} & {".clearcast-state", ".runtime", ".git"}:
+                raise ValueError(f"Private/generated state in base source: {name}")
         if {name.casefold() for name in additional} & {name.casefold() for name in names}:
             raise ValueError("Additional source paths must not replace existing base members")
         checksums = {}

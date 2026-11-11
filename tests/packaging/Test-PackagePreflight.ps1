@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)] [string] $StorePublishDirectory,
     [Parameter(Mandatory)] [string] $ComplianceDirectory,
     [Parameter(Mandatory)] [string] $ValidatedReceiverSha256,
-    [string] $Version = '1.2.2.0',
+    [string] $UiTestPublishDirectory,
+    [string] $Version = '1.3.0.0',
     [Parameter(Mandatory)] [string] $OutputPath
 )
 $ErrorActionPreference = 'Stop'
@@ -59,6 +60,32 @@ try {
     }
     & $builder @options | Out-Null
     $results += [pscustomobject]@{ name = 'Unmodified release accepted'; passed = $true }
+    $publishState = Join-Path $work 'desktop\.clearcast-state'
+    $publishSecret = Join-Path $publishState 'receiver.pem'
+    Check-Rejected 'Publish pairing state rejected' {
+        [void] [IO.Directory]::CreateDirectory($publishState)
+        [IO.File]::WriteAllText($publishSecret, 'private fixture; must not ship')
+    } {
+        Remove-Item -LiteralPath $publishSecret
+        Remove-Item -LiteralPath $publishState
+    } '*Private/generated state in package input*'
+    $complianceState = Join-Path $work 'notices\licenses\.RUNTIME'
+    $complianceSecret = Join-Path $complianceState 'ui-error.log'
+    Check-Rejected 'Nested compliance state rejected' {
+        [void] [IO.Directory]::CreateDirectory($complianceState)
+        [IO.File]::WriteAllText($complianceSecret, 'private fixture; must not ship')
+    } {
+        Remove-Item -LiteralPath $complianceSecret
+        Remove-Item -LiteralPath $complianceState
+    } '*Private/generated state in package input*'
+    if ($UiTestPublishDirectory) {
+        $uiAssembly = Join-Path $UiTestPublishDirectory 'ClearCast.dll'
+        $releaseAssembly = Join-Path $work 'store\ClearCast.dll'
+        $assemblyBackup = [IO.File]::ReadAllBytes($releaseAssembly)
+        Check-Rejected 'UI-test application rejected' {
+            Copy-Item -LiteralPath $uiAssembly -Destination $releaseAssembly -Force
+        } { [IO.File]::WriteAllBytes($releaseAssembly, $assemblyBackup) } '*UI-test application cannot be packaged*'
+    }
     $plist = Join-Path $work 'store\receiver\libplist-2.0.dll'
     $backupPlist = [IO.File]::ReadAllBytes($plist)
     Check-Rejected 'Tampered property-list parser' { [IO.File]::WriteAllBytes($plist, [byte[]]@(1, 2, 3)) } { [IO.File]::WriteAllBytes($plist, $backupPlist) } '*dependency file or notice hash does not match*'

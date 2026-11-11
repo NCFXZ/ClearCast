@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.2.2.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.3.0.0',
     [ValidateSet('appx', 'msix')] [string] $StoreFormat = 'appx',
     [switch] $AlsoBuildMsix,
     [switch] $ValidateOnly,
@@ -39,6 +39,20 @@ foreach ($source in @($publish, $storePublish, $compliance)) {
     $sourcePrefix = [IO.Path]::TrimEndingDirectorySeparator($source) + [IO.Path]::DirectorySeparatorChar
     if ($output -eq $source -or $output.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "The output must be outside the input directory $source."
+    }
+    $pending = [Collections.Generic.Stack[IO.FileSystemInfo]]::new()
+    $pending.Push((Get-Item -LiteralPath $source -Force))
+    while ($pending.Count -gt 0) {
+        $entry = $pending.Pop()
+        if ($entry.Name -in @('.clearcast-state', '.runtime', '.git')) {
+            throw "Private/generated state in package input: $($entry.FullName)"
+        }
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Reparse point in package input: $($entry.FullName)"
+        }
+        if ($entry.PSIsContainer) {
+            foreach ($child in Get-ChildItem -LiteralPath $entry.FullName -Force) { $pending.Push($child) }
+        }
     }
 }
 
@@ -95,7 +109,11 @@ foreach ($folder in @($publish, $storePublish)) {
         }
     }
     $assembly = Join-Path $folder 'ClearCast.dll'
-    $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($assembly).FileVersion
+    $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($assembly)
+    if ($versionInfo.ProductVersion -match '\+ui-tests(?:\.|$)') {
+        throw 'A UI-test application cannot be packaged for release. Publish without EnableUiTests.'
+    }
+    $fileVersion = $versionInfo.FileVersion
     if ($fileVersion -ne $Version) {
         throw "The published application version $fileVersion does not match $Version."
     }

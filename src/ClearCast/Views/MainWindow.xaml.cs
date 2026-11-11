@@ -34,6 +34,7 @@ public sealed partial class MainWindow : Window
     private bool _hasVideo;
     private bool _closing;
     private bool _closed;
+    private bool _windowCloseReady;
     private bool _startingReceiver;
     private bool _receiverReady;
 #if CLEARCAST_UI_TESTS
@@ -131,6 +132,7 @@ public sealed partial class MainWindow : Window
             _videoBackdropTimer?.Stop();
             _pairingTimer.Stop();
             _playerOverlayTimer.Stop();
+            StopLyrics();
             LandingAnimation.Dispose();
             MusicBackground.Dispose();
             _motionSettings.AnimationsEnabledChanged -= MusicMotionChanged;
@@ -140,7 +142,7 @@ public sealed partial class MainWindow : Window
 
     private async void WindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_receiver is null)
+        if (_windowCloseReady)
             return;
 
         args.Cancel = true;
@@ -151,8 +153,11 @@ public sealed partial class MainWindow : Window
         UpdateLandingAnimationState();
         try
         {
-            if (await StopReceiverAsync())
-                Close();
+            if (_receiver is not null && !await StopReceiverAsync()) return;
+            StopLyrics();
+            await MusicBackground.DisposeAsync();
+            _windowCloseReady = true;
+            DispatcherQueue.TryEnqueue(Close);
         }
         finally
         {
@@ -464,6 +469,9 @@ public sealed partial class MainWindow : Window
         if (_hasVideo == available)
             return;
 
+        // Music full screen does not carry over to the video presenter layout.
+        if (available && _playerFullScreen)
+            SetPlayerFullScreen(false);
         _hasVideo = available;
         ResetMediaDiagnosticsRaster();
         ResetMediaDiagnosticsStats();
@@ -541,7 +549,8 @@ public sealed partial class MainWindow : Window
     private async void StartAirPlay()
     {
 #if CLEARCAST_UI_TESTS
-        if (UiTestsAreConfigured() && Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKDROP_ONLY") == "1") return;
+        if (UiTestsAreConfigured() && (Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKDROP_ONLY") == "1" ||
+            Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_ONLY") == "1")) return;
 #endif
         if (_receiver is not null || _startingReceiver || _closing || _closed)
             return;

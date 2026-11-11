@@ -221,7 +221,18 @@
      logger_log(raop->logger, LOGGER_ERR, "only FairPlay version 0x03 is implemented, version is 0x%2.2x",
                 req_data[4]);
      http_response_init(response, "HTTP/1.1", 421, "Misdirected Request");
-@@ -400,6 +407,11 @@
+@@ -340,3 +347,10 @@
++#ifdef CLEARCAST_IN_PROCESS
++    // Unknown live duration does not describe a finite loaded range. A late
++    // position sample past the known end must not serialize a negative span.
++    playback_info.num_loaded_time_ranges =
++        playback_info.duration > 0.0 && playback_info.position >= 0.0 &&
++        playback_info.position <= playback_info.duration;
++#endif
+     time_range_t time_ranges_loaded[1];
+     time_ranges_loaded[0].start = playback_info.position;
+     time_ranges_loaded[0].duration = playback_info.duration - playback_info.position;
+@@ -400,6 +414,11 @@
  static void
  http_handler_action(raop_conn_t *conn, http_request_t *request, http_response_t *response,
                      char **response_data, int *response_datalen) {
@@ -233,7 +244,7 @@
  
      raop_t *raop = conn->raop;
      airplay_video_t *airplay_video = NULL;
-@@ -481,8 +493,9 @@
+@@ -481,8 +500,9 @@
          }
          plist_t req_params_item_uuid_node = plist_dict_get_item(req_params_item_node, "uuid");
          char* remove_uuid = NULL;
@@ -244,7 +255,7 @@
          int id  =  get_playlist_by_uuid(raop, remove_uuid);
          if (id == raop->current_video) {
              raop->current_video = -1;
-@@ -726,6 +739,17 @@
+@@ -726,6 +746,17 @@
      if (request_datalen <= 0 || request_datalen > 65536) goto play_error;
      plist_from_bin(request_data, request_datalen, &req_root_node);
      if (!req_root_node || plist_get_node_type(req_root_node) != PLIST_DICT) goto play_error;
@@ -262,21 +273,21 @@
  
      plist_t req_uuid_node = plist_dict_get_item(req_root_node, "uuid");
      if (!req_uuid_node) {
-@@ -782,6 +806,13 @@
+@@ -782,6 +813,13 @@
          return;
      }
      
 +#ifdef CLEARCAST_IN_PROCESS
 +    // A cached UUID may resume without Content-Location. Only a new source
 +    // needs an owned URL; the early validation above borrowed the plist value.
-+    if (!early_location) goto play_error;
++    if (!early_location) { plist_mem_free(playback_uuid); goto play_error; }
 +    plist_get_string_val(early_location, &playback_location);
-+    if (!playback_location) goto play_error;
++    if (!playback_location) { plist_mem_free(playback_uuid); goto play_error; }
 +#endif
      /* initialize a new playlist (airplay_video structure) */
      /* first delete any short stored playlists (probably advertisements */
      int count = 0;
-@@ -842,6 +873,7 @@
+@@ -842,6 +880,7 @@
      }
  #endif
  	   
@@ -284,7 +295,7 @@
      plist_t req_content_location_node = plist_dict_get_item(req_root_node, "Content-Location");
      if (!req_content_location_node) {
          goto play_error;
-@@ -850,6 +882,7 @@
+@@ -850,6 +889,7 @@
          plist_get_string_val(req_content_location_node, &playback_location);
          if (!playback_location || !*playback_location || strlen(playback_location) > 4096) goto play_error;
      }
@@ -292,7 +303,7 @@
      /* we support HLS playlists if the playback location is terminated by "/master.m3u8", otherwise pass location to player */
      const char *uri_suffix = strstr(playback_location, "/master.m3u8");    
      
-@@ -864,9 +897,7 @@
+@@ -864,9 +904,7 @@
      if (!isfinite(start_position_seconds) || start_position_seconds < 0 || start_position_seconds > 7 * 86400) goto play_error;
      set_start_position_seconds(airplay_video, (float) start_position_seconds);
  #ifdef CLEARCAST_IN_PROCESS

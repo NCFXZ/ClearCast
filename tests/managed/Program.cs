@@ -279,6 +279,7 @@ static object RunTests(string root)
     MediaDiagnosticsTests.Run(Check);
     BackpressureTests.Run(Check, root);
     ArtworkFlowTests.Run(Check);
+    LyricsTests.Run(Check);
     Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":18446744073709551615}"), out var sessionMedia) &&
         sessionMedia.Session == ulong.MaxValue && sessionMedia.Title == media.Title,
         "audio session identity accepts the full unsigned 64-bit range");

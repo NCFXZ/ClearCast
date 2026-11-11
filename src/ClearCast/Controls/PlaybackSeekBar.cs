@@ -33,6 +33,8 @@ public sealed partial class PlaybackSeekBar : RangeBase
             if (FrameworkElementAutomationPeer.FromElement(this) is SeekAutomationPeer peer)
                 peer.RaisePropertyChangedEvent(RangeValuePatternIdentifiers.ValueProperty, args.OldValue, args.NewValue);
         };
+        RegisterPropertyChangedCallback(MinimumProperty, (_, _) => UpdatePosition());
+        RegisterPropertyChangedCallback(MaximumProperty, (_, _) => UpdatePosition());
         SizeChanged += (_, _) => UpdatePosition();
         PointerPressed += SeekPressed;
         PointerMoved += SeekMoved;

@@ -18,6 +18,7 @@ import argparse
 import ctypes as c
 from ctypes import wintypes as w
 import json
+import math
 import os
 import plistlib
 import re
@@ -216,8 +217,16 @@ def main():
                         time.sleep(.25)
                         alive()
                         info = plistlib.loads(http_request(control, "/playback-info", method="GET"))
-                    assert info["duration"] > 0 and info["position"] > 1 and info["rate"] == 1, info
+                    duration = info["duration"]
+                    assert math.isfinite(duration) and (duration >= 0 if args.media == "live" else duration > 0), info
+                    assert math.isfinite(info["position"]) and info["position"] > 1 and info["rate"] == 1 and info["readyToPlay"], info
+                    for name in ("loadedTimeRanges", "seekableTimeRanges"):
+                        assert isinstance(info[name], list), info
+                        for interval in info[name]:
+                            start, length = interval["start"], interval["duration"]
+                            assert math.isfinite(start) and start >= 0 and math.isfinite(length) and length >= 0 and math.isfinite(start + length), info
                     result["checks"].append("A play request alone starts and advances actual app video without an extra resume request")
+                    result["checks"].append("Actual playback info has finite nonnegative loaded and seekable time ranges")
                     discover()
                     result["checks"].append("Actual app answers AirPlay and RAOP discovery during playback")
                     result["playingBounds"] = bounds(process.pid)

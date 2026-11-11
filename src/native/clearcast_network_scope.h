@@ -13,6 +13,7 @@ uint32_t clearcast_network_scope_ipv4(void);
 /* The returned scope is the adapter index (also used by IPv6 multicast). */
 int clearcast_network_scope_ipv6(unsigned char address[16], unsigned int *scope);
 int clearcast_network_scope_is_current(void);
+int clearcast_network_scope_prepare_unicast(int socket_fd, int ipv6);
 int clearcast_network_scope_prepare_datagram(int socket_fd, int ipv6);
 int clearcast_network_scope_recvfrom(int socket_fd, char *buffer, int capacity,
     struct sockaddr *from, int *from_length, int ipv6);
@@ -186,16 +187,19 @@ int clearcast_network_scope_is_current(void) {
     return valid;
 }
 
-int clearcast_network_scope_prepare_datagram(int socket_fd, int ipv6) {
+int clearcast_network_scope_prepare_unicast(int socket_fd, int ipv6) {
     AcquireSRWLockShared(&clearcast_scope_lock);
     const ULONG index = ipv6 ? clearcast_scope.if6 : clearcast_scope.if4;
     ReleaseSRWLockShared(&clearcast_scope_lock);
     if (!index) { WSASetLastError(WSAENETDOWN); return -1; }
-    /* Multicast uses its own selected interface; pin unicast query responses
-     * too, rather than letting the default route choose another adapter. */
+    /* Pin commands and discovery responses instead of using a default route. */
     const DWORD unicast_index = ipv6 ? index : htonl(index);
-    if (setsockopt((SOCKET)socket_fd, ipv6 ? IPPROTO_IPV6 : IPPROTO_IP,
-        ipv6 ? IPV6_UNICAST_IF : IP_UNICAST_IF, (const char *)&unicast_index, sizeof(unicast_index)) == SOCKET_ERROR) return -1;
+    return setsockopt((SOCKET)socket_fd, ipv6 ? IPPROTO_IPV6 : IPPROTO_IP,
+        ipv6 ? IPV6_UNICAST_IF : IP_UNICAST_IF, (const char *)&unicast_index, sizeof(unicast_index));
+}
+
+int clearcast_network_scope_prepare_datagram(int socket_fd, int ipv6) {
+    if (clearcast_network_scope_prepare_unicast(socket_fd, ipv6) == SOCKET_ERROR) return -1;
     const DWORD enabled = 1;
     if (setsockopt((SOCKET)socket_fd, ipv6 ? IPPROTO_IPV6 : IPPROTO_IP,
         ipv6 ? IPV6_PKTINFO : IP_PKTINFO, (const char *)&enabled, sizeof(enabled)) == SOCKET_ERROR) return -1;

@@ -78,8 +78,10 @@ class GitHubReleaseTests(unittest.TestCase):
             raise urllib.error.HTTPError(request.full_url, 404, 'fixture missing', {}, None)
         return io.BytesIO(json.dumps(value).encode('utf-8'))
 
-    def run_publisher(self, action):
-        arguments = [str(TOOL), action, '--version', VERSION, '--commit', COMMIT, '--asset', str(self.asset)]
+    def run_publisher(self, action, assets=None):
+        arguments = [str(TOOL), action, '--version', VERSION, '--commit', COMMIT]
+        for asset in [self.asset] if assets is None else assets:
+            arguments += ['--asset', str(asset)]
         output = io.StringIO()
         with mock.patch.object(self.publisher, 'credentials', return_value='fake-test-token') as credentials, \
                 mock.patch.object(self.publisher.urllib.request, 'urlopen', side_effect=self.urlopen), \
@@ -104,6 +106,8 @@ class GitHubReleaseTests(unittest.TestCase):
         self.assertEqual(len(patches), 1)
         self.assertEqual((patches[0]['tag_name'], patches[0]['target_commitish']), (TAG, COMMIT))
         self.assertIn('Isolated release notes.', patches[0]['body'])
+        for locale in ('zh-CN', 'en-US'):
+            self.assertIn(f'/shared/docs/screenshots/{VERSION}/{locale}-lyrics-dark.png', patches[0]['body'])
         self.assertFalse(any(method == 'POST' for method, _, _ in self.calls))
 
     def test_normal_tag_draft_is_still_reused(self):
@@ -173,8 +177,35 @@ class GitHubReleaseTests(unittest.TestCase):
 
     def test_publish_rejects_changed_asset_before_mutation(self):
         self.assets[0]['digest'] = 'sha256:' + '0' * 64
-        with self.assertRaisesRegex(RuntimeError, 'Draft asset digest mismatch'):
+        with self.assertRaisesRegex(RuntimeError, 'Release asset digest or size mismatch'):
             self.run_publisher('publish')
+        self.assert_no_mutations()
+
+    def test_verify_checks_published_assets_without_mutation(self):
+        self.direct_release = dict(self.release, draft=False, tag_name=TAG)
+        self.tag = {'object': {'sha': COMMIT, 'type': 'commit'}}
+        report = self.run_publisher('verify')
+        self.assertFalse(report['draft'])
+        self.assertEqual(report['assets'][0]['digest'], self.assets[0]['digest'])
+        self.assert_no_mutations()
+
+    def test_verify_rejects_mismatched_remote_assets_without_mutation(self):
+        original = self.assets[0].copy()
+        self.direct_release = dict(self.release, draft=False, tag_name=TAG)
+        self.tag = {'object': {'sha': COMMIT, 'type': 'commit'}}
+        for assets in ([], [dict(original, name='unexpected.zip')], [original, original],
+                       [dict(original, digest='sha256:' + '0' * 64)],
+                       [dict(original, size=original['size'] + 1)]):
+            with self.subTest(assets=assets):
+                self.assets = assets
+                with self.assertRaisesRegex(RuntimeError, 'Release asset (set|digest or size)'):
+                    self.run_publisher('verify')
+                self.assert_no_mutations()
+
+    def test_verify_requires_unambiguous_explicit_expected_assets(self):
+        for assets in ([], [self.asset, self.asset]):
+            with self.subTest(assets=assets), self.assertRaisesRegex(RuntimeError, 'Expected assets|asset set'):
+                self.run_publisher('verify', assets=assets)
         self.assert_no_mutations()
 
 

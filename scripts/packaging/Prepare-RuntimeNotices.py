@@ -188,6 +188,20 @@ def source_licenses(path, base):
     return result
 
 
+def release_intro(baseline, version):
+    # Older Windows-generated baselines accumulated CR bytes on each rewrite.
+    # Normalize this generated introduction only; license files remain exact.
+    intro = re.sub(r'\r+\n', '\n', baseline.split('## Native runtime inventory')[0])
+    release_version = r'\d+\.\d+\.\d+(?:\.\d+)?'
+    intro = re.sub(r'(?m)^(# ClearCast )' + release_version + r'( third-party components[ \t]*\r?)$',
+        lambda match: match[1] + version + match[2], intro)
+    intro = re.sub(r'(?m)^(\[ClearCast )' + release_version +
+        r'( downloads and source\]\(https://github\.com/NCFXZ/ClearCast/releases/tag/v)' + release_version + r'(\)[ \t]*\r?)$',
+        lambda match: match[1] + version + match[2] + version + match[3], intro)
+    return intro.replace('under native/', 'under src/native/ and scripts/native/').replace(
+        '`native/Build-GStreamerSecurity.ps1`', '`scripts/native/Build-GStreamerSecurity.ps1`')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, required=True)
@@ -393,9 +407,7 @@ def main():
     (http_notice / 'source-build.json').write_text(json.dumps(http_manifest, indent=2) + '\n', encoding='utf-8')
     shutil.copyfile(repository / HTTP_PATCH, http_notice / 'gstreamer-soup-destination.patch')
 
-    intro = baseline.split('## Native runtime inventory')[0]
-    intro = intro.replace('ClearCast 1.1.0', 'ClearCast ' + args.version).replace('/v1.1.0', '/v' + args.version)
-    intro = intro.replace('under native/', 'under src/native/ and scripts/native/').replace('`native/Build-GStreamerSecurity.ps1`', '`scripts/native/Build-GStreamerSecurity.ps1`')
+    intro = release_intro(baseline, args.version)
     inventory = intro + '## Native runtime inventory\n\nThe table describes the exact currently shipped MSYS2 package files, individually matched by SHA-256 to installed package files. Changed/new source recipes are matched to the signed binary packages\' BUILDINFO hashes. Controlled components use their exact source-build manifests.\n\n| MSYS2 package | Version | License metadata | Bundled files | Exact source archive |\n| --- | --- | --- | --- | --- |\n' + '\n'.join(rows) + '\n\n'
     inventory += '## Controlled components\n\n'
     for component in controlled:

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <Version>1.2.2.0</Version>
+    <Version>1.3.0.0</Version>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -14,15 +14,23 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Source-generated COM interop for the Composition blur effect description. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DefaultItemExcludes>$(DefaultItemExcludes);bin\**;obj\**</DefaultItemExcludes>
     <ReceiverRuntimeDirectory Condition="'$(ReceiverRuntimeDirectory)' == ''">$(MSBuildProjectDirectory)\..\..\.runtime\receiver</ReceiverRuntimeDirectory>
   </PropertyGroup>
   <PropertyGroup Condition="'$(EnableUiTests)' == 'true'">
     <DefineConstants>$(DefineConstants);CLEARCAST_UI_TESTS</DefineConstants>
+    <InformationalVersion>$(Version)+ui-tests</InformationalVersion>
   </PropertyGroup>
   <ItemGroup Condition="'$(EnableUiTests)' == 'true'">
     <Compile Include="..\..\tests\ui\MainWindow.UiTests.cs" Link="Testing\MainWindow.UiTests.cs" />
     <Compile Include="..\..\tests\ui\MainWindow.MediaUiTests.cs" Link="Testing\MainWindow.MediaUiTests.cs" />
+    <Compile Include="..\..\tests\ui\MainWindow.LyricsStressUiTests.cs" Link="Testing\MainWindow.LyricsStressUiTests.cs" />
+    <Compile Include="..\..\tests\ui\MainWindow.LyricsBackpressureAuditUiTests.cs" Link="Testing\MainWindow.LyricsBackpressureAuditUiTests.cs" />
+    <Compile Include="..\..\tests\ui\MainWindow.ControlAuditUiTests.cs" Link="Testing\MainWindow.ControlAuditUiTests.cs" />
+    <Compile Include="..\..\tests\ui\MainWindow.LyricsPerformanceUiTests.cs" Link="Testing\MainWindow.LyricsPerformanceUiTests.cs" />
+    <Compile Include="..\..\tests\ui\MainWindow.LyricsInputUiTests.cs" Link="Testing\MainWindow.LyricsInputUiTests.cs" />
     <Compile Include="..\..\tests\ui\MainWindow.BackpressureUiTests.cs" Link="Testing\MainWindow.BackpressureUiTests.cs" />
     <Compile Include="..\..\tests\ui\MainWindow.CompositorUiTests.cs" Link="Testing\MainWindow.CompositorUiTests.cs" />
     <Compile Include="..\..\tests\ui\MainWindow.BeatUiTests.cs" Link="Testing\MainWindow.BeatUiTests.cs" />

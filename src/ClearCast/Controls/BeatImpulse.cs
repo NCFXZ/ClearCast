@@ -9,8 +9,6 @@ internal sealed class BeatImpulse
     internal const float MinimumStrength = 0.08f;
     internal const float BaselineScale = 1.05f;
     internal const float ZoomAmount = 0.12f;
-    internal const float MinimumEnvelope = -0.15f;
-    internal const float MaximumEnvelope = 1;
     private static readonly (float Progress, float Value)[] Envelope = CreateEnvelope();
 
     private static (float Progress, float Value)[] CreateEnvelope()

@@ -19,7 +19,7 @@ namespace ClearCast;
 public sealed class MusicBackdrop : UserControl, IDisposable
 {
     internal const int VideoTransitionMilliseconds = 100;
-    private sealed class FlowResources(Compositor compositor) : IDisposable
+    private sealed class FlowResources(Compositor compositor)
     {
         internal readonly ContainerVisual Root = compositor.CreateContainerVisual();
         internal readonly CompositionPropertySet Clock = compositor.CreatePropertySet();
@@ -33,6 +33,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         internal ScalarKeyFrameAnimation? BeatAnimation;
         internal CompositionEasingFunction? BeatEasing;
         internal AnimationController? Controller;
+        internal Task ControllerRetirement = Task.CompletedTask;
         internal int ArtworkGeneration;
         internal float BeatDirection = 1;
         internal bool BeatEnabled, BeatScheduled;
@@ -41,7 +42,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         internal bool VideoFrame;
         private bool _disposed;
 
-        public void Dispose()
+        public async Task DisposeAsync()
         {
             if (_disposed) return;
             _disposed = true;
@@ -52,6 +53,14 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             Close(() => Root.StopAnimation("Offset"));
             foreach (var layer in Layers) Close(() => layer.StopAnimation("Opacity"));
             Close(Root.Children.RemoveAll);
+            // XAML image sources need a live core; release them when retiring the flow,
+            // rather than in a later commit callback that could overlap window teardown.
+            foreach (var surface in Surfaces) Close(surface.Dispose);
+            foreach (var stream in Streams) Close(stream.Dispose);
+            // A controller/rate change can still be queued in DComp's raw-pointer rebuild
+            // list. Keep the detached resource group alive until that commit has drained.
+            await WaitForResourceCommitAsync(Root.Compositor);
+            await ControllerRetirement;
             if (Controller is { } controller) Close(controller.Dispose);
             foreach (var animation in Animations) Close(animation.Dispose);
             foreach (var expression in BeatExpressions) Close(expression.Dispose);
@@ -60,8 +69,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             if (BeatEasing is { } beatEasing) Close(beatEasing.Dispose);
             foreach (var layer in Layers) Close(layer.Dispose);
             foreach (var brush in Brushes) Close(brush.Dispose);
-            foreach (var surface in Surfaces) Close(surface.Dispose);
-            foreach (var stream in Streams) Close(stream.Dispose);
             Close(Clock.Dispose);
             Close(Root.Dispose);
         }
@@ -77,6 +84,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private SpriteVisual? _fill;
     private CompositionColorBrush? _fillBrush;
     private FlowResources? _flow;
+    private Task _flowRetirement = Task.CompletedTask;
+    private Task _imagePump = Task.CompletedTask;
+    private Task? _disposeTask;
     private CancellationTokenSource? _artworkCancellation;
     private sealed record ImageRequest(byte[] Bytes, bool DarkTheme, bool VideoFrame, bool Smooth,
         int Generation, TaskCompletionSource<bool> Completion);
@@ -232,8 +242,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             flow.Controller = null;
             flow.ClockStarted = false;
             flow.RateControlUnavailable = true;
-            CloseComposition(controller.Dispose);
             CloseComposition(() => flow.Clock.StopAnimation("Phase"));
+            flow.ControllerRetirement = RetireControllerAsync(controller, flow.Root.Compositor);
             if (!_animate || !_active || !_loaded || ActualWidth <= 0 || ActualHeight <= 0)
             {
                 IsAnimating = false;
@@ -275,7 +285,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         }
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _imageRequest = new ImageRequest(bytes, darkTheme, videoFrame, smooth, generation, completion);
-        if (!_imageRunning) _ = ApplyPendingImagesAsync();
+        if (!_imageRunning) _imagePump = ApplyPendingImagesAsync();
         return completion.Task;
     }
 
@@ -284,8 +294,12 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         _imageRunning = true;
         try
         {
-            while (!_disposed && _imageRequest is { } request)
+            while (!_disposed && _imageRequest is not null)
             {
+                // Keep the existing one-running/one-latest bound while old GPU resources
+                // wait for their last commit, including when the window is suspended.
+                await _flowRetirement;
+                if (_disposed || _imageRequest is not { } request) break;
                 _imageRequest = null;
                 try
                 {
@@ -340,10 +354,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 stream.Seek(0);
                 var decoder = await BitmapDecoder.CreateAsync(stream);
                 token.ThrowIfCancellationRequested();
-                Guid format = decoder.DecoderInformation.CodecId;
-                if ((format != BitmapDecoder.PngDecoderId && format != BitmapDecoder.JpegDecoderId) ||
-                    decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 ||
-                    (ulong)decoder.PixelWidth * decoder.PixelHeight > 16_000_000)
+                if (!ArtworkImage.IsSupported(decoder))
                 {
                     if (generation == _artworkGeneration && !_disposed) SetStaticPalette(palette);
                     return;
@@ -379,6 +390,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             else
             {
                 ClearFlow();
+                await _flowRetirement;
+                token.ThrowIfCancellationRequested();
+                if (_disposed || generation != _artworkGeneration) return;
                 _palette = palette;
                 ApplyPalette();
             }
@@ -421,9 +435,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             if (retired is not null)
             {
                 CloseComposition(() => _root?.Children.Remove(retired.Root));
-                retired.Dispose();
+                await retired.DisposeAsync();
             }
-            pending?.Dispose();
+            if (pending is not null) await pending.DisposeAsync();
         }
     }
 
@@ -493,7 +507,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             PrepareBeatVisuals(flow);
             return flow;
         }
-        catch { flow.Dispose(); throw; }
+        catch { await flow.DisposeAsync(); throw; }
     }
 
     private void PrepareBeatVisuals(FlowResources flow)
@@ -668,7 +682,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                     paused.ClockStarted = false;
                     paused.RateControlUnavailable = true;
                     CloseComposition(() => paused.Clock.StopAnimation("Phase"));
-                    if (failedController is not null) CloseComposition(failedController.Dispose);
+                    if (failedController is not null) paused.ControllerRetirement = RetireControllerAsync(failedController, paused.Root.Compositor);
                 }
             }
             IsAnimating = false;
@@ -708,6 +722,30 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         catch (Exception error) when (IsCompositionFailure(error)) { }
     }
 
+    private static async Task RetireControllerAsync(AnimationController controller, Compositor compositor)
+    {
+        await WaitForResourceCommitAsync(compositor);
+        CloseComposition(controller.Dispose);
+    }
+
+    private static async Task WaitForResourceCommitAsync(Compositor compositor)
+    {
+        int delay = 16;
+        for (;;)
+        {
+            try { await compositor.RequestCommitAsync(); return; }
+            // A closed compositor cannot submit another rebuild. Other failures are not a
+            // completed fence: retain the resources and retry before admitting a new flow.
+            catch (COMException error) when (error.HResult == unchecked((int)0x80000013)) { return; }
+            catch (ObjectDisposedException) { return; }
+            catch (Exception error) when (IsCompositionFailure(error) || error is OperationCanceledException)
+            {
+                await Task.Delay(delay);
+                delay = Math.Min(250, delay * 2);
+            }
+        }
+    }
+
     private void ClearFlow()
     {
         _videoClock.Stop();
@@ -715,11 +753,15 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         IsAnimating = false;
         if (_flow is null) return;
         _root?.Children.Remove(_flow.Root);
-        _flow.Dispose();
+        _flowRetirement = _flow.DisposeAsync();
         _flow = null;
     }
 
-    public void Dispose()
+    public void Dispose() => _ = DisposeAsync();
+
+    internal Task DisposeAsync() => _disposeTask ??= DisposeCoreAsync();
+
+    private async Task DisposeCoreAsync()
     {
         if (_disposed) return;
         ++_artworkGeneration;
@@ -737,6 +779,10 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         SizeChanged -= OnSizeChanged;
         ClearFlow();
         if (_root is not null) ElementCompositionPreview.SetElementChildVisual(this, null);
+        // LoadedImageSurface.Close requires the live XAML core. Drain deferred cleanup
+        // before closing parent visuals or allowing the owning window to be destroyed.
+        await _imagePump;
+        await _flowRetirement;
         _fill?.Dispose();
         _fillBrush?.Dispose();
         _root?.Clip?.Dispose();

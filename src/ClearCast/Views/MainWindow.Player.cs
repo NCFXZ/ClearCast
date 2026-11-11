@@ -238,8 +238,11 @@ public sealed partial class MainWindow
     private void RefreshFullScreenLabel()
     {
         string label = _playerFullScreen ? Texts.ExitFullScreen : Texts.FullScreen;
-        AutomationProperties.SetName(FullScreenButton, label);
-        ToolTipService.SetToolTip(FullScreenButton, label);
+        foreach (Button button in new[] { FullScreenButton, MusicFullScreenButton })
+        {
+            AutomationProperties.SetName(button, label);
+            ToolTipService.SetToolTip(button, label);
+        }
     }
 
     private void PlayerFullScreenClicked(object sender, RoutedEventArgs args) => TogglePlayerFullScreen();
@@ -254,7 +257,7 @@ public sealed partial class MainWindow
 
     private void TogglePlayerFullScreen()
     {
-        if (_hasVideo && IsMirrorPageSelected && !IsMirrorPageEntering)
+        if ((_hasVideo || _hasMusic) && IsMirrorPageSelected && !IsMirrorPageEntering)
             SetPlayerFullScreen(!_playerFullScreen);
     }
 
@@ -307,7 +310,7 @@ public sealed partial class MainWindow
             PlayerControls.Padding = enabled ? new Thickness(24, 8, 24, 16) : new Thickness(16, 8, 16, 12);
             PlayerControls.CornerRadius = new CornerRadius(enabled ? 0 : 8);
             PlayerControls.RequestedTheme = enabled ? ElementTheme.Dark : ElementTheme.Default;
-            FullScreenIcon.Symbol = enabled ? Symbol.BackToWindow : Symbol.FullScreen;
+            FullScreenIcon.Symbol = MusicFullScreenIcon.Symbol = enabled ? Symbol.BackToWindow : Symbol.FullScreen;
             RefreshFullScreenLabel();
             double gutter = MirrorPage.ActualWidth >= 640 ? 40 : 24;
             MirrorLayout.Margin = enabled ? new Thickness(0) : new Thickness(gutter, 16, gutter, 24);
