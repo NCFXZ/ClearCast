@@ -256,9 +256,17 @@
          return -1;
      }
  
-@@ -3281,7 +3359,9 @@
+@@ -3281,16 +3359,20 @@
      raop_set_udp_ports(raop, udp);
  
++    /* Publish discovery configuration before HTTP/RTSP callbacks can run. */
++    if (dnssd) {
++        raop_set_dnssd(raop, dnssd);
++    } else {
++        LOGE("raop_set failed to set dnssd");
++        return -2;
++    }
++
      raop_port = raop_get_port(raop);
 -    raop_start_httpd(raop, &raop_port);
 +    if (raop_start_httpd(raop, &raop_port) < 0) {
@@ -267,6 +275,15 @@
      raop_set_port(raop, raop_port);
  
      /* use raop_port for airplay_port (instead of tcp[2]) */
+     airplay_port = raop_port;
+ 
+-    if (dnssd) {
+-        raop_set_dnssd(raop, dnssd);
+-    } else {
+-        LOGE("raop_set failed to set dnssd");
+-        return -2;
+-    }
+     return 0;
 @@ -3391,6 +3471,10 @@
      }
  }

@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Windows.System;
 
 namespace ClearCast;
 
@@ -33,7 +34,7 @@ public sealed partial class MainWindow
     private void UpdatePlaybackControls()
     {
         bool ready = _receiver is not null && !_closing && !_closed && _stopTask is null &&
-            !_resettingPairings && !_startingReceiver && !_playbackControlPending;
+            !_resettingPairings && !_startingReceiver && !_playbackControlPending && !_mediaCommandPending;
         bool direct = _hasVideo && _mediaState.IsDirectVideo;
         bool transport = _hasVideo && _mediaState.CanControlVideo;
         VideoTransport.Visibility = transport ? Visibility.Visible : Visibility.Collapsed;
@@ -89,8 +90,7 @@ public sealed partial class MainWindow
     private async void VideoSkipForwardClicked(object sender, RoutedEventArgs args) => await SkipVideoAsync(10_000);
 
     private Task SkipVideoAsync(long offset) => _hasVideo && _mediaState.CanControlVideo && _mediaState.CanSeek
-        ? SendPlaybackControlAsync(_mediaState, MediaCommand.Seek,
-            Math.Clamp(_mediaState.PositionMs + offset, _mediaState.SeekStartMs, _mediaState.SeekEndMs)) : Task.CompletedTask;
+        ? SendPlaybackControlAsync(_mediaState, MediaCommand.Skip, offset) : Task.CompletedTask;
 
     private bool CanToggleCurrentPlayback => IsMirrorPageSelected &&
         (_hasVideo ? VideoPlayPauseButton.IsEnabled : _hasMusic && MusicPlayPauseButton.IsEnabled);
@@ -98,19 +98,27 @@ public sealed partial class MainWindow
     private Task ToggleCurrentPlaybackAsync() => !CanToggleCurrentPlayback ? Task.CompletedTask : _hasVideo
         ? SendPlaybackControlAsync(_mediaState, MediaCommand.PlayPause) : SendMusicCommandAsync(MediaCommand.PlayPause);
 
-    private async void PlaybackSpaceInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    private bool ShouldHandlePlaybackSpace => IsMirrorPageSelected && (_hasVideo || _hasMusic);
+
+    private async void PlaybackPreviewKeyDown(object sender, KeyRoutedEventArgs args)
     {
-        if (!CanToggleCurrentPlayback) return;
+        if (args.Key != VirtualKey.Space || !ShouldHandlePlaybackSpace) return;
         args.Handled = true;
-        await ToggleCurrentPlaybackAsync();
+        if (!args.KeyStatus.WasKeyDown && CanToggleCurrentPlayback) await ToggleCurrentPlaybackAsync();
+    }
+
+    private void PlaybackPreviewKeyUp(object sender, KeyRoutedEventArgs args)
+    {
+        if (args.Key == VirtualKey.Space && ShouldHandlePlaybackSpace) args.Handled = true;
     }
 
     private async Task SendPlaybackControlAsync(ReceiverMediaState state, MediaCommand command, long value = 0)
     {
-        if (_receiver is not { } receiver || _playbackControlPending || _closing || _stopTask is not null) return;
+        if (_receiver is not { } receiver || _playbackControlPending || _mediaCommandPending || _closing || _stopTask is not null) return;
         _playbackControlPending = true;
         _playbackControlError = "";
         UpdatePlaybackControls();
+        UpdateMusicControls();
         try { await receiver.ControlMediaAsync(state, command, value); }
         catch (Win32Exception)
         {

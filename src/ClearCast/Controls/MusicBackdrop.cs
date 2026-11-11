@@ -78,11 +78,20 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private CompositionColorBrush? _fillBrush;
     private FlowResources? _flow;
     private CancellationTokenSource? _artworkCancellation;
+    private sealed record ImageRequest(byte[] Bytes, bool DarkTheme, bool VideoFrame, bool Smooth,
+        int Generation, TaskCompletionSource<bool> Completion);
+    private ImageRequest? _imageRequest;
+    private bool _imageRunning;
     private long _lastActivityAt;
     private float _appliedMotionRate = MusicMotion.BaseRate;
     private int _artworkGeneration;
     private bool _active, _animate, _loaded, _disposed;
     internal bool IsVideoTransitioning { get; private set; }
+#if CLEARCAST_UI_TESTS
+    internal Func<Task>? UiBeforeImageDecodeAsync;
+    internal int UiImageDecodeStarts, UiImageDecodeActive, UiMaxImageDecodeActive;
+    internal bool UiImagePending => _imageRequest is not null;
+#endif
 
     public MusicBackdrop()
     {
@@ -105,12 +114,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     internal long BeatStartCount { get; private set; }
     internal bool BeatAnimationActive => IsAnimating && _flow is { BeatEnabled: true, BeatScheduled: true } && _beat.IsActive(Environment.TickCount64);
     internal int BeatAnimationChannelCount => IsAnimating && _flow is { BeatEnabled: true } flow ? flow.BeatExpressions.Count + (BeatAnimationActive ? 1 : 0) : 0;
-    internal float BeatBaselineScale => BeatImpulse.BaselineScale;
-    internal float BeatMaximumScale => BeatImpulse.BaselineScale + BeatImpulse.ZoomAmount;
-    internal float BeatMinimumScale => BeatImpulse.BaselineScale + BeatImpulse.ZoomAmount * BeatImpulse.MinimumEnvelope;
     internal Vector2 BeatOffsetLimit => BeatImpulse.OffsetLimit((float)ActualWidth, (float)ActualHeight);
     internal ulong BeatEpoch => _beat.Epoch;
-    internal ulong BeatSequence => _beat.Sequence;
     internal float MotionRate => _appliedMotionRate;
     internal float? AppliedPlaybackRate
     {
@@ -120,7 +125,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             catch (Exception error) when (IsCompositionFailure(error)) { return null; }
         }
     }
-    internal float? AnimationProgress => Phase;
     internal float? Phase
     {
         get
@@ -249,13 +253,55 @@ public sealed class MusicBackdrop : UserControl, IDisposable
 
     public Task SetVideoFrameAsync(byte[] pixels, bool darkTheme, bool smooth = true) => SetImageAsync(pixels, darkTheme, true, smooth);
 
-    private async Task SetImageAsync(byte[]? bytes, bool darkTheme, bool videoFrame, bool smooth)
+    private Task SetImageAsync(byte[]? bytes, bool darkTheme, bool videoFrame, bool smooth)
     {
-        if (_disposed) return;
-        if (!videoFrame) _videoClock.Reset();
+        if (_disposed) return Task.CompletedTask;
         int generation = ++_artworkGeneration;
-        ResetBeatActivity();
         _artworkCancellation?.Cancel();
+        _imageRequest?.Completion.TrySetResult(true);
+        _imageRequest = null;
+        if (bytes is not { Length: > 0 and <= 2 * 1024 * 1024 })
+        {
+            try
+            {
+                if (!videoFrame) _videoClock.Reset();
+                ResetBeatActivity();
+                // Clearing must not wait behind an uncancellable decoder/upload.
+                SetStaticPalette(MusicPalette.FromBgra([], darkTheme));
+                IsVideoTransitioning = false;
+            }
+            catch (Exception error) when (IsCompositionFailure(error)) { return Task.FromException(error); }
+            return Task.CompletedTask;
+        }
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _imageRequest = new ImageRequest(bytes, darkTheme, videoFrame, smooth, generation, completion);
+        if (!_imageRunning) _ = ApplyPendingImagesAsync();
+        return completion.Task;
+    }
+
+    private async Task ApplyPendingImagesAsync()
+    {
+        _imageRunning = true;
+        try
+        {
+            while (!_disposed && _imageRequest is { } request)
+            {
+                _imageRequest = null;
+                try
+                {
+                    await ApplyImageAsync(request.Bytes, request.DarkTheme, request.VideoFrame, request.Smooth, request.Generation);
+                    request.Completion.TrySetResult(true);
+                }
+                catch (Exception error) { request.Completion.TrySetException(error); }
+            }
+        }
+        finally { _imageRunning = false; }
+    }
+
+    private async Task ApplyImageAsync(byte[] bytes, bool darkTheme, bool videoFrame, bool smooth, int generation)
+    {
+        if (!videoFrame) _videoClock.Reset();
+        ResetBeatActivity();
         _artworkCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
         _artworkCancellation = cancellation;
@@ -265,11 +311,13 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         FlowResources? retired = null;
         try
         {
-            if (bytes is not { Length: > 0 and <= 2 * 1024 * 1024 })
-            {
-                SetStaticPalette(palette);
-                return;
-            }
+#if CLEARCAST_UI_TESTS
+            UiImageDecodeStarts++;
+            UiImageDecodeActive++;
+            UiMaxImageDecodeActive = Math.Max(UiMaxImageDecodeActive, UiImageDecodeActive);
+            if (UiBeforeImageDecodeAsync is { } beforeDecode) await beforeDecode();
+#endif
+            token.ThrowIfCancellationRequested();
             byte[] source;
             int sourceSide;
             if (videoFrame)
@@ -288,8 +336,10 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                     await writer.StoreAsync();
                     writer.DetachStream();
                 }
+                token.ThrowIfCancellationRequested();
                 stream.Seek(0);
                 var decoder = await BitmapDecoder.CreateAsync(stream);
+                token.ThrowIfCancellationRequested();
                 Guid format = decoder.DecoderInformation.CodecId;
                 if ((format != BitmapDecoder.PngDecoderId && format != BitmapDecoder.JpegDecoderId) ||
                     decoder.PixelWidth is 0 or > 4096 || decoder.PixelHeight is 0 or > 4096 ||
@@ -301,6 +351,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 var transform = new BitmapTransform { ScaledWidth = 32, ScaledHeight = 32, InterpolationMode = BitmapInterpolationMode.Linear };
                 var sampled = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
                     ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
+                token.ThrowIfCancellationRequested();
                 palette = MusicPalette.FromBgra(sampled.DetachPixelData(), darkTheme);
                 transform.ScaledWidth = transform.ScaledHeight = ArtworkFlow.Side;
                 var decoded = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight, transform,
@@ -363,6 +414,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         }
         finally
         {
+#if CLEARCAST_UI_TESTS
+            UiImageDecodeActive--;
+#endif
             if (generation == _artworkGeneration) IsVideoTransitioning = false;
             if (retired is not null)
             {
@@ -389,8 +443,10 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 var stream = new InMemoryRandomAccessStream();
                 flow.Streams.Add(stream);
                 var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
+                cancellation.ThrowIfCancellationRequested();
                 encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, ArtworkFlow.Side, ArtworkFlow.Side, 96, 96, frame);
                 await encoder.FlushAsync();
+                cancellation.ThrowIfCancellationRequested();
                 stream.Seek(0);
                 var surface = LoadedImageSurface.StartLoadFromStream(stream);
                 flow.Surfaces.Add(surface);
@@ -667,6 +723,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     {
         if (_disposed) return;
         ++_artworkGeneration;
+        _imageRequest?.Completion.TrySetResult(true);
+        _imageRequest = null;
         _artworkCancellation?.Cancel();
         _artworkCancellation?.Dispose();
         _artworkCancellation = null;

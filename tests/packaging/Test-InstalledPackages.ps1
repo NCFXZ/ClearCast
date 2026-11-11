@@ -159,7 +159,7 @@ function Record-InstallerSnapshot([string] $Stage) {
     $script:results.installationSnapshots += $snapshot
     return $snapshot
 }
-function Check-Application([Diagnostics.Process] $Process, [string] $Name) {
+function Check-Application([Diagnostics.Process] $Process, [string] $Name, [string] $IconEvidenceName, [string] $ExpectedAumid) {
     $script:ownedProcesses += $Process
     $watch = [Diagnostics.Stopwatch]::StartNew()
     do {
@@ -172,6 +172,34 @@ function Check-Application([Diagnostics.Process] $Process, [string] $Name) {
     Start-Sleep -Seconds 3
     $Process.Refresh()
     if ($Process.HasExited -or -not $Process.Responding) { throw "$Name became unresponsive." }
+    if ($IconEvidenceName) {
+        $probeDirectory = Join-Path $workDirectory 'icon-probe'
+        [void] [IO.Directory]::CreateDirectory($probeDirectory)
+        $probe = Join-Path $probeDirectory 'TaskbarIconProbe.exe'
+        if (-not (Test-Path -LiteralPath $probe)) {
+            $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+            & $compiler /nologo /platform:x64 /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/out:$probe" (Join-Path $PSScriptRoot 'TaskbarIconProbe.cs') *> (Join-Path $outputDirectory 'icon-probe-build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Could not compile the isolated icon evidence probe.' }
+        }
+        $appRoot = Split-Path -Parent $Process.MainModule.FileName
+        if ($ExpectedAumid) {
+            foreach ($dll in 'MRM.dll','Microsoft.Internal.FrameworkUdk.dll') {
+                Copy-Item -LiteralPath (Join-Path $appRoot $dll) -Destination (Join-Path $probeDirectory $dll) -Force
+                if ((Get-FileHash -LiteralPath (Join-Path $appRoot $dll)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $probeDirectory $dll)).Hash) {
+                    throw 'The MRT evidence helper copy differs from the installed payload.'
+                }
+            }
+        }
+        $prefix = Join-Path $outputDirectory ('icon-' + $IconEvidenceName)
+        $expectedIconAumid = if ($ExpectedAumid) { $ExpectedAumid } else { '-' }
+        $probeArguments = @([string]$Process.Id, [string]$Process.MainWindowHandle.ToInt64(),
+            ('"' + $appRoot + '"'), ('"' + $prefix + '"'), $expectedIconAumid)
+        $iconProbe = Start-Process -FilePath $probe -ArgumentList $probeArguments -PassThru -WindowStyle Hidden
+        if (-not $iconProbe.WaitForExit(30000)) { $iconProbe.Kill(); throw 'The owned icon evidence probe timed out.' }
+        if ($iconProbe.ExitCode -ne 0) { throw "Icon evidence failed: $IconEvidenceName (see $prefix.json)." }
+        $evidence = Get-Content -LiteralPath ($prefix + '.json') -Raw | ConvertFrom-Json
+        Add-Check ($IconEvidenceName + ' native and Shell icon evidence') $evidence
+    }
     Add-Check $Name @{ startupMilliseconds = $startup; workingSetBytes = $Process.WorkingSet64; privateBytes = $Process.PrivateMemorySize64; windowTitle = $Process.MainWindowTitle; receiverNetworkTest = 'not run: Sandbox networking is disabled' }
     [void] $Process.CloseMainWindow()
     if (-not $Process.WaitForExit(15000)) { throw "$Name did not close within 15 seconds." }
@@ -225,7 +253,7 @@ try {
     Check-InstalledPayload (Split-Path -Parent $app) $configuration.desktopFiles 'Repaired desktop payload hashes and version'
     Add-Check 'Current version repair' @{ exitCode = $repairCode; msiProductCount = $afterRepair.msiProductCount }
     # A visible window is required for the UI startup/close smoke test inside this VM.
-    Check-Application (Start-Process -FilePath $app -PassThru -WindowStyle Normal) 'Installed desktop application startup and close'
+    Check-Application (Start-Process -FilePath $app -PassThru -WindowStyle Normal) 'Installed desktop application startup and close' 'desktop-upgrade'
     $exitCode = Run-Setup $setup 'uninstall' 'uninstall-desktop.log'
     $remaining = Record-InstallerSnapshot 'Replacement uninstall'
     if ((Test-Path -LiteralPath $app) -or $remaining.msiProductCount -ne 0 -or $remaining.arpRegistrationCount -ne 0) { throw 'Desktop uninstall left the executable, Windows Installer product or ARP registration.' }
@@ -237,7 +265,7 @@ try {
     if ($fresh.msiProductCount -ne 1 -or $fresh.products[0].Scope -ne 'perUser' -or $fresh.arpRegistrationCount -ne 2) { throw 'A clean installation has an unexpected scope or product registration.' }
     Check-InstalledPayload (Split-Path -Parent $app) $configuration.desktopFiles 'Clean desktop payload hashes and version'
     Add-Check 'Clean current-version installation' @{ exitCode = $freshCode; msiProductCount = $fresh.msiProductCount }
-    Check-Application (Start-Process -FilePath $app -PassThru -WindowStyle Normal) 'Clean desktop application startup and close'
+    Check-Application (Start-Process -FilePath $app -PassThru -WindowStyle Normal) 'Clean desktop application startup and close' 'desktop-clean'
     $cleanUninstall = Run-Setup $setup 'uninstall' 'uninstall-clean-current.log'
     $cleanRemaining = Record-InstallerSnapshot 'Clean installation uninstall'
     if ((Test-Path -LiteralPath $app) -or $cleanRemaining.msiProductCount -ne 0 -or $cleanRemaining.arpRegistrationCount -ne 0) { throw 'Clean-install uninstall left the application or registrations.' }
@@ -269,7 +297,7 @@ try {
     $limit = (Get-Date).AddSeconds(30)
     do { Start-Sleep -Milliseconds 200; $storeApp = Get-Process ClearCast -ErrorAction SilentlyContinue | Select-Object -First 1 } while (-not $storeApp -and (Get-Date) -lt $limit)
     if (-not $storeApp) { throw 'Installed MSIX did not launch.' }
-    Check-Application $storeApp 'Installed MSIX startup and close'
+    Check-Application $storeApp 'Installed MSIX startup and close' 'store' ($installedPackage.PackageFamilyName + '!ClearCast')
     Remove-AppxPackage -Package $installedPackage.PackageFullName
     if (Get-AppxPackage -Name $configuration.packageName) { throw 'MSIX uninstall left a registered package.' }
     $installedPackage = $null

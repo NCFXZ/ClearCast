@@ -6,7 +6,7 @@ using System.Text;
 namespace ClearCast;
 
 internal enum DecoderMode { Automatic, Software, Hardware }
-internal enum MediaCommand { PlayPause = 1, Previous, Next, Seek }
+internal enum MediaCommand { PlayPause = 1, Previous, Next, Seek, Skip = 5 }
 
 internal enum ReceiverEventKind
 {
@@ -41,13 +41,62 @@ internal readonly record struct PlaybackStats(ulong Rendered, ulong Dropped, int
 
 internal sealed record SavedPairing(string Id, string? Name);
 
+// Commands are not replaceable snapshots. Reject excess work before scheduling
+// a native/network call rather than building a thread-pool queue behind it.
+internal sealed class ReceiverCommandGate
+{
+    private int _pending;
+    private int _generation;
+    private int _suspended;
+
+    internal void Suspend()
+    {
+        Volatile.Write(ref _suspended, 1);
+        Interlocked.Increment(ref _generation);
+    }
+
+    internal void Resume() => Volatile.Write(ref _suspended, 0);
+
+    internal Task RunAsync(Action command)
+    {
+        int generation = Volatile.Read(ref _generation);
+        if (Volatile.Read(ref _suspended) != 0)
+            return Task.FromException(new Win32Exception(1223)); // ERROR_CANCELLED
+        if (Interlocked.CompareExchange(ref _pending, 1, 0) != 0)
+            return Task.FromException(new Win32Exception(170)); // ERROR_BUSY
+        try
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    if (Volatile.Read(ref _suspended) != 0 || generation != Volatile.Read(ref _generation))
+                        throw new Win32Exception(1223);
+                    command();
+                }
+                finally { Volatile.Write(ref _pending, 0); }
+            });
+        }
+        catch
+        {
+            Volatile.Write(ref _pending, 0);
+            throw;
+        }
+    }
+}
+
 internal sealed class AirPlayReceiver
 {
     private const int PairingKeyLength = 44;
     private const int SharingViolation = 32;
+    private const int MaximumPairingFileBytes = 16 * 1024 * 1024;
+    private const int MaximumPairings = 4096;
 
     private readonly FileStream _stateLock;
     private readonly byte[] _mediaBuffer = new byte[8192];
+    private readonly ReceiverCommandGate _mediaCommands = new();
+    private readonly object _stopLock = new();
+    private Task? _stopTask;
 
     private AirPlayReceiver(FileStream stateLock) => _stateLock = stateLock;
 
@@ -114,6 +163,8 @@ internal sealed class AirPlayReceiver
         {
             if (GetPairingKey(row.Span) is not { } id)
                 continue;
+            if (pairings.Count == MaximumPairings && !pairings.ContainsKey(id))
+                throw new IOException("The saved pairing registry contains too many devices.");
 
             // UxPlay writes key, timestamp, device ID, and name. Older records can have only the key.
             string[] fields = Encoding.UTF8.GetString(row.Span).Split(',', 4);
@@ -137,18 +188,10 @@ internal sealed class AirPlayReceiver
         string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            bool removed = false;
+            bool removed;
             using (var stream = new FileStream(temporary, FileMode.CreateNew))
             {
-                // Stream complete records so removing one key does not copy the entire
-                // pairing history into memory, and unrelated bytes remain unchanged.
-                foreach (var row in ReadPairingRows(path))
-                {
-                    if (GetPairingKey(row.Span) == id)
-                        removed = true;
-                    else
-                        stream.Write(row.Span);
-                }
+                removed = CopyRetainedPairings(path, stream, id);
             }
             if (removed)
                 CommitPairingRemoval(root, temporary, path);
@@ -256,6 +299,53 @@ internal sealed class AirPlayReceiver
         return Encoding.ASCII.GetString(row[..PairingKeyLength]);
     }
 
+    private static bool CopyRetainedPairings(string path, Stream output, string id)
+    {
+        FileStream input;
+        try { input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return false; }
+        using (input)
+        {
+            byte[] buffer = new byte[8192], prefix = new byte[PairingKeyLength + 2];
+            int prefixLength = 0, count;
+            long remaining = input.Length;
+            bool decided = false, discard = false, removed = false;
+            while (remaining > 0 && (count = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining))) != 0)
+            {
+                remaining -= count;
+                for (int offset = 0; offset < count;)
+                {
+                    int end = Array.IndexOf(buffer, (byte)'\n', offset, count - offset);
+                    int next = end == -1 ? count : end + 1;
+                    if (!decided)
+                    {
+                        int retained = Math.Min(next - offset, prefix.Length - prefixLength);
+                        buffer.AsSpan(offset, retained).CopyTo(prefix.AsSpan(prefixLength));
+                        prefixLength += retained;
+                        offset += retained;
+                        if (prefixLength == prefix.Length || end != -1)
+                        {
+                            discard = GetPairingKey(prefix.AsSpan(0, prefixLength)) == id;
+                            removed |= discard;
+                            decided = true;
+                            if (!discard) output.Write(prefix.AsSpan(0, prefixLength));
+                        }
+                    }
+                    if (decided && !discard) output.Write(buffer.AsSpan(offset, next - offset));
+                    offset = next;
+                    if (end != -1) { prefixLength = 0; decided = discard = false; }
+                }
+            }
+            if (remaining != 0) throw new IOException("The saved pairing registry changed while being read.");
+            if (!decided && prefixLength > 0)
+            {
+                if (GetPairingKey(prefix.AsSpan(0, prefixLength)) == id) removed = true;
+                else output.Write(prefix.AsSpan(0, prefixLength));
+            }
+            return removed;
+        }
+    }
+
     private static IEnumerable<ReadOnlyMemory<byte>> ReadPairingRows(string path, int? maximumRowBytes = null)
     {
         FileStream stream;
@@ -270,10 +360,14 @@ internal sealed class AirPlayReceiver
         using (stream)
         using (var row = new MemoryStream())
         {
+            long remaining = stream.Length;
+            if (remaining > MaximumPairingFileBytes)
+                throw new IOException("The saved pairing registry is too large.");
             byte[] buffer = new byte[8192];
             int count;
-            while ((count = stream.Read(buffer)) != 0)
+            while (remaining > 0 && (count = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining))) != 0)
             {
+                remaining -= count;
                 for (int offset = 0; offset < count;)
                 {
                     int end = Array.IndexOf(buffer, (byte)'\n', offset, count - offset);
@@ -290,6 +384,7 @@ internal sealed class AirPlayReceiver
                     }
                 }
             }
+            if (remaining != 0) throw new IOException("The saved pairing registry changed while being read.");
             if (row.Length != 0)
                 yield return row.ToArray();
         }
@@ -308,10 +403,16 @@ internal sealed class AirPlayReceiver
             // Keep copied reports small even after a long session.
             if (stream.Length > 16 * 1024)
                 stream.Seek(-16 * 1024, SeekOrigin.End);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            if (stream.Position > 0)
-                reader.ReadLine();
-            return reader.ReadToEnd();
+            bool partialLine = stream.Position > 0;
+            byte[] bytes = new byte[16 * 1024];
+            int count = stream.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
+            ReadOnlySpan<byte> tail = bytes.AsSpan(0, count);
+            if (partialLine)
+            {
+                int end = tail.IndexOf((byte)'\n');
+                tail = end < 0 ? [] : tail[(end + 1)..];
+            }
+            return Encoding.UTF8.GetString(tail).TrimStart('\uFEFF');
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -372,14 +473,14 @@ internal sealed class AirPlayReceiver
             ? new ReceiverVideoFrame(generation, pixels) : null;
     }
 
-    public Task SendMediaCommandAsync(MediaCommand command) => Task.Run(() =>
+    public Task SendMediaCommandAsync(MediaCommand command) => _mediaCommands.RunAsync(() =>
     {
         int result = NativeReceiver.MediaCommand((int)command);
         if (result != 0)
             throw new Win32Exception(result, "无法发送播放指令，请在设备上操作。");
     });
 
-    public Task ControlMediaAsync(ReceiverMediaState state, MediaCommand command, long value = 0) => Task.Run(() =>
+    public Task ControlMediaAsync(ReceiverMediaState state, MediaCommand command, long value = 0) => _mediaCommands.RunAsync(() =>
     {
         int result = NativeReceiver.MediaControl(state.ControlSession, state.ContentRevision, (int)command, value);
         if (result != 0) throw new Win32Exception(result);
@@ -400,11 +501,30 @@ internal sealed class AirPlayReceiver
     }
 
     // Shutdown can wait for GStreamer and a Win32 message pump. Keep the UI thread available.
-    public Task StopAsync() => Task.Run(() =>
+    public Task StopAsync()
     {
-        int result = NativeReceiver.Stop();
-        if (result != 0)
-            throw new Win32Exception(result, "无法停止接收，请重试。");
-        _stateLock.Dispose();
-    });
+        lock (_stopLock)
+        {
+            if (_stopTask is not null) return _stopTask;
+            _mediaCommands.Suspend();
+            return _stopTask = Task.Run(() =>
+            {
+                try
+                {
+                    int result = NativeReceiver.Stop();
+                    if (result != 0) throw new Win32Exception(result, "无法停止接收，请重试。");
+                    _stateLock.Dispose();
+                }
+                catch
+                {
+                    lock (_stopLock)
+                    {
+                        _mediaCommands.Resume();
+                        _stopTask = null;
+                    }
+                    throw;
+                }
+            });
+        }
+    }
 }

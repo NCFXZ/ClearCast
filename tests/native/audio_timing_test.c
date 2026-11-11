@@ -9,6 +9,8 @@ void clearcast_media_audio_activity_publish(uint64_t epoch, double energy, doubl
 void clearcast_media_audio_activity_beat(uint64_t epoch, double strength, uint64_t age) {}
 void clearcast_media_audio_activity_invalidate(uint64_t epoch) {}
 void clearcast_media_audio_activity_boundary(void) {}
+void clearcast_media_audio_pipeline(GstElement* pipeline, uint64_t epoch) {}
+gboolean clearcast_media_input_cancelled(void) { return FALSE; }
 
 static gint rendered;
 static GstClockTime rendered_at;
@@ -85,6 +87,42 @@ static void run_case(GstSample* sample, gboolean scheduled) {
     gst_object_unref(sink); gst_object_unref(test_clock); logger_destroy(log);
 }
 
+static void pipeline_finalized(gpointer data, GObject* object) {
+    g_atomic_int_inc((gint*)data);
+}
+
+static void inactive_renderer_teardown(void) {
+    bool audio_sync = true, video_sync = true;
+    logger_t* log = logger_init();
+    logger_set_level(log, LOGGER_ERR);
+    check(audio_renderer_init(log, "fakesink async=false", &audio_sync, &video_sync, ""),
+        "all audio formats initialize for inactive teardown regression");
+    GstElement* held[NFORMATS] = {0};
+    gint finalized = 0;
+    for (int i = 0; i < NFORMATS; ++i) {
+        if (!renderer_type[i]) continue;
+        held[i] = gst_object_ref(renderer_type[i]->pipeline);
+        g_object_weak_ref(G_OBJECT(held[i]), pipeline_finalized, &finalized);
+        check(gst_element_set_state(held[i], GST_STATE_READY) != GST_STATE_CHANGE_FAILURE,
+            "an inactive codec pipeline can reach READY before receiver shutdown");
+    }
+    check(renderer == NULL, "no current codec is selected during inactive teardown");
+    audio_renderer_destroy();
+    for (int i = 0; i < NFORMATS; ++i) {
+        if (!held[i]) continue;
+        GstState current, pending;
+        gst_element_get_state(held[i], &current, &pending, 0);
+        check(current == GST_STATE_NULL && pending == GST_STATE_VOID_PENDING,
+            "receiver destruction stops every inactive codec before releasing it");
+        check(renderer_type[i] == NULL, "destroy clears each codec slot");
+        // Keep a failing regression from itself disposing a non-NULL pipeline.
+        gst_element_set_state(held[i], GST_STATE_NULL);
+        gst_object_unref(held[i]);
+    }
+    check(finalized == NFORMATS, "destroy releases every codec pipeline without retained references");
+    logger_destroy(log);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     gchar* plugins = g_build_filename(argv[1], "lib", "gstreamer-1.0", NULL);
@@ -96,6 +134,7 @@ int main(int argc, char** argv) {
     g_free(plugins);
     GstSample* sample = encode_alac();
     if (sample) { run_case(sample, FALSE); run_case(sample, TRUE); gst_sample_unref(sample); }
+    inactive_renderer_teardown();
     g_print("%s %d audio timing checks\n", failures ? "FAIL" : "PASS", checks);
     return failures ? 1 : 0;
 }

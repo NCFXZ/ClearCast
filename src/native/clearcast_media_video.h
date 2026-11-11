@@ -7,9 +7,11 @@
 #include <mutex>
 #include <gst/video/videooverlay.h>
 #include "clearcast_media_http.h"
+#include "clearcast_bus_backpressure.h"
 std::mutex direct_video_lock;
 std::mutex direct_video_pipeline_lock;
 GstElement* direct_video_pipeline = nullptr;
+unsigned int direct_video_pipeline_generation = 0;
 std::string direct_video_uri;
 std::atomic<bool> direct_video_active(false);
 std::atomic<unsigned int> direct_video_generation(0);
@@ -30,6 +32,9 @@ uint64_t direct_video_session = 0, direct_video_session_counter = 0;
 bool direct_video_seekable = false;
 bool direct_video_live = false;
 int64_t direct_video_seek_start = 0, direct_video_seek_end = 0;
+int64_t direct_video_pending_seek = -1; // nanoseconds; protected by direct_video_lock
+uint64_t direct_video_seek_sequence = 0;
+bool direct_video_seek_in_flight = false;
 
 extern "C" bool clearcast_direct_video_is_active() { return direct_video_active.load(); }
 
@@ -42,8 +47,9 @@ static bool clearcast_direct_video_controls(uint64_t& session, int& controls, in
     return direct_video_active;
 }
 
-static GstElement* clearcast_direct_video_ref() {
+static GstElement* clearcast_direct_video_ref(bool current_generation = false) {
     std::lock_guard<std::mutex> lock(direct_video_lock);
+    if (current_generation && direct_video_pipeline_generation != direct_video_generation) return nullptr;
     return direct_video_pipeline ? GST_ELEMENT(gst_object_ref(direct_video_pipeline)) : nullptr;
 }
 
@@ -62,6 +68,9 @@ static void clearcast_direct_video_dispose() {
         std::lock_guard<std::mutex> lock(direct_video_lock);
         pipeline = direct_video_pipeline;
         direct_video_pipeline = nullptr;
+        direct_video_pending_seek = -1;
+        direct_video_seek_in_flight = false;
+        ++direct_video_seek_sequence;
     }
     if (!pipeline) return;
     gst_element_set_state(pipeline, GST_STATE_NULL);
@@ -92,7 +101,7 @@ static void clearcast_direct_video_clear() {
     }
 }
 
-static GstBusSyncReply clearcast_direct_video_sync(GstBus*, GstMessage* message, gpointer) {
+static GstBusSyncReply clearcast_direct_video_sync(GstBus* bus, GstMessage* message, gpointer) {
     clearcast_video_handle_context(message);
     if (gst_is_video_overlay_prepare_window_handle_message(message)) {
         if (direct_video_window) gst_video_overlay_set_window_handle(
@@ -100,7 +109,7 @@ static GstBusSyncReply clearcast_direct_video_sync(GstBus*, GstMessage* message,
         gst_message_unref(message);
         return GST_BUS_DROP;
     }
-    return GST_BUS_PASS;
+    return clearcast_bus_sync(bus, message, GINT_TO_POINTER(1));
 }
 
 static GstPadProbeReturn clearcast_direct_video_caps(GstPad*, GstPadProbeInfo* info, gpointer generation) {
@@ -153,7 +162,6 @@ static bool clearcast_direct_video_build(const std::string& uri, float position,
     g_object_set(sink, "force-aspect-ratio", TRUE, "enable-navigation-events", FALSE, nullptr);
     gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(direct_video_window));
     bool playing;
-    { std::lock_guard<std::mutex> lock(direct_video_lock); playing = direct_video_playing; }
     g_object_set(pipeline, "uri", uri.c_str(), "video-sink", sink, "audio-sink", audio,
         "volume", direct_video_volume.load(), nullptr);
     clearcast_video_watch_pipeline(pipeline);
@@ -165,6 +173,7 @@ static bool clearcast_direct_video_build(const std::string& uri, float position,
         gst_object_unref(pad);
     }
     GstBus* bus = gst_element_get_bus(pipeline);
+    clearcast_bus_prepare(bus);
     gst_bus_set_sync_handler(bus, clearcast_direct_video_sync, nullptr, nullptr);
     gst_object_unref(bus);
     {
@@ -176,7 +185,11 @@ static bool clearcast_direct_video_build(const std::string& uri, float position,
             return false;
         }
         direct_video_pipeline = pipeline;
+        direct_video_pipeline_generation = generation;
         direct_video_position = static_cast<int64_t>(position * 1000.0);
+        // /rate and desktop controls share the lifecycle mutex with this
+        // build. Apply the latest intent, never a value captured before setup.
+        playing = direct_video_playing;
     }
     mirror_active = true;
     set_stats_sink(sink);
@@ -216,6 +229,13 @@ extern "C" void clearcast_direct_video_play(const char* uri, float position) {
     direct_video_playing = true;
     direct_video_active = true;
     direct_video_session = (uint64_t(1) << 63) | ++direct_video_session_counter;
+    direct_video_width = direct_video_height = 0;
+    direct_video_position = static_cast<int64_t>(position * 1000.0);
+    direct_video_duration = 0;
+    direct_video_seek_start = direct_video_seek_end = 0;
+    direct_video_pending_seek = -1;
+    direct_video_seek_in_flight = false;
+    ++direct_video_seek_sequence;
     direct_video_seekable = false;
     direct_video_live = false;
     ++direct_video_generation;
@@ -233,38 +253,83 @@ extern "C" void clearcast_direct_video_stop() {
 
 extern "C" void clearcast_direct_video_rate(float rate) {
     if (!std::isfinite(rate) || (rate != 0.0f && rate != 1.0f)) return;
+    std::lock_guard<std::mutex> lifecycle(direct_video_pipeline_lock);
+    GstElement* pipeline = nullptr;
     {
         std::lock_guard<std::mutex> lock(direct_video_lock);
+        if (!direct_video_active || direct_video_stop_pending) return;
         direct_video_playing = rate != 0;
+        if (direct_video_pipeline && direct_video_pipeline_generation == direct_video_generation)
+            pipeline = GST_ELEMENT(gst_object_ref(direct_video_pipeline));
     }
-    GstElement* pipeline = clearcast_direct_video_ref();
+    // Safe numeric-only diagnostics distinguish actual sender pause/resume
+    // requests from receiver startup without recording media/session data.
+    write_diagnostic("direct-video rate=%d pipeline=%d", rate != 0 ? 1 : 0, pipeline ? 1 : 0);
     if (pipeline) {
         gst_element_set_state(pipeline, rate ? GST_STATE_PLAYING : GST_STATE_PAUSED);
         gst_object_unref(pipeline);
     }
 }
 
+// Callers hold the lifecycle mutex. The sequence revokes an older poll's
+// completion observation when a newer seek has already replaced it.
+static bool clearcast_direct_video_seek_to(GstElement* pipeline, unsigned int generation, gint64 target, GstSeekFlags flags) {
+    uint64_t sequence;
+    {
+        std::lock_guard<std::mutex> lock(direct_video_lock);
+        if (!direct_video_active || generation != direct_video_generation || pipeline != direct_video_pipeline) return false;
+        sequence = ++direct_video_seek_sequence;
+        direct_video_pending_seek = -1;
+        direct_video_seek_in_flight = true;
+    }
+    bool success = gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target);
+    {
+        std::lock_guard<std::mutex> lock(direct_video_lock);
+        if (generation == direct_video_generation && sequence == direct_video_seek_sequence) {
+            direct_video_pending_seek = success ? target : -1;
+            direct_video_seek_in_flight = false;
+        }
+    }
+    return success;
+}
+
 extern "C" void clearcast_direct_video_seek(float position) {
     if (!std::isfinite(position) || position < 0 || position > 7 * 86400) return;
-    GstElement* pipeline = clearcast_direct_video_ref();
-    if (pipeline) {
-        gst_element_seek_simple(pipeline, GST_FORMAT_TIME, static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
-            static_cast<gint64>(position * GST_SECOND));
-        gst_object_unref(pipeline);
-    }
+    std::lock_guard<std::mutex> lifecycle(direct_video_pipeline_lock);
+    unsigned int generation = direct_video_generation;
+    GstElement* pipeline = clearcast_direct_video_ref(true);
+    if (!pipeline) return;
+    clearcast_direct_video_seek_to(pipeline, generation, static_cast<gint64>(position * GST_SECOND),
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE));
+    gst_object_unref(pipeline);
 }
 
 extern "C" void clearcast_direct_video_info(playback_info_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
-    bool playing;
+    bool active, playing;
     int64_t position, duration;
-    bool active = clearcast_direct_video_snapshot(playing, position, duration);
+    GstElement* pipeline = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(direct_video_lock);
+        active = direct_video_active; playing = direct_video_playing;
+        position = direct_video_position; duration = direct_video_duration;
+        if (active && direct_video_width > 0 && direct_video_pipeline &&
+            direct_video_pipeline_generation == direct_video_generation)
+            pipeline = GST_ELEMENT(gst_object_ref(direct_video_pipeline));
+    }
+    GstState state = GST_STATE_NULL;
+    bool ready = false;
+    if (pipeline) {
+        ready = gst_element_get_state(pipeline, &state, nullptr, 0) != GST_STATE_CHANGE_FAILURE && state >= GST_STATE_PAUSED;
+        gst_object_unref(pipeline);
+    }
     result->duration = active ? duration / 1000.0 : -1.0;
     result->position = active ? position / 1000.0 : -1.0;
     result->seek_duration = result->duration;
-    result->rate = playing ? 1.0f : 0.0f;
-    result->ready_to_play = active && direct_video_width > 0;
+    result->ready_to_play = ready;
+    result->rate = result->ready_to_play && playing && state == GST_STATE_PLAYING ? 1.0f : 0.0f;
+    result->playback_buffer_empty = active && !result->ready_to_play;
     result->playback_likely_to_keep_up = result->ready_to_play;
     result->playback_buffer_full = result->ready_to_play;
 }
@@ -287,6 +352,9 @@ static bool clearcast_direct_video_set_decoder(int decoder) {
     direct_video_decoder_pending = decoder;
     direct_video_start_position = static_cast<float>(direct_video_position / 1000.0);
     direct_video_start_pending = true;
+    direct_video_pending_seek = -1;
+    direct_video_seek_in_flight = false;
+    ++direct_video_seek_sequence;
     ++direct_video_generation;
     return true;
 }
@@ -356,7 +424,10 @@ static void clearcast_direct_video_poll() {
     if (!pipeline) return;
     GstBus* bus = gst_element_get_bus(pipeline);
     bool ended = false, failed = false;
-    while (GstMessage* message = gst_bus_pop(bus)) {
+    for (int count = 0; count < 32; ++count) {
+        GstMessage* message = gst_bus_pop(bus);
+        if (!message) break;
+        clearcast_bus_popped(bus, message);
         if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) ended = true;
         if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) { ended = failed = true; write_diagnostic("direct-video failed stage=playback"); }
         if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ASYNC_DONE && position > 0) {
@@ -368,30 +439,42 @@ static void clearcast_direct_video_poll() {
         gst_message_unref(message);
     }
     gst_object_unref(bus);
+    uint64_t seek_sequence; bool seek_in_flight;
+    { std::lock_guard<std::mutex> lock(direct_video_lock); seek_sequence = direct_video_seek_sequence; seek_in_flight = direct_video_seek_in_flight; }
+    const GstStateChangeReturn seek_state = gst_element_get_state(pipeline, nullptr, nullptr, 0);
     gint64 current = 0, duration = 0;
-    gst_element_query_position(pipeline, GST_FORMAT_TIME, &current);
-    gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration);
+    const bool positioned = gst_element_query_position(pipeline, GST_FORMAT_TIME, &current);
+    const bool duration_available = gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration);
     GstQuery* seeking = gst_query_new_seeking(GST_FORMAT_TIME);
     gboolean seekable = FALSE; gint64 seek_start = 0, seek_end = 0;
-    if (gst_element_query(pipeline, seeking)) gst_query_parse_seeking(seeking, nullptr, &seekable, &seek_start, &seek_end);
+    const bool range_available = gst_element_query(pipeline, seeking);
+    if (range_available) gst_query_parse_seeking(seeking, nullptr, &seekable, &seek_start, &seek_end);
     gst_query_unref(seeking);
     GstQuery* latency = gst_query_new_latency();
     gboolean live = FALSE;
-    if (gst_element_query(pipeline, latency)) gst_query_parse_latency(latency, &live, nullptr, nullptr);
+    const bool latency_available = gst_element_query(pipeline, latency);
+    if (latency_available) gst_query_parse_latency(latency, &live, nullptr, nullptr);
     gst_query_unref(latency);
     gst_object_unref(pipeline);
     bool decoder_complete = false;
     {
         std::lock_guard<std::mutex> lock(direct_video_lock);
         if (direct_video_generation != generation) return;
-        direct_video_position = std::max<gint64>(0, current / GST_MSECOND);
-        direct_video_duration = std::max<gint64>(0, duration / GST_MSECOND);
-        direct_video_seek_start = std::max<gint64>(0, seek_start / GST_MSECOND);
-        direct_video_seek_end = std::max<gint64>(0, (seek_end >= 0 ? seek_end : duration) / GST_MSECOND);
-        direct_video_seekable = seekable && direct_video_seek_end > direct_video_seek_start;
-        // Audio sinks can contribute live latency to finite files too.
-        // An open-ended timeline or rolling seek window distinguishes live media.
-        direct_video_live = live && (duration <= 0 || seek_start > 0);
+        if (!seek_in_flight && !direct_video_seek_in_flight && seek_sequence == direct_video_seek_sequence) {
+            const bool flushing = direct_video_pending_seek >= 0 && (seek_state == GST_STATE_CHANGE_ASYNC || !positioned);
+            if (seek_state == GST_STATE_CHANGE_SUCCESS && positioned && current >= 0) direct_video_pending_seek = -1;
+            if (positioned && current >= 0) direct_video_position = current / GST_MSECOND;
+            if (duration_available && duration >= 0 && (!flushing || duration > 0)) direct_video_duration = duration / GST_MSECOND;
+            // FLUSH temporarily removes queryable segments. Missing queries
+            // cannot revoke the finite range that authorized the pending seek.
+            if (range_available && (!flushing || seekable)) {
+                direct_video_seek_start = std::max<gint64>(0, seek_start / GST_MSECOND);
+                direct_video_seek_end = std::max<gint64>(0, (seek_end >= 0 ? seek_end / GST_MSECOND : direct_video_duration));
+                direct_video_seekable = seekable && direct_video_seek_end > direct_video_seek_start;
+            }
+            // Audio sinks can contribute live latency to finite files too.
+            if (latency_available) direct_video_live = live && (direct_video_duration <= 0 || direct_video_seek_start > 0);
+        }
         if (direct_video_decoder_pending >= 0 && (direct_video_width > 0 || ended || g_get_monotonic_time() > direct_video_decoder_deadline)) {
             decoder_complete = true;
             if (direct_video_width <= 0) failed = true;
@@ -402,28 +485,62 @@ static void clearcast_direct_video_poll() {
 }
 
 extern "C" __declspec(dllexport) int clearcast_receiver_media_control(uint64_t session, uint64_t content, int command, int64_t value) try {
-    if (!session || command < 1 || command > 4 || value < 0 || value > 7LL * 86400000) return ERROR_INVALID_PARAMETER;
+    if (!session || command < 1 || command > 5 ||
+        (command == 5 ? value != -10000 && value != 10000 : value < 0 || value > 7LL * 86400000)) return ERROR_INVALID_PARAMETER;
     if (!(session & (uint64_t(1) << 63))) {
         if (clearcast_direct_video_is_active()) return ERROR_CANCELLED;
+        if (command == 5) return ERROR_NOT_SUPPORTED;
         if (command == 4) return clearcast_media_seek_audio(session, content, value);
-        {
-            clearcast_media::Lock lock(clearcast_media::state_lock);
-            if (clearcast_media::state.owner != session || clearcast_media::state.content_revision != content) return ERROR_CANCELLED;
-        }
-        return clearcast_receiver_media_command(command);
+        return clearcast_media_command_audio(command, session, content);
     }
     std::lock_guard<std::mutex> lifecycle(direct_video_pipeline_lock);
-    GstElement* pipeline; bool playing;
+    GstElement* pipeline; bool playing; unsigned int generation; gint64 pending, known_duration, known_start, known_end;
     {
         std::lock_guard<std::mutex> lock(direct_video_lock);
         if (!direct_video_active || session != direct_video_session || content != session) return ERROR_CANCELLED;
-        if (!direct_video_pipeline || direct_video_decoder_pending >= 0) return ERROR_BUSY;
-        if (command != 1 && command != 4) return ERROR_NOT_SUPPORTED;
+        if (!direct_video_pipeline || direct_video_pipeline_generation != direct_video_generation || direct_video_decoder_pending >= 0) return ERROR_BUSY;
+        if (command != 1 && command != 4 && command != 5) return ERROR_NOT_SUPPORTED;
         if (command == 4 && (!direct_video_seekable || value < direct_video_seek_start || value > direct_video_seek_end)) return ERROR_NOT_SUPPORTED;
+        if (command == 5 && (!direct_video_seekable || direct_video_live)) return ERROR_NOT_SUPPORTED;
         pipeline = GST_ELEMENT(gst_object_ref(direct_video_pipeline)); playing = direct_video_playing;
+        generation = direct_video_generation; pending = direct_video_pending_seek;
+        known_duration = direct_video_duration * GST_MSECOND;
+        known_start = direct_video_seek_start * GST_MSECOND; known_end = direct_video_seek_end * GST_MSECOND;
     }
-    bool success = command == 1 ? gst_element_set_state(pipeline, playing ? GST_STATE_PAUSED : GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE :
-        gst_element_seek_simple(pipeline, GST_FORMAT_TIME, static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT), value * GST_MSECOND);
+    bool success = false;
+    if (command == 1) success = gst_element_set_state(pipeline, playing ? GST_STATE_PAUSED : GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+    else if (command == 4) success = clearcast_direct_video_seek_to(pipeline, generation, value * GST_MSECOND,
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE));
+    else {
+        const GstStateChangeReturn state = gst_element_get_state(pipeline, nullptr, nullptr, 0);
+        gint64 current = 0, duration = 0, start = 0, end = 0;
+        gboolean seekable = FALSE, live = FALSE;
+        const bool positioned = gst_element_query_position(pipeline, GST_FORMAT_TIME, &current);
+        bool finite = gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration) && duration > 0 && duration <= 7LL * 86400 * GST_SECOND;
+        GstQuery* seeking = gst_query_new_seeking(GST_FORMAT_TIME);
+        if (gst_element_query(pipeline, seeking)) gst_query_parse_seeking(seeking, nullptr, &seekable, &start, &end);
+        gst_query_unref(seeking);
+        GstQuery* latency = gst_query_new_latency();
+        if (gst_element_query(pipeline, latency)) gst_query_parse_latency(latency, &live, nullptr, nullptr);
+        gst_query_unref(latency);
+        const bool continuing = pending >= 0 && (state == GST_STATE_CHANGE_ASYNC || !positioned) &&
+            known_duration > 0 && known_duration <= 7LL * 86400 * GST_SECOND && known_start >= 0 && known_end > known_start && known_end <= known_duration;
+        if (continuing) {
+            if (!finite) { duration = known_duration; finite = true; }
+            if (!seekable || start < 0 || end <= start) { start = known_start; end = known_end; seekable = TRUE; }
+        }
+        end = end >= 0 ? std::min(end, duration) : duration;
+        if (state != GST_STATE_CHANGE_FAILURE && ((positioned && current >= 0) || continuing) && finite && seekable && start >= 0 && end > start && !(live && start > 0)) {
+            // During an unfinished flushing seek, POSITION can still describe
+            // the old segment. Repeated clicks accumulate from accepted intent.
+            // Once preroll completes, use the live query again, including time
+            // played since the previous seek; no stale anchor survives playback.
+            const gint64 baseline = std::max(start, std::min(end, continuing ? pending : current));
+            const gint64 target = std::max(start, std::min(end, baseline + value * GST_MSECOND));
+            success = clearcast_direct_video_seek_to(pipeline, generation, target,
+                static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE));
+        }
+    }
     gst_object_unref(pipeline);
     if (!success) return ERROR_NOT_SUPPORTED;
     std::lock_guard<std::mutex> lock(direct_video_lock);

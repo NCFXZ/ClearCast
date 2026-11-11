@@ -354,6 +354,71 @@ def read_error_preserves_identity():
     return {'locked_pairing_file_fails_without_identity_replacement':True}
 
 
+def pairing_registry_bounds():
+    receiver.stop()
+    clients = receiver.state/'clients.txt'
+    saved = clients.read_bytes()
+    identity = hashlib.sha256((receiver.state/'receiver.pem').read_bytes()).hexdigest()
+    max_bytes, max_clients = 16*1024*1024, 4096
+    def digest(path):
+        with path.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+    def check_preserved(expected, size):
+        assert clients.stat().st_size == size and digest(clients) == expected
+        assert hashlib.sha256((receiver.state/'receiver.pem').read_bytes()).hexdigest() == identity
+    try:
+        # Sparse oversized state must fail closed before renewing the identity.
+        with clients.open('wb') as stream:
+            stream.write(saved)
+            stream.seek(max_bytes)
+            stream.write(b'\n')
+        before = digest(clients)
+        receiver.start(expect_error=223)
+        receiver.stop()
+        check_preserved(before, max_bytes+1)
+
+        # Exactly the byte limit remains readable. Metadata changes at capacity
+        # cannot grow or truncate the existing history or revoke its saved key.
+        with clients.open('r+b') as stream:
+            stream.truncate(max_bytes)
+        before = digest(clients)
+        receiver.start()
+        with connect() as sock:
+            verify_pairing(sock, private, server_ed)
+            metadata = plistlib.dumps({'deviceID':'capacity', 'model':'iPhone',
+                'name':'changed at capacity', 'eiv':b'', 'ekey':b''}, fmt=plistlib.FMT_BINARY)
+            request(sock, '/metadata-test', metadata, method='SETUP',
+                content_type='application/x-apple-binary-plist', expected=400)
+        receiver.stop()
+        check_preserved(before, max_bytes)
+
+        known = base64.b64encode(raw_public(private.public_key()))
+        synthetic = [base64.b64encode(index.to_bytes(32, 'big'))
+                     for index in range(1, max_clients+1)]
+        assert known not in synthetic
+        clients.write_bytes(known+b'\n'+b'\n'.join(synthetic)+b'\n')
+        before, size = digest(clients), clients.stat().st_size
+        receiver.start(expect_error=223)
+        receiver.stop()
+        check_preserved(before, size)
+
+        clients.write_bytes(known+b'\n'+b'\n'.join(synthetic[:-1])+b'\n')
+        before, size = digest(clients), clients.stat().st_size
+        receiver.start()
+        with connect() as sock:
+            verify_pairing(sock, private, server_ed)
+        receiver.stop()
+        check_preserved(before, size)
+        return {'maximum_file_bytes':max_bytes, 'maximum_distinct_clients':max_clients,
+            'oversized_state_rejected_without_identity_change':True,
+            'exact_limits_preserve_saved_pairing':True, 'metadata_append_at_capacity_blocked':True}
+    finally:
+        receiver.stop()
+        clients.write_bytes(saved)
+        receiver.start()
+        health()
+
+
 try:
     if not args.lifecycle_only:
         run('invalid_native_arguments',invalid_abi)
@@ -373,6 +438,7 @@ try:
     run('restart_and_pending_request_shutdown',lifecycle)
     run('rapid_start_stop_and_idempotent_stop',rapid_start_stop)
     run('pairing_read_error_preserves_identity',read_error_preserves_identity)
+    run('pairing_registry_capacity_preserves_identity',pairing_registry_bounds)
 finally:
     receiver.close()
     results['seconds']=round(time.monotonic()-started,3)

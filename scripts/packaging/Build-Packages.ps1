@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.2.1.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.2.2.0',
     [ValidateSet('appx', 'msix')] [string] $StoreFormat = 'appx',
     [switch] $AlsoBuildMsix,
     [switch] $ValidateOnly,
@@ -45,7 +45,8 @@ foreach ($source in @($publish, $storePublish, $compliance)) {
 $files = 'ClearCast.exe', 'ClearCast.dll', 'Assets\ClearCast.png', 'Assets\ClearCast.ico',
     'LICENSE', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md', 'receiver\clearcast_receiver.dll',
     'receiver\gst-plugin-scanner.exe',
-    'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json'
+    'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json',
+    'receiver\gstreamer-http-security-manifest.json', 'receiver\LICENSE-GStreamerHttpSecurity.txt'
 foreach ($inputFiles in @(
     @{ Folder = $publish; Files = $files + 'ClearCast.pri' },
     @{ Folder = $storePublish; Files = $files + 'resources.pri' },
@@ -121,14 +122,24 @@ if (-not (Test-Path -LiteralPath $parserNotice)) {
     throw 'The distribution notices must include the exact rebuilt GStreamer parser source-build.json.'
 }
 $noticeManifest = Get-Content -LiteralPath $parserNotice -Raw | ConvertFrom-Json
-$parserPaths = @('libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll')
+$parserPaths = @('libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll', 'libgstadaptivedemux-1.0-0.dll')
 $sourceHash = '4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1'
+$parserPatchRelative = 'src/native/patches/gstreamer-adaptive-demux-time.patch'
+$parserPatchHash = (Get-FileHash -LiteralPath (Join-Path $repository $parserPatchRelative)).Hash
+$parserNoticeDirectory = Split-Path -Parent $parserNotice
+if (-not (Test-Path -LiteralPath (Join-Path $parserNoticeDirectory 'COPYING') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $parserNoticeDirectory 'gstreamer-adaptive-demux-time.patch') -PathType Leaf) -or
+    (Get-FileHash -LiteralPath (Join-Path $parserNoticeDirectory 'gstreamer-adaptive-demux-time.patch')).Hash -ne $parserPatchHash) {
+    throw 'The parser/adaptive distribution license or controlled patch is missing or changed.'
+}
 foreach ($folder in @($publish, $storePublish)) {
     $receiver = Join-Path $folder 'receiver'
     $manifest = Get-Content -LiteralPath (Join-Path $receiver 'gstreamer-security-manifest.json') -Raw | ConvertFrom-Json
     foreach ($metadata in @($manifest, $noticeManifest)) {
         if ($metadata.schemaVersion -ne 1 -or $metadata.version -ne '1.28.9' -or
-            $metadata.sourceSha256 -ne $sourceHash -or $metadata.files.Count -ne 2 -or
+            $metadata.sourceSha256 -ne $sourceHash -or $metadata.files.Count -ne 3 -or
+            $metadata.sourceUrl -ne 'https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.9.tar.xz' -or
+            $metadata.sourcePatch.relativePath -ne $parserPatchRelative -or $metadata.sourcePatch.sha256 -ne $parserPatchHash -or
             @(Compare-Object $parserPaths @($metadata.files.relativePath)).Count -ne 0) {
             throw 'The package or notice parser manifest does not match the pinned GStreamer 1.28.9 source/components.'
         }
@@ -140,6 +151,45 @@ foreach ($folder in @($publish, $storePublish)) {
             (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $file.sha256) {
             throw "The published parser file or distribution notice hash does not match: $path"
         }
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $receiver 'LICENSE-GStreamerSecurity.txt')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $parserNoticeDirectory 'COPYING')).Hash) {
+        throw 'The parser/adaptive runtime and distribution license differ.'
+    }
+}
+$httpNoticeDirectory = Join-Path $compliance 'licenses\gst-plugins-good-1.28.9'
+$httpNoticePath = Join-Path $httpNoticeDirectory 'source-build.json'
+$httpPatchRelative = 'src/native/patches/gstreamer-soup-destination.patch'
+$httpSourceHash = 'E518CD97483706A252E95E60312A22D23DEC6F5E7673AF6F5BDE719C3A9CA7F4'
+$httpSourceUrl = 'https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.9.tar.xz'
+$httpPatchHash = (Get-FileHash -LiteralPath (Join-Path $repository $httpPatchRelative)).Hash
+foreach ($required in @($httpNoticePath, (Join-Path $httpNoticeDirectory 'COPYING'),
+    (Join-Path $httpNoticeDirectory 'gstreamer-soup-destination.patch'))) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw 'Missing controlled HTTP source distribution notice.' }
+}
+$httpNotice = Get-Content -LiteralPath $httpNoticePath -Raw | ConvertFrom-Json
+if ((Get-FileHash -LiteralPath (Join-Path $httpNoticeDirectory 'gstreamer-soup-destination.patch')).Hash -ne $httpPatchHash) {
+    throw 'The HTTP source distribution patch hash does not match the controlled source patch.'
+}
+foreach ($folder in @($publish, $storePublish)) {
+    $receiver = Join-Path $folder 'receiver'
+    $httpManifest = Get-Content -LiteralPath (Join-Path $receiver 'gstreamer-http-security-manifest.json') -Raw | ConvertFrom-Json
+    foreach ($metadata in @($httpManifest, $httpNotice)) {
+        if ($metadata.schemaVersion -ne 1 -or $metadata.version -ne '1.28.9' -or
+            $metadata.sourceSha256 -ne $httpSourceHash -or $metadata.sourceUrl -cne $httpSourceUrl -or
+            @($metadata.files).Count -ne 1 -or $metadata.files[0].relativePath -cne 'lib/gstreamer-1.0/libgstsoup.dll' -or
+            $metadata.files[0].sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+            $metadata.sourcePatch.relativePath -cne $httpPatchRelative -or $metadata.sourcePatch.sha256 -ne $httpPatchHash) {
+            throw 'The HTTP source manifest or notice does not match the pinned source, file and controlled patch.'
+        }
+    }
+    if ($httpManifest.files[0].sha256 -ne $httpNotice.files[0].sha256 -or
+        (Get-FileHash -LiteralPath (Join-Path $receiver $httpManifest.files[0].relativePath)).Hash -ne $httpManifest.files[0].sha256) {
+        throw 'The controlled HTTP source binary or notice hash does not match.'
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $receiver 'LICENSE-GStreamerHttpSecurity.txt')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $httpNoticeDirectory 'COPYING')).Hash) {
+        throw 'The controlled HTTP source license does not match its distribution notice.'
     }
 }
 if (-not $PreflightFixture) {
@@ -162,12 +212,30 @@ if (-not $PreflightFixture) {
     }
     foreach ($source in @($coverage.additionalSources.PSObject.Properties)) {
         $record = $source.Value
-        if ($source.Name -notmatch '^msys2/mingw-w64-[A-Za-z0-9+_.~-]+\.src\.tar\.zst$' -or
-            $record.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or $record.pkgbuildSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+        $msysSource = $source.Name -cmatch '^msys2/mingw-w64-[A-Za-z0-9+_.~-]+\.src\.tar\.zst$' -and
+            $record.pkgbuildSha256 -match '^[A-Fa-f0-9]{64}$'
+        $httpSource = $source.Name -ceq 'gstreamer/gst-plugins-good-1.28.9.tar.xz' -and $record.sha256 -eq $httpSourceHash
+        $parserSource = $source.Name -ceq 'gstreamer/gst-plugins-bad-1.28.9.tar.xz' -and $record.sha256 -eq $sourceHash
+        if ((-not $msysSource -and -not $httpSource -and -not $parserSource) -or
+            $record.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
             [IO.Path]::GetFileName($record.path) -ne [IO.Path]::GetFileName($source.Name) -or
             -not (Test-Path -LiteralPath $record.path -PathType Leaf) -or (Get-FileHash -LiteralPath $record.path).Hash -ne $record.sha256) {
             throw 'An exact additional source archive is missing or does not match source coverage.'
         }
+    }
+    if ($coverage.httpSource.sha256 -ne $httpSourceHash -or
+        $coverage.httpSource.member -cne 'gstreamer/gst-plugins-good-1.28.9.tar.xz' -or
+        ($coverage.httpSource.location -notin @('baseline', 'additional'))) {
+        throw 'Source coverage does not bind the controlled HTTP source archive.'
+    }
+    if ($coverage.httpSource.location -eq 'additional' -and
+        -not $coverage.additionalSources.'gstreamer/gst-plugins-good-1.28.9.tar.xz') {
+        throw 'The controlled HTTP corresponding source archive is missing from source coverage.'
+    }
+    if ($coverage.parserSource.member -cne 'gstreamer/gst-plugins-bad-1.28.9.tar.xz' -or
+        $coverage.parserSource.sha256 -ne $sourceHash -or $coverage.parserSource.location -notin @('baseline','additional') -or
+        ($coverage.parserSource.location -eq 'additional' -and -not $coverage.additionalSources.'gstreamer/gst-plugins-bad-1.28.9.tar.xz')) {
+        throw 'Source coverage does not bind the controlled parser/adaptive source archive.'
     }
     foreach ($group in $packageGroups) {
         if ($group.Name -notmatch '^mingw-w64-ucrt-x86_64-[A-Za-z0-9+_.-]+$') { throw 'Invalid runtime package identity.' }
@@ -242,27 +310,23 @@ try {
     $manifest = [xml] [IO.File]::ReadAllText((Join-Path $templates 'AppxManifest.xml'))
     $manifest.Package.Identity.Version = $Version
     $manifest.Save((Join-Path $store 'AppxManifest.xml'))
-    Add-Type -AssemblyName System.Drawing
-    $image = [Drawing.Image]::FromFile((Join-Path $store 'Assets\ClearCast.png'))
-    try {
-        foreach ($logo in @(
-            @{ Name = 'StoreLogo.png'; Size = 50 },
-            @{ Name = 'Square44x44Logo.png'; Size = 44 },
-            @{ Name = 'Square150x150Logo.png'; Size = 150 }
-        )) {
-            $bitmap = [Drawing.Bitmap]::new($logo.Size, $logo.Size)
-            $graphics = [Drawing.Graphics]::FromImage($bitmap)
-            try {
-                $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-                $graphics.DrawImage($image, 0, 0, $logo.Size, $logo.Size)
-                $bitmap.Save((Join-Path $store "Assets\$($logo.Name)"), [Drawing.Imaging.ImageFormat]::Png)
-            } finally {
-                $graphics.Dispose()
-                $bitmap.Dispose()
+    # Qualified Shell assets are project content and already indexed by the
+    # Store resources.pri. Do not add logos after that index was generated.
+    foreach ($logo in 'StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png',
+        'StoreLogo.scale-200.png', 'StoreLogo.scale-400.png',
+        'Square44x44Logo.scale-200.png', 'Square44x44Logo.scale-400.png',
+        'Square150x150Logo.scale-200.png', 'Square150x150Logo.scale-400.png') {
+        if (-not (Test-Path -LiteralPath (Join-Path $store "Assets\$logo") -PathType Leaf)) {
+            throw "Missing indexed Shell icon asset: $logo. Regenerate app icons and republish the Store app."
+        }
+    }
+    foreach ($size in 16,20,24,30,32,36,40,48,60,64,72,80,96,256) {
+        foreach ($suffix in '', '_altform-unplated', '_altform-lightunplated') {
+            $logo = "Square44x44Logo.targetsize-$size$suffix.png"
+            if (-not (Test-Path -LiteralPath (Join-Path $store "Assets\$logo") -PathType Leaf)) {
+                throw "Missing indexed Shell icon asset: $logo. Regenerate app icons and republish the Store app."
             }
         }
-    } finally {
-        $image.Dispose()
     }
     $storePackage = Join-Path $stage $storeName
     $makeAppxLog = Join-Path $stage 'makeappx.log'

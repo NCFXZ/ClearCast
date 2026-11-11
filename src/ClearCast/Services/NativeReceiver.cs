@@ -55,6 +55,7 @@ internal static class NativeReceiver
         if (!NativeLibrary.TryGetExport(module, "clearcast_receiver_start_v2", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_get_name", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_stop", out _) ||
+            !NativeLibrary.TryGetExport(module, "clearcast_receiver_network_current", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_set_decoder", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_event", out _) ||
             !NativeLibrary.TryGetExport(module, "clearcast_receiver_read_stats", out _) ||
@@ -88,6 +89,9 @@ internal static class NativeReceiver
 
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_stop", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Stop();
+
+    [DllImport(LibraryName, EntryPoint = "clearcast_receiver_network_current", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NetworkCurrent();
 
     [DllImport(LibraryName, EntryPoint = "clearcast_receiver_set_decoder", ExactSpelling = true, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int SetDecoder(int decoder);

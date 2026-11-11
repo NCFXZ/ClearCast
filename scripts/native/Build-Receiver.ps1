@@ -5,6 +5,7 @@ param(
     [string] $BuildDirectory,
     [string] $OutputDirectory,
     [string] $SecurityRuntimeDirectory,
+    [string] $HttpSecurityDirectory,
     [string] $LibplistSecurityDirectory,
     [string] $OpenSslSecurityDirectory
 )
@@ -21,6 +22,7 @@ if (-not $Ucrt64Directory) { $Ucrt64Directory = Join-Path $runtime 'msys64\ucrt6
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $runtime 'uxplay-receiver-build' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $runtime 'receiver' }
 if (-not $SecurityRuntimeDirectory) { $SecurityRuntimeDirectory = Join-Path $runtime 'gstreamer-security' }
+if (-not $HttpSecurityDirectory) { $HttpSecurityDirectory = Join-Path $runtime 'gstreamer-http-security' }
 if (-not $LibplistSecurityDirectory) { $LibplistSecurityDirectory = Join-Path $runtime 'libplist-security' }
 if (-not $OpenSslSecurityDirectory) { $OpenSslSecurityDirectory = Join-Path $runtime 'openssl-security' }
 
@@ -78,12 +80,17 @@ if (-not (Test-Path -LiteralPath $securityManifestPath)) {
     throw 'Build the pinned parser security components with scripts\native\Build-GStreamerSecurity.ps1 first.'
 }
 $securityManifest = Get-Content -LiteralPath $securityManifestPath -Raw | ConvertFrom-Json
+$parserPatchRelative = 'src/native/patches/gstreamer-adaptive-demux-time.patch'
 if ($securityManifest.schemaVersion -ne 1 -or $securityManifest.version -ne '1.28.9' -or
-    $securityManifest.sourceSha256 -ne '4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1') {
+    $securityManifest.sourceSha256 -ne '4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1' -or
+    $securityManifest.sourceUrl -ne 'https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.9.tar.xz' -or
+    $securityManifest.sourcePatch.relativePath -ne $parserPatchRelative -or
+    $securityManifest.sourcePatch.sha256 -ne (Get-FileHash -LiteralPath (Join-Path $repositoryRoot $parserPatchRelative)).Hash -or
+    @($securityManifest.files).Count -ne 3) {
     throw 'The parser security component manifest is incompatible.'
 }
 $securityOverrides = @{}
-foreach ($relativePath in 'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll') {
+foreach ($relativePath in 'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll', 'libgstadaptivedemux-1.0-0.dll') {
     $records = @($securityManifest.files | Where-Object relativePath -eq $relativePath)
     $file = Join-Path $securityRuntime $relativePath
     if ($records.Count -ne 1 -or -not (Test-Path -LiteralPath $file) -or
@@ -92,6 +99,28 @@ foreach ($relativePath in 'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/lib
     }
     $securityOverrides[[IO.Path]::GetFileName($file)] = $file
 }
+$httpSecurity = [IO.Path]::GetFullPath($HttpSecurityDirectory)
+$httpManifestPath = Join-Path $httpSecurity 'manifest.json'
+if (-not (Test-Path -LiteralPath $httpManifestPath -PathType Leaf)) {
+    throw 'Build the controlled HTTP source with scripts\native\Build-GStreamerHttpSecurity.ps1 first.'
+}
+$httpManifest = Get-Content -LiteralPath $httpManifestPath -Raw | ConvertFrom-Json
+$httpPatchPath = 'src/native/patches/gstreamer-soup-destination.patch'
+if ($httpManifest.schemaVersion -ne 1 -or $httpManifest.version -ne '1.28.9' -or
+    $httpManifest.sourceUrl -ne 'https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.9.tar.xz' -or
+    $httpManifest.sourceSha256 -ne 'E518CD97483706A252E95E60312A22D23DEC6F5E7673AF6F5BDE719C3A9CA7F4' -or
+    $httpManifest.sourcePatch.relativePath -ne $httpPatchPath -or
+    $httpManifest.sourcePatch.sha256 -ne (Get-FileHash -LiteralPath (Join-Path $repositoryRoot $httpPatchPath) -Algorithm SHA256).Hash -or
+    @($httpManifest.files).Count -ne 1 -or
+    $httpManifest.files[0].relativePath -ne 'lib/gstreamer-1.0/libgstsoup.dll') {
+    throw 'The controlled HTTP source manifest does not match the pinned source and patch.'
+}
+$httpPlugin = Resolve-ComponentFile $httpSecurity $httpManifest.files[0].relativePath
+if (-not (Test-Path -LiteralPath $httpPlugin -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $httpPlugin -Algorithm SHA256).Hash -ne $httpManifest.files[0].sha256) {
+    throw 'The controlled HTTP source plugin hash is invalid.'
+}
+$securityOverrides['libgstsoup.dll'] = $httpPlugin
 foreach ($component in $components) {
     foreach ($record in $component.Manifest.files) {
         $securityOverrides[$record.relativePath] = Resolve-ComponentFile $component.Root $record.relativePath
@@ -124,10 +153,20 @@ $patches = @(
     (Join-Path $patchDirectory 'uxplay-pairing-cooldown-feedback.patch'),
     (Join-Path $patchDirectory 'uxplay-audio-activity.patch'),
     (Join-Path $patchDirectory 'uxplay-playback-controls.patch'),
-    (Join-Path $patchDirectory 'uxplay-device-name.patch')
+    (Join-Path $patchDirectory 'uxplay-device-name.patch'),
+    (Join-Path $patchDirectory 'uxplay-backpressure.patch'),
+    (Join-Path $patchDirectory 'uxplay-socket-security.patch'),
+    (Join-Path $patchDirectory 'uxplay-auth-security.patch'),
+    (Join-Path $patchDirectory 'uxplay-input-safety.patch'),
+    (Join-Path $patchDirectory 'uxplay-session-authorization.patch'),
+    (Join-Path $patchDirectory 'uxplay-interface-scope.patch'),
+    (Join-Path $patchDirectory 'uxplay-media-cleanup.patch')
 )
 # Use a fresh source tree when a patch changes.
-$hashes = $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '') +
+$hashes = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash +
+    $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '') +
+    (Get-FileHash -LiteralPath $securityManifestPath -Algorithm SHA256).Hash +
+    (Get-FileHash -LiteralPath $httpManifestPath -Algorithm SHA256).Hash +
     ((Get-FileHash -LiteralPath @($components.ManifestPath)).Hash -join '') +
     ((Get-FileHash -LiteralPath @((Get-ChildItem -LiteralPath $nativeSourceDirectory -Filter '*.h' -File | Sort-Object Name).FullName +
         (Join-Path $nativeSourceDirectory 'CMakeLists.txt'))).Hash -join '')
@@ -152,8 +191,10 @@ if (-not (Test-Path -LiteralPath $configured)) {
     Push-Location -LiteralPath $source
     try {
         foreach ($patch in $patches) {
-            & git apply $patch
+            & git --work-tree=. apply --no-index $patch
             if ($LASTEXITCODE -ne 0) { throw "Could not apply $patch." }
+            & git --work-tree=. apply --no-index --reverse --check $patch
+            if ($LASTEXITCODE -ne 0) { throw "The controlled patch was not applied to the source tree: $patch" }
         }
     } finally {
         Pop-Location
@@ -181,6 +222,7 @@ try {
     $testOptions = @()
     if ($testPython) { $testOptions += "-DPython3_EXECUTABLE=$testPython" }
     & $cmake -S $nativeSourceDirectory -B $binaryDir -G Ninja -DCMAKE_BUILD_TYPE=Release -DNO_MARCH_NATIVE=ON "-DUXPLAY_SOURCE_DIR=$source" `
+        "-DCLEARCAST_TEST_RUNTIME=$([IO.Path]::GetFullPath($OutputDirectory))" `
         "-DLIBPLIST=$plistImportLibrary" `
         "-DOPENSSL_ROOT_DIR=$opensslPrefix" "-DOPENSSL_INCLUDE_DIR=$(Join-Path $opensslPrefix 'include')" `
         "-DOPENSSL_CRYPTO_LIBRARY=$($cryptoLibraries[0].FullName)" "-DOPENSSL_SSL_LIBRARY=$($sslLibraries[0].FullName)" @testOptions
@@ -192,6 +234,7 @@ try {
     $receiverInfo = & $objdump -p $receiver
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the receiver DLL.' }
     foreach ($export in 'clearcast_receiver_start', 'clearcast_receiver_start_v2', 'clearcast_receiver_stop',
+                         'clearcast_receiver_network_current',
                          'clearcast_receiver_get_name',
                          'clearcast_receiver_read_event', 'clearcast_receiver_read_stats', 'clearcast_receiver_read_video_frame',
                          'clearcast_receiver_set_decoder', 'clearcast_receiver_set_video_rotation',
@@ -263,6 +306,8 @@ try {
     Copy-Item -LiteralPath $scanner -Destination $output -Force
     Copy-Item -LiteralPath $securityManifestPath -Destination (Join-Path $output 'gstreamer-security-manifest.json') -Force
     Copy-Item -LiteralPath (Join-Path $securityRuntime 'COPYING') -Destination (Join-Path $output 'LICENSE-GStreamerSecurity.txt') -Force
+    Copy-Item -LiteralPath $httpManifestPath -Destination (Join-Path $output 'gstreamer-http-security-manifest.json') -Force
+    Copy-Item -LiteralPath (Join-Path $httpSecurity 'COPYING') -Destination (Join-Path $output 'LICENSE-GStreamerHttpSecurity.txt') -Force
     $publishedComponents = @($components | ForEach-Object {
         $component = $_
         $publishedFiles = @($component.Manifest.files | Where-Object { $dependencies.ContainsKey($_.relativePath) })

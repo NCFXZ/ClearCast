@@ -276,6 +276,8 @@ static object RunTests(string root)
     MusicMotionTests.Run(Check);
     BeatImpulseTests.Run(Check);
     MediaBeatTests.Run(Check);
+    MediaDiagnosticsTests.Run(Check);
+    BackpressureTests.Run(Check, root);
     ArtworkFlowTests.Run(Check);
     Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":18446744073709551615}"), out var sessionMedia) &&
         sessionMedia.Session == ulong.MaxValue && sessionMedia.Title == media.Title,
@@ -397,7 +399,7 @@ static object RunTests(string root)
     })
         Check((int)reason == abi, "native pairing reason ABI " + reason);
     foreach (DecoderMode decoder in Enum.GetValues<DecoderMode>())
-        foreach (int code in new[] { 50, 10048, 10049, 10051, 1231, 1062, 10013, 9999 })
+        foreach (int code in new[] { 50, 10048, 10049, 10051, 1231, 1062, 10013, 223, 9999 })
         {
             string message = texts.Translate(ReceiverNetwork.GetFailureMessage(code, decoder));
             Check(!string.IsNullOrWhiteSpace(message) && !Regex.IsMatch(message, "[\\p{IsCJKUnifiedIdeographs}]"),

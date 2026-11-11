@@ -1,0 +1,33 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -237,18 +237,6 @@
+     if (length) clearcast_media_retain_peer(peer, length, zone, false);
+ }
+ 
+-static bool clearcast_video_local_playlist(raop_conn_t *conn, const char *method, const char *url) {
+-    static const unsigned char v6loopback[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+-    bool loopback = (conn->remotelen == 4 && conn->remote[0] == 127) ||
+-        (conn->remotelen == 16 && !memcmp(conn->remote, v6loopback, 16));
+-    AcquireSRWLockShared(&conn->raop->media_owner_lock);
+-    bool active = conn->raop->media_owner_peer_len != 0;
+-    ReleaseSRWLockShared(&conn->raop->media_owner_lock);
+-    if (!loopback || !active || strcmp(method, "GET") || !url || url[0] != '/' || strlen(url) > 2048 ||
+-        strstr(url, "..") || !strstr(url, ".m3u8")) return false;
+-    for (const unsigned char *p = (const unsigned char *)url; *p; ++p) if (*p <= 32 || *p >= 127) return false;
+-    return true;
+-}
+ #endif
+ 
+ #include "raop_handlers.h"
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -468,6 +468,9 @@
+         audio_renderer_t *instance = renderer_type[i];
+         if (instance) {
+ #ifdef CLEARCAST_IN_PROCESS
++            // Stop also the inactive formats, which can remain READY after an
++            // error. No pipeline may be released above NULL.
++            if (instance->pipeline) gst_element_set_state(instance->pipeline, GST_STATE_NULL);
+             if (instance->activity_pad) {
+                 if (instance->activity_probe) gst_pad_remove_probe(instance->activity_pad, instance->activity_probe);
+                 gst_object_unref(instance->activity_pad);

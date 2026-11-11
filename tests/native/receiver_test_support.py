@@ -49,9 +49,9 @@ def raw_public(key):
     return key.public_bytes(Encoding.Raw, PublicFormat.Raw)
 
 
-def connect(source='127.0.0.1', timeout=5):
-    return socket.create_connection(('127.0.0.1', 47001), timeout=timeout,
-                                    source_address=(source, 0))
+def connect(source=None, timeout=5, host='127.0.0.1'):
+    source = source or ('127.0.0.1' if host.startswith('127.') else host)
+    return socket.create_connection((host, 47001), timeout=timeout, source_address=(source, 0))
 
 
 def request(sock, path, body=b'', method='POST', content_type=None, expected=200,
@@ -127,9 +127,10 @@ class Receiver:
                 return output
             output.append([a.value for a in args])
 
-    def start(self, expect_error=None):
+    def start(self, expect_error=None, address='127.0.0.1'):
         result = self.dll.clearcast_receiver_start_v2(str(self.state).encode(),
-            b'1920x1080', 30, 1, 0, b'0001', self.hwnd, 0)
+            b'1920x1080', 30, 1, 0, b'0001', self.hwnd,
+            int.from_bytes(socket.inet_aton(address), 'little'))
         assert result == 0, ('start', result)
         self.running = True
         deadline = time.monotonic() + 15

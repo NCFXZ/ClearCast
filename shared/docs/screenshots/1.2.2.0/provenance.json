@@ -1,0 +1,264 @@
+{
+  "applicationVersion": "1.2.2.0",
+  "capture": "Native-display fullscreen captures of the actual WinUI application's owned HWND only; exact DWM visible-frame pixels without desktop capture, resampling or painting.",
+  "content": "Original geometric music artwork, native vector illustration, fictional track/device names, and an original mathematical-gradient video with synthetic silence.",
+  "containsPrivateMedia": false,
+  "captures": [
+    {
+      "file": "en-US-music-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "bb767d1904dd210f79e55b098c093882316d08935471294a4073d409b4c77753",
+      "rgbSha256": "eb9368ff4b716cd19630ef574d42ad3426bbcb084108d69c0d9ab73190891ae7",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-music-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "12b8523c0c3e392c7e0bb632dfdecb77d48dbd386ce64cf30d8845b7504d8896",
+      "rgbSha256": "7138b9d2567fa9070832e225eb6bb84f2ec41838d63e37bbc995cd7dc5121698",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-settings-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "07aac5fbede4ced47910ee9fa614073d5bded439826697016e3df1ad0d8240ff",
+      "rgbSha256": "819daec8a79741050fecead48a872834a00eea775910a4abd57d16cbba721d4e",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-settings-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "32803505bfc74a55969c86e30d22a4e85cea714937838bb8dd4879f1e0741413",
+      "rgbSha256": "4957976cde63bbb567c11f50af94638a0d71b58055f08775f2b40d673386910a",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-video-controls.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "2451b08caaa80100db65c4b7753cb1c5c9a1f6995097b199529c5c490d2503a5",
+      "rgbSha256": "d423eea96cfc734eb9cbfff8be25e7029ca9f3178eb419e5905e94ecbe7972d0",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 32,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "en-US-video-fullscreen.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "97f5a89be3c96954803452d425870947d4304348570e025861f5dd6b1446a995",
+      "rgbSha256": "99004136628580c1ef37293b1dcb2fc283608a8736579e2998f89d4a472db604",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 32,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "en-US-waiting-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "c02ecbc15c6d0f420e1fd6dc997bff8bbee17f09e0758e71471dd7ea828e0aac",
+      "rgbSha256": "8f9c5d48809e0912267e7d219afce8ac9e4942a50ef125f2a5da84d3d39a97aa",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-waiting-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "f39e663c68096c406341d2917d04744b29ba49478ba9b25373732709fc2b73df",
+      "rgbSha256": "8c5fcf6d0039dfb878b25bb67833c00834c6f9ccc731d83424049b6e00765e2c",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-music-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "4769ab63a090efbf27b65a8d9559a7feff94b1728adabd6ea3f690eb04c2b820",
+      "rgbSha256": "049fc92256bd314fb8590abdb5bd6fa7e270ad8916f810c436959766befb337d",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-music-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "d89d18e3dc437ccac06a6a77755628f42ea62ccb909e07d1b95ec1233b4dbab8",
+      "rgbSha256": "395043afc31860ffd5b28e38dbc5726e6b2e9a8c7b363241b8d1edc1da2fe035",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-settings-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "043e3d40cafa345fda1c66d995665018051490df12299940525504c4a6a86fe3",
+      "rgbSha256": "5a97597cadf888d5fa19c692dc593966cf172a2932aaf249c7c454f6b94e11c1",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-settings-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "50b76cab86872516737d619a3e8d8a99e6007bb4e4748a550223ff32ceb0953e",
+      "rgbSha256": "adf264090551f2926ab17f5507f7dc3374c05cfa406f2f2db712ac9a2b537887",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-video-controls.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "6b5356733ceaf9541ecf5dbf8e9dd6f7fe2d7d10650724cb98ab37889ed6005d",
+      "rgbSha256": "f202f432ff11b2f448962ab8764cad894d8d091a617d257adff457534a98a040",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 32,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "zh-CN-video-fullscreen.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "bb707ff81bcacabf0b98fbc6290b812d259e34ebb6a83b3754cf424b9c08a252",
+      "rgbSha256": "e709ebf494bae6174ea5563cf0a4e832438db535acb3d176b7db0e71f703c779",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 1,
+        "top": 32,
+        "bottom": 32
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "zh-CN-waiting-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "60c12bf13f84596b6826f19a0ea288a07307ecf1a337985f51c9b318097d8a42",
+      "rgbSha256": "a784823b23b8dbabbd091229c0ecf1b60028a70d1109bcc75dd89d47ce682c05",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 1,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-waiting-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "0fea22c6b7374f65f3f5cdd4887b7f49ea870d680c09f0394e302761d996a981",
+      "rgbSha256": "13179bbd4bd4dc6f9982e867c7d97e5d5a991f45957c147306fd843004736690",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    }
+  ]
+}

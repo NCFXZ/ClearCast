@@ -1,0 +1,318 @@
+--- a/lib/http_request.c
++++ b/lib/http_request.c
+@@ -32,6 +32,7 @@
+ struct http_request_s {
+     llhttp_t parser;
+     llhttp_settings_t parser_settings;
++    bool event_error;
+     bool is_reverse;  // if true, this is a reverse-response from client
+     const char *method;
+     char *url;
+@@ -290,52 +291,57 @@
+     }
+ }
+ 
++/* Returns zero for incomplete input and (size_t)-1 for malformed input. */
+ static size_t
+ parse_ptth(const char *data, const size_t datalen, size_t *header_len, size_t *body_len)
+ {
+-    *header_len = 0;
+-    *body_len = 0;
+-
+-    //  skip any leading junk (non-printable ASCII) or whitespace in front of next message
+-    size_t junk_offset = 0;
+-    while (junk_offset < datalen && (data[junk_offset] <= 0x20 || data[junk_offset] == 0x7f)) {
+-        junk_offset++;
+-    }
+-
+-    // Adjust parsing frame past the junk
+-    const char *actual_data = data + junk_offset;
+-    size_t actual_datalen = datalen - junk_offset;
+-
+-    const char *header_end = strstr(actual_data, "\r\n\r\n");
+-    if (!header_end) {
+-        return 0; // incomplete headers
+-    }
+-
+-    size_t hl = (header_end - actual_data) + 4;
++    *header_len = *body_len = 0;
++    if (!data || !datalen) return 0;
++    size_t junk = 0;
++    while (junk < datalen && ((unsigned char)data[junk] <= 0x20 || (unsigned char)data[junk] == 0x7f)) ++junk;
++    const char *input = data + junk;
++    const size_t length = datalen - junk;
++    size_t hl = 0;
++    for (size_t i = 0; i + 3 < length; ++i) {
++        if (!memcmp(input + i, "\r\n\r\n", 4)) { hl = i + 4; break; }
++    }
++    if (!hl) return 0;
++    if (memchr(input, '\0', hl)) return (size_t)-1;
++    const char *line_end = memchr(input, '\r', hl);
++    if (!line_end || line_end + 1 >= input + hl || line_end[1] != '\n') return (size_t)-1;
++    size_t first = (size_t)(line_end - input);
++    if (!((first >= 8 && (!memcmp(input, "HTTP/1.0", 8) || !memcmp(input, "HTTP/1.1", 8))) ||
++          (first >= 9 && !memcmp(input, "EVENT/1.0", 9)))) return (size_t)-1;
+     size_t bl = 0;
+-
+-    const char *cl_ptr = NULL;
+-    for (size_t i = 0; i < hl - 15; i++) {
+-        if (strncasecmp(actual_data + i, "Content-Length:", 15) == 0) {
+-            cl_ptr = actual_data + i;
+-            break;
+-        }
+-    }
+-
+-    if (cl_ptr) {
+-        bl = (size_t) strtoul(cl_ptr + 15, NULL, 10);
+-    }
+-
+-    size_t total_msg_len = hl + bl;
+-    if (actual_datalen < total_msg_len) {
+-        return 0; // incomplete body
+-    }
+-    
++    bool has_length = false;
++    const char *line = line_end + 2;
++    while (line < input + hl - 2) {
++        line_end = memchr(line, '\r', (size_t)(input + hl - line));
++        if (!line_end || line_end + 1 >= input + hl || line_end[1] != '\n') return (size_t)-1;
++        if (line_end == line) break;
++        if ((size_t)(line_end - line) >= 15 && !strncasecmp(line, "Content-Length:", 15)) {
++            if (has_length) return (size_t)-1;
++            has_length = true;
++            const char *value = line + 15;
++            while (value < line_end && (*value == ' ' || *value == '\t')) ++value;
++            const char *digits = value;
++            while (value < line_end && *value >= '0' && *value <= '9') {
++                size_t digit = (size_t)(*value++ - '0');
++                if (bl > (MAX_EVENT_DATA - digit) / 10) return (size_t)-1;
++                bl = bl * 10 + digit;
++            }
++            if (value == digits) return (size_t)-1;
++            while (value < line_end && (*value == ' ' || *value == '\t')) ++value;
++            if (value != line_end) return (size_t)-1;
++        }
++        line = line_end + 2;
++    }
++    // Both the retained message and its leading junk share the fixed buffer.
++    if (hl >= MAX_EVENT_DATA - junk || bl >= MAX_EVENT_DATA - junk - hl) return (size_t)-1;
++    if (bl > length - hl) return 0;
+     *header_len = hl;
+     *body_len = bl;
+-
+-    //  (downstream memmove flushes both message + junk)
+-    return total_msg_len + junk_offset;
++    return junk + hl + bl;
+ }
+ 
+ int
+@@ -352,10 +358,11 @@
+ int
+ http_request_add_event_data(http_request_t *request, const char *data, size_t datalen)
+ {
+-    if (request->datalen + datalen >= MAX_EVENT_DATA) {
++    if (!request || !request->data || request->event_error || (!data && datalen) ||
++        request->datalen >= MAX_EVENT_DATA || datalen >= MAX_EVENT_DATA - request->datalen) {
+         return -1;
+     }
+-    memcpy(request->data + request->datalen, data, datalen);
++    if (datalen) memcpy(request->data + request->datalen, data, datalen);
+     request->datalen += datalen;
+     request->data[request->datalen] = '\0';
+     return 0;
+@@ -363,6 +370,7 @@
+ 
+ // any message returned by parse_event_data must be free'd
+ bool http_request_parse_event_data(http_request_t *request, char **header_ptr, size_t *header_len, char **body_ptr, size_t *body_len) {
++    if (!request || !header_ptr || !header_len || !body_ptr || !body_len) return false;
+     *header_len = 0;
+     *body_len = 0;
+     *header_ptr = NULL;
+@@ -370,16 +378,18 @@
+ 
+     /* now attempt to parse the reverse-HTTP response, or EVENT message */
+     size_t message_len = parse_ptth(request->data, request->datalen, header_len, body_len);
+-    if (!message_len) {
++    if (message_len == (size_t)-1) {
++        request->event_error = true;
++        *header_len = *body_len = 0;
+         return false;
+     }
+-    assert (request->datalen >= message_len);
+-    assert (message_len == *header_len + *body_len);
++    if (!message_len) return false;
++    size_t junk = message_len - *header_len - *body_len;
+ 
+     char *local_header = (char *) malloc(*header_len + 1);
+     if (!local_header) return false;
+     
+-    memcpy(local_header, request->data, *header_len);
++    memcpy(local_header, request->data + junk, *header_len);
+     local_header[*header_len] = '\0';
+ 
+     char *local_body = NULL;
+@@ -389,7 +399,7 @@
+             free(local_header);
+             return false;
+         }
+-        memcpy(local_body, request->data + *header_len, *body_len);
++        memcpy(local_body, request->data + junk + *header_len, *body_len);
+         local_body[*body_len] = '\0';
+     }
+ 
+@@ -418,6 +428,7 @@
+         return -1;
+     }
+     request->data[0] = '\0';
++    request->event_error = false;
+     request->datalen = 0;
+     return 0;
+ }
+@@ -437,7 +448,7 @@
+     if (!request) {
+         return 0;
+     }
+-    return (llhttp_get_errno(&request->parser) != HPE_OK);
++    return request->event_error || (llhttp_get_errno(&request->parser) != HPE_OK);
+ }
+ 
+ const char *
+@@ -446,7 +457,7 @@
+     if (!request) {  
+         return NULL;
+     }
+-    return llhttp_errno_name(llhttp_get_errno(&request->parser));
++    return request->event_error ? "INVALID_EVENT" : llhttp_errno_name(llhttp_get_errno(&request->parser));
+ }
+ 
+ const char *
+@@ -455,7 +466,7 @@
+     if (!request) {
+         return NULL;
+     }
+-    return llhttp_get_error_reason(&request->parser);
++    return request->event_error ? "Malformed or oversized reverse HTTP message." : llhttp_get_error_reason(&request->parser);
+ }
+ 
+ const char *
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -35,8 +35,10 @@
+ 
+ static int
+ get_playlist_by_uuid(raop_t *raop, const char *uuid) {
++    if (!raop || !uuid || !*uuid) return -1;
+     for (int i = 0 ;i < MAX_AIRPLAY_VIDEO; i++) {
+-        if (raop->airplay_video[i] && !strcmp(uuid, get_playback_uuid(raop->airplay_video[i]))) {
++        const char *stored = raop->airplay_video[i] ? get_playback_uuid(raop->airplay_video[i]) : NULL;
++        if (stored && !strcmp(uuid, stored)) {
+             return i;
+         }
+     }
+@@ -232,6 +234,11 @@
+     http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
+     int req_datalen = 0;
+     const unsigned char *req_data = (unsigned char *) http_request_get_data(request, &req_datalen);
++    if (!req_data || req_datalen < 5) {
++        http_response_init(response, "HTTP/1.1", 400, "Bad Request");
++        http_response_set_disconnect(response, 1);
++        return;
++    }
+     logger_log(raop->logger, LOGGER_ERR, "only FairPlay version 0x03 is implemented, version is 0x%2.2x",
+                req_data[4]);
+     http_response_init(response, "HTTP/1.1", 421, "Misdirected Request");
+@@ -400,6 +407,11 @@
+ static void
+ http_handler_action(raop_conn_t *conn, http_request_t *request, http_response_t *response,
+                     char **response_data, int *response_datalen) {
++#ifdef CLEARCAST_IN_PROCESS
++    // ClearCast's HTTP(S)/HLS source is GStreamer, not the legacy FCUP bridge.
++    http_response_init(response, "HTTP/1.1", 501, "Not Implemented");
++    return;
++#endif
+ 
+     raop_t *raop = conn->raop;
+     airplay_video_t *airplay_video = NULL;
+@@ -481,8 +493,9 @@
+         }
+         plist_t req_params_item_uuid_node = plist_dict_get_item(req_params_item_node, "uuid");
+         char* remove_uuid = NULL;
++        if (!PLIST_IS_STRING(req_params_item_uuid_node)) goto post_action_error;
+         plist_get_string_val(req_params_item_uuid_node, &remove_uuid);
+-        assert(remove_uuid);
++        if (!remove_uuid || !*remove_uuid) { plist_mem_free(remove_uuid); goto post_action_error; }
+         int id  =  get_playlist_by_uuid(raop, remove_uuid);
+         if (id == raop->current_video) {
+             raop->current_video = -1;
+@@ -726,6 +739,17 @@
+     if (request_datalen <= 0 || request_datalen > 65536) goto play_error;
+     plist_from_bin(request_data, request_datalen, &req_root_node);
+     if (!req_root_node || plist_get_node_type(req_root_node) != PLIST_DICT) goto play_error;
++#ifdef CLEARCAST_IN_PROCESS
++    // Validate before allocating/storing a legacy playlist or changing ownership.
++    plist_t early_location = plist_dict_get_item(req_root_node, "Content-Location");
++    if (early_location) {
++        uint64_t location_length = 0;
++        if (!PLIST_IS_STRING(early_location)) goto play_error;
++        const char *location = plist_get_string_ptr(early_location, &location_length);
++        if (!location || !location_length || location_length > 4096 || strlen(location) != location_length ||
++            !clearcast_direct_video_uri_allowed(location)) goto play_error;
++    }
++#endif
+ 
+     plist_t req_uuid_node = plist_dict_get_item(req_root_node, "uuid");
+     if (!req_uuid_node) {
+@@ -782,6 +806,13 @@
+         return;
+     }
+     
++#ifdef CLEARCAST_IN_PROCESS
++    // A cached UUID may resume without Content-Location. Only a new source
++    // needs an owned URL; the early validation above borrowed the plist value.
++    if (!early_location) goto play_error;
++    plist_get_string_val(early_location, &playback_location);
++    if (!playback_location) goto play_error;
++#endif
+     /* initialize a new playlist (airplay_video structure) */
+     /* first delete any short stored playlists (probably advertisements */
+     int count = 0;
+@@ -842,6 +873,7 @@
+     }
+ #endif
+ 	   
++#ifndef CLEARCAST_IN_PROCESS
+     plist_t req_content_location_node = plist_dict_get_item(req_root_node, "Content-Location");
+     if (!req_content_location_node) {
+         goto play_error;
+@@ -850,6 +882,7 @@
+         plist_get_string_val(req_content_location_node, &playback_location);
+         if (!playback_location || !*playback_location || strlen(playback_location) > 4096) goto play_error;
+     }
++#endif
+     /* we support HLS playlists if the playback location is terminated by "/master.m3u8", otherwise pass location to player */
+     const char *uri_suffix = strstr(playback_location, "/master.m3u8");    
+     
+@@ -864,9 +897,7 @@
+     if (!isfinite(start_position_seconds) || start_position_seconds < 0 || start_position_seconds > 7 * 86400) goto play_error;
+     set_start_position_seconds(airplay_video, (float) start_position_seconds);
+ #ifdef CLEARCAST_IN_PROCESS
+-    bool direct_http = !strncmp(playback_location, "http://", 7) || !strncmp(playback_location, "https://", 8);
+-    if ((direct_http ? !clearcast_direct_video_uri_allowed(playback_location) :
+-         !uri_suffix || strncmp(playback_location, "mlhls://", strlen("mlhls://"))) ||
++    if (!clearcast_direct_video_uri_allowed(playback_location) ||
+         !clearcast_video_owner_begin(conn, apple_session_id)) goto play_error;
+ #endif
+ 
+--- a/lib/httpd.c
++++ b/lib/httpd.c
+@@ -577,6 +577,10 @@
+                         free (body);
+                     }
+                 }
++                if (http_request_has_error(connection->request)) {
++                    logger_log(httpd->logger, LOGGER_ERR, "Malformed message on EVENT channel.");
++                    httpd_remove_connection(httpd, connection, 0);
++                }
+                 continue;
+             }
+             /* Parse HTTP request from data read from connection */	    

@@ -10,11 +10,42 @@
 #include <limits>
 #include <clocale>
 #include <thread>
+static std::atomic<ULONGLONG> test_media_tick_override(0);
+static std::atomic<ULONGLONG> test_media_tick_step(0);
+static std::atomic<unsigned> test_media_tick_reads(0);
+static bool test_media_select_capture = false;
+static timeval test_media_timeout = {};
+static int test_media_select_calls = 0;
+static int test_media_select(int count, fd_set* read, fd_set* write, fd_set* error, const timeval* timeout) {
+    if (test_media_select_capture) {
+        ++test_media_select_calls; test_media_timeout = *timeout; return 0;
+    }
+    return ::select(count, read, write, error, timeout);
+}
+static ULONGLONG test_media_tick() {
+    const ULONGLONG fixed = test_media_tick_override;
+    if (!fixed) return GetTickCount64();
+    ++test_media_tick_reads;
+    return test_media_tick_override.fetch_add(test_media_tick_step);
+}
+#define GetTickCount64 test_media_tick
+#define select test_media_select
 #include "clearcast_media_audio.h"
+#undef GetTickCount64
+#undef select
+
+static bool peer_metadata_cached(const unsigned char* peer, int length, unsigned int zone) {
+    using namespace clearcast_media;
+    Peer address;
+    if (!address.assign(peer, length, zone)) return false;
+    Lock lock(state_lock);
+    return peer_verified_locked(address.key());
+}
 
 namespace {
 static bool test_mirror_active=false;
 static bool test_direct_active=false;
+static clearcast_diagnostics::Info clearcast_video_diagnostics(bool) { return {}; }
 static bool clearcast_mirror_media_active(){return test_mirror_active;}
 static bool clearcast_direct_video_snapshot(bool& playing, int64_t& position, int64_t& duration) {
     playing = false; position = duration = 0; return test_direct_active;
@@ -67,13 +98,21 @@ static void connection_cases() {
     check(snapshot().find("\"deviceName\":\"Test iPhone\"") != std::string::npos, "invalid sender names preserve the established label");
     check(connected() && !state.configured && !state.active,
         "live pair-verified control reports connected before any media SETUP");
+    clearcast_media_audio_setup(1003,peer,4,0,0,nullptr,nullptr);
+    check(!state.configured, "same IP with a live verified sibling cannot authorize a new audio transport");
     clearcast_media_verified(1002,peer,4,0);
     clearcast_media_closed(1001);
     check(connected(), "closing one authenticated sibling retains the other live connection");
     clearcast_media_closed(1002);
     check(snapshot().find("\"deviceName\":\"\"") != std::string::npos, "last control closure clears the online sender label");
-    check(!connected() && clearcast_media_peer_verified(peer,4,0),
-        "60-second peer authorization grace does not report an online connection");
+    check(!connected() && peer_metadata_cached(peer,4,0),
+        "retained peer metadata does not report an online connection");
+    clearcast_media_audio_setup(1003,peer,4,0,0,nullptr,nullptr);
+    check(!state.configured, "closed sibling peer metadata cannot authorize a new audio transport");
+    clearcast_media_verified(1003,peer,4,0);
+    const unsigned char different_peer[] = {127,0,0,2};
+    clearcast_media_audio_setup(1003,different_peer,4,0,0,nullptr,nullptr);
+    check(!state.configured, "verified audio transport cannot substitute its peer address");
     clearcast_media_audio_setup(1003,peer,4,0,0,nullptr,nullptr);
     check(connected() && state.configured && !state.active,
         "established audio SETUP reports connected without inventing playback");
@@ -289,6 +328,54 @@ static void activity_cases() {
     check(!clearcast_media_audio_activity_epoch() && activity.tick == 0 && activity.owner == 0,
         "TEARDOWN clears activity ownership and samples");
 }
+
+static void command_admission_cases() {
+    using namespace clearcast_media;
+    const unsigned char peer[] = {127,0,0,1};
+    stopping = false;
+    clearcast_media_verified(1700,peer,4,0);
+    clearcast_media_audio_setup(1700,peer,4,0,0,"AABBCCDDEEFF0011","12345");
+    clearcast_media_audio_packet(1700);
+    state.controls = 15; state.duration = 120000;
+    const uint64_t owner = state.owner, content = state.content_revision;
+    for (int command = 1; command <= 3; ++command) {
+        check(clearcast_media_command_audio(command, owner + 1, content) == ERROR_CANCELLED,
+            "expected audio owner is checked atomically before command admission");
+        check(clearcast_media_command_audio(command, owner, content + 1) == ERROR_CANCELLED,
+            "a replaced audio track cannot issue a transport command");
+    }
+    {
+        CommandAdmission busy;
+        check(busy.admitted, "one audio command can enter an idle native control gate");
+        check(clearcast_media_command_audio(1, owner, content) == ERROR_BUSY &&
+            clearcast_media_seek_audio(owner, content, 5000) == ERROR_BUSY,
+            "busy DACP transport and seek return immediately instead of queuing");
+        check(state.controls == 15, "busy admission does not revoke sender capabilities");
+    }
+    check(clearcast_media_command_audio(1, owner + 1, content) == ERROR_CANCELLED,
+        "the native control gate releases after denied admission");
+    clearcast_media_verified(1701,peer,4,0);
+    clearcast_media_audio_setup(1701,peer,4,0,0,"AABBCCDDEEFF0011","12345");
+    clearcast_media_audio_packet(1701);
+    check(clearcast_media_command_audio(1, owner, content) == ERROR_CANCELLED,
+        "a delayed bound command cannot resnapshot a replacement audio session");
+    clearcast_media_closed(1700); clearcast_media_closed(1701); stopping = true;
+}
+
+static void deadline_boundary_cases() {
+    using namespace clearcast_media;
+    stopping = false;
+    test_media_select_capture = true; test_media_select_calls = 0;
+    test_media_tick_override = 100; test_media_tick_step = 2; test_media_tick_reads = 0;
+    check(!socket_ready(INVALID_SOCKET, false, 101), "a simulated deadline-boundary wait returns without a ready socket");
+    check(test_media_select_calls == 1 && test_media_timeout.tv_sec == 0 && test_media_timeout.tv_usec == 1000,
+        "advancing clock cannot underflow the OS wait beyond its one-millisecond remaining budget");
+    check(test_media_tick_reads == 1, "one monotonic clock observation defines each socket wait budget");
+    test_media_tick_override = 100; test_media_select_calls = 0;
+    check(!socket_ready(INVALID_SOCKET, false, 100) && test_media_select_calls == 0,
+        "an expired socket deadline never reaches the operating-system wait");
+    test_media_select_capture = false; test_media_tick_override = 0; test_media_tick_step = 0; stopping = true;
+}
 static std::vector<uint64_t> beat_sequences(const std::string& json) {
     std::vector<uint64_t> sequences;
     size_t cursor=json.find("\"beats\":[");
@@ -330,6 +417,9 @@ static void beat_cases() {
         "bounded history retains the latest16 strictly increasing events");
     const std::string title=state.title,artist=state.artist,album=state.album;
     state.title=state.artist=state.album=std::string(512,'\\');
+    // Exercise exact capacities for the same logical snapshot. Real-time age
+    // and playback-position fields can otherwise gain a digit between reads.
+    test_media_tick_override=GetTickCount64();
     char full[8192];int required=clearcast_receiver_read_media(full,sizeof(full));
     check(required>0&&required<=8192&&int(strlen(full))+1==required&&
         strstr(full,"\"connected\":"),
@@ -342,6 +432,7 @@ static void beat_cases() {
     check(clearcast_receiver_read_media(exact_buffer.data(),required)==required&&
         exact_buffer.back()==0&&int(strlen(exact_buffer.data()))+1==required,
         "exact required capacity includes the terminating NUL");
+    test_media_tick_override=0;
     state.title=title;state.artist=artist;state.album=album;
     clearcast_media_audio_activity_beat(epoch+1,.9,0);
     clearcast_media_audio_activity_beat(epoch,std::numeric_limits<double>::quiet_NaN(),0);
@@ -386,13 +477,41 @@ static void beat_cases() {
         "a sole fresh PCM window andbeat remain visible after aggregate lock contention");
     clearcast_media_audio_stop(904,1);
 }
+static void diagnostics_lifecycle_cases() {
+    using namespace clearcast_media;
+    gst_init(nullptr, nullptr);
+    const unsigned char peer[] = {127,0,0,1};
+    GstElement* first = gst_pipeline_new("first-diagnostic-source");
+    GstElement* second = gst_pipeline_new("second-diagnostic-source");
+    clearcast_media_verified(1500,peer,4,0); clearcast_media_audio_setup(1500,peer,4,0,0,nullptr,nullptr);
+    clearcast_media_audio_packet(1500);
+    const uint64_t epoch = clearcast_media_audio_activity_epoch_for_source(1500);
+    clearcast_media_audio_pipeline(first, epoch);
+    auto sample = audio_diagnostics();
+    check(audio_pipeline == first && sample.generation == audio_pipeline_generation,
+        "validated audio epoch can register its diagnostic pipeline");
+    clearcast_media_audio_stop(1500,1);
+    check(!audio_pipeline && sample.generation != audio_pipeline_generation,
+        "ending audio revokes a diagnostic sample and releases its pipeline");
+    clearcast_media_verified(1501,peer,4,0); clearcast_media_audio_setup(1501,peer,4,0,0,nullptr,nullptr);
+    clearcast_media_audio_packet(1501);
+    clearcast_media_audio_pipeline(first,epoch);
+    check(!audio_pipeline,"delayed previous-source registration cannot attach to the next sender");
+    clearcast_media_audio_pipeline(second,clearcast_media_audio_activity_epoch_for_source(1501));
+    check(audio_pipeline == second,"next sender registers only its own current-epoch pipeline");
+    const uint64_t generation = audio_pipeline_generation;
+    clearcast_media_audio_pipeline(second,clearcast_media_audio_activity_epoch_for_source(1501));
+    check(generation == audio_pipeline_generation,"repeated buffers retain one pipeline reference and generation");
+    clearcast_media_audio_stop(1501,1);
+    gst_object_unref(first); gst_object_unref(second);
+}
 int main(int argc,char** argv) {
     using namespace clearcast_media;
     connection_cases();
     const unsigned char peer[] = {127,0,0,1}, other[] = {127,0,0,2};
-    check(!clearcast_media_peer_verified(peer, 4, 0), "new peer unverified");
+    check(!peer_metadata_cached(peer, 4, 0), "new peer unverified");
     clearcast_media_verified(1, peer, 4, 0);
-    check(clearcast_media_peer_verified(peer, 4, 0), "verified peer admitted");
+    check(peer_metadata_cached(peer, 4, 0), "verified peer metadata cached");
     clearcast_media_remote(1, "0123456789ABCDEF", "1234567890");
     test_direct_active = true;
     test_direct_stop_calls = 0;
@@ -524,9 +643,9 @@ int main(int argc,char** argv) {
     check(!dns_name(loop,sizeof(loop),offset,name), "DNS compression pointer loop rejected");
     clearcast_media_closed(1);
     check(!state.active && !state.configured && state.artwork.empty(), "owner closure clears transient metadata and art");
-    check(clearcast_media_peer_verified(peer,4,0), "verified sibling upgrade grace retained");
+    check(peer_metadata_cached(peer,4,0), "closed peer metadata grace retained without authorizing another connection");
     Peer address; address.assign(peer,4,0); verified[address.key()].closed=GetTickCount64()-60001;
-    check(!clearcast_media_peer_verified(peer,4,0), "closed peer authorization expires");
+    check(!peer_metadata_cached(peer,4,0), "closed peer metadata cache expires");
     clearcast_media_audio_setup(9,other,4,0,0,nullptr,nullptr);
     check(!state.configured, "unverified peer cannot configure media");
     if(argc>1&&!strcmp(argv[1],"--network")) {
@@ -552,6 +671,9 @@ int main(int argc,char** argv) {
     }
     activity_cases();
     beat_cases();
+    diagnostics_lifecycle_cases();
+    command_admission_cases();
+    deadline_boundary_cases();
     printf("Audio media parser/state: %d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;
 }

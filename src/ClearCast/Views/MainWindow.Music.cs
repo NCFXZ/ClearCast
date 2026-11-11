@@ -21,6 +21,10 @@ public sealed partial class MainWindow
     private string _mediaControlError = "";
     private ulong _artworkRevision;
     private int _artworkGeneration;
+    private bool _artworkLoading;
+    private (Func<byte[]?> Read, int Generation, AirPlayReceiver? Receiver)? _pendingMusicArtwork;
+    private bool _musicThemeRefreshing;
+    private bool _musicThemeRefreshPending;
     private int _mediaCommandGeneration;
     private byte[]? _musicArtworkBytes;
 #if CLEARCAST_UI_TESTS
@@ -107,11 +111,23 @@ public sealed partial class MainWindow
 
     private async void RefreshMusicBackgroundTheme()
     {
-        if (_hasVideo && _videoBackdropPixels is { } pixels)
-            await MusicBackground.SetVideoFrameAsync(pixels, WindowLayout.ActualTheme == ElementTheme.Dark, _motionSettings.AnimationsEnabled);
-        else
-            await MusicBackground.SetArtworkAsync(_hasVideo ? null : _musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
-        UpdateMusicBackgroundState();
+        if (_closed || _closing) return;
+        _musicThemeRefreshPending = true;
+        if (_musicThemeRefreshing) return;
+        _musicThemeRefreshing = true;
+        try
+        {
+            do
+            {
+                _musicThemeRefreshPending = false;
+                if (_hasVideo && _videoBackdropPixels is { } pixels)
+                    await MusicBackground.SetVideoFrameAsync(pixels, WindowLayout.ActualTheme == ElementTheme.Dark, _motionSettings.AnimationsEnabled);
+                else
+                    await MusicBackground.SetArtworkAsync(_hasVideo ? null : _musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
+                UpdateMusicBackgroundState();
+            } while (_musicThemeRefreshPending && !_closed && !_closing);
+        }
+        finally { _musicThemeRefreshing = false; }
     }
 
     private void MusicMotionChanged(UISettings sender, object args) =>
@@ -131,6 +147,8 @@ public sealed partial class MainWindow
             MusicBackground.ResetAudioActivity();
         if (sourceChanged)
         {
+            ResetMediaDiagnosticsRaster();
+            ResetMediaDiagnosticsStats();
             if (_hasVideo || state.Kind == ReceiverMediaKind.Video) ResetVideoBackdrop();
             ++_mediaCommandGeneration;
             _mediaCommandPending = false;
@@ -163,10 +181,11 @@ public sealed partial class MainWindow
             RefreshMusicText();
 
         ulong revision = _hasMusic && state.ArtworkBytes > 0 ? state.ArtworkRevision : 0;
-        if (_artworkRevision != revision)
+        if (sourceChanged || _artworkRevision != revision)
         {
             _artworkRevision = revision;
             int generation = ++_artworkGeneration;
+            _pendingMusicArtwork = null;
             MusicArtwork.Source = null;
             _musicArtworkBytes = null;
             if (!_hasVideo) _ = MusicBackground.SetArtworkAsync(null, WindowLayout.ActualTheme == ElementTheme.Dark);
@@ -180,6 +199,7 @@ public sealed partial class MainWindow
         UpdateMusicBackgroundState();
         RefreshIdleConnectionStatus();
         UpdatePlaybackControls();
+        UpdateMediaDiagnostics();
     }
 
     private void RefreshMusicText()
@@ -196,7 +216,7 @@ public sealed partial class MainWindow
 
     private void UpdateMusicControls()
     {
-        bool ready = _hasMusic && _receiver is not null && !_mediaCommandPending &&
+        bool ready = _hasMusic && _receiver is not null && !_mediaCommandPending && !_playbackControlPending &&
             !_resettingPairings && !_startingReceiver && !_closing && _stopTask is null;
         bool hasControls = _hasMusic && (_mediaState.Controls & ~MediaControls.Seek) != MediaControls.None;
         MusicTransportControls.Visibility = hasControls ? Visibility.Visible : Visibility.Collapsed;
@@ -236,24 +256,44 @@ public sealed partial class MainWindow
             : $"{(long)time.TotalMinutes}:{time.Seconds:00}";
     }
 
-    private async Task LoadMusicArtworkAsync(AirPlayReceiver receiver, ulong revision, int length, int generation)
+    private Task LoadMusicArtworkAsync(AirPlayReceiver receiver, ulong revision, int length, int generation) =>
+        QueueMusicArtworkAsync(() => receiver.ReadArtwork(revision, length), generation, receiver);
+
+    private bool IsCurrentMusicArtwork(int generation, AirPlayReceiver? receiver) => generation == _artworkGeneration &&
+        !_closed && !_closing && _hasMusic && ReferenceEquals(receiver, _receiver);
+
+    private async Task QueueMusicArtworkAsync(Func<byte[]?> read, int generation, AirPlayReceiver? receiver)
     {
+        if (!IsCurrentMusicArtwork(generation, receiver)) return;
+        // Keep one active read/decode/background chain and one latest descriptor,
+        // not a new 2 MiB read and WinRT decode for every incoming revision.
+        _pendingMusicArtwork = (read, generation, receiver);
+        if (_artworkLoading) return;
+        _artworkLoading = true;
         try
         {
-            byte[]? bytes = await Task.Run(() => receiver.ReadArtwork(revision, length));
-            if (bytes is null || generation != _artworkGeneration || _closed || !_hasMusic)
-                return;
-            await ApplyMusicArtworkAsync(bytes, generation, receiver);
+            while (_pendingMusicArtwork is { } request)
+            {
+                _pendingMusicArtwork = null;
+                if (!IsCurrentMusicArtwork(request.Generation, request.Receiver)) continue;
+                try
+                {
+                    byte[]? bytes = await Task.Run(request.Read);
+                    if (bytes is not null && IsCurrentMusicArtwork(request.Generation, request.Receiver))
+                        await ApplyMusicArtworkAsync(bytes, request.Generation, request.Receiver);
+                }
+                catch (Exception error) when (error is COMException or ArgumentException or InvalidOperationException or IOException)
+                {
+                    // A failed or superseded request cannot prevent the latest cover.
+                }
+            }
         }
-        catch (Exception error) when (error is COMException or ArgumentException or InvalidOperationException or IOException)
-        {
-            // Invalid or superseded sender artwork leaves the local placeholder.
-        }
+        finally { _artworkLoading = false; }
     }
 
     private async Task ApplyMusicArtworkAsync(byte[] bytes, int generation, AirPlayReceiver? expectedReceiver)
     {
-        if (bytes.Length is <= 0 or > 2 * 1024 * 1024 || generation != _artworkGeneration || !_hasMusic || _closed)
+        if (bytes.Length is <= 0 or > 2 * 1024 * 1024 || !IsCurrentMusicArtwork(generation, expectedReceiver))
             return;
         try
         {
@@ -264,10 +304,11 @@ public sealed partial class MainWindow
                 await writer.StoreAsync();
                 writer.DetachStream();
             }
+            if (!IsCurrentMusicArtwork(generation, expectedReceiver)) return;
             stream.Seek(0);
             var image = new BitmapImage { DecodePixelWidth = 640 };
             await image.SetSourceAsync(stream);
-            if (generation == _artworkGeneration && !_closed && _hasMusic && ReferenceEquals(expectedReceiver, _receiver))
+            if (IsCurrentMusicArtwork(generation, expectedReceiver))
             {
                 MusicArtwork.Source = image;
                 MusicArtworkPlaceholder.Visibility = Visibility.Collapsed;
@@ -294,13 +335,14 @@ public sealed partial class MainWindow
             MediaCommand.Next => MediaControls.Next,
             _ => MediaControls.PlayPause
         };
-        if (!_hasMusic || _receiver is not { } receiver || _mediaCommandPending || _closing ||
+        if (!_hasMusic || _receiver is not { } receiver || _mediaCommandPending || _playbackControlPending || _closing ||
             _stopTask is not null || !_mediaState.Controls.HasFlag(capability))
             return;
         int generation = ++_mediaCommandGeneration;
         _mediaCommandPending = true;
         _mediaControlError = "";
         UpdateMusicControls();
+        UpdatePlaybackControls();
         try
         {
             if (_mediaState.ControlSession != 0)
@@ -318,7 +360,10 @@ public sealed partial class MainWindow
             if (generation == _mediaCommandGeneration)
                 _mediaCommandPending = false;
             if (!_closed)
+            {
                 UpdateMusicControls();
+                UpdatePlaybackControls();
+            }
         }
     }
 }

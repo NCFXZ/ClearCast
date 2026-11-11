@@ -19,7 +19,15 @@ internal sealed record ReceiverPreferences(
     {
         try
         {
-            var preferences = JsonSerializer.Deserialize<ReceiverPreferences>(File.ReadAllText(FilePath(root)));
+            // This small local record must not make a damaged or concurrently
+            // growing file consume unbounded memory. Never apply a truncated JSON.
+            using var stream = new FileStream(FilePath(root), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            byte[] bytes = new byte[4097];
+            int count = stream.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
+            if (count > 4096) return new ReceiverPreferences();
+            ReadOnlySpan<byte> json = bytes.AsSpan(0, count);
+            if (json.StartsWith("\uFEFF"u8)) json = json[3..];
+            var preferences = JsonSerializer.Deserialize<ReceiverPreferences>(json);
             if (preferences is not null)
                 return preferences with
                 {

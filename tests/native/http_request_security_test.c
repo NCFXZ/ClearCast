@@ -36,7 +36,70 @@ static void text_case(const char *data, int valid, const char *name) {
     expect(parse(data, strlen(data), 1, valid), name);
 }
 
+static void event_case(const char *data, size_t length, size_t fragment, int valid, const char *name) {
+    http_request_t *request = http_request_init();
+    if (!request || http_request_upgrade_data(request)) exit(2);
+    unsigned parsed = 0;
+    int rejected = 0;
+    for (size_t offset = 0; offset < length;) {
+        size_t count = length - offset;
+        if (count > fragment) count = fragment;
+        if (http_request_add_event_data(request, data + offset, count)) { rejected = 1; break; }
+        offset += count;
+        char *header = NULL, *body = NULL;
+        size_t header_len, body_len;
+        while (http_request_parse_event_data(request, &header, &header_len, &body, &body_len)) {
+            ++parsed;
+            expect(header && header_len && !http_request_has_error(request), "parsed EVENT header stays valid");
+            free(header); free(body);
+        }
+        if (http_request_has_error(request)) { rejected = 1; break; }
+    }
+    expect(valid ? parsed == 1 && !rejected : !parsed && rejected, name);
+    http_request_destroy(request);
+}
+
+static void event_text_case(const char *data, int valid, const char *name) {
+    event_case(data, strlen(data), strlen(data), valid, name);
+    event_case(data, strlen(data), 1, valid, name);
+}
+
+static void reverse_event_checks(void) {
+    event_text_case("a\r\n\r\n", 0, "short EVENT header never underflows Content-Length search");
+    event_text_case("HTTP/1.1 200 OK\r\n\r\n", 1, "reverse response without body");
+    event_text_case("EVENT/1.0 200 OK\r\ncontent-length:\t3 \r\n\r\nabc", 1, "fragmented case-insensitive EVENT body");
+    event_text_case("HTTP/1.1 200 OK\r\nX-Content-Length: 1000000\r\n\r\n", 1, "Content-Length must be a complete header field");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n", 0, "negative EVENT length");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: +1\r\n\r\na", 0, "signed EVENT length");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: 18446744073709551616\r\n\r\n", 0, "overflow EVENT length");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: 4095\r\n\r\n", 0, "EVENT header and body share the bounded capacity");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: 1junk\r\n\r\na", 0, "EVENT length trailing text");
+    event_text_case("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n", 0, "duplicate EVENT length rejected");
+    const char nul[] = "HTTP/1.1 200 OK\r\nX: a\0b\r\n\r\n";
+    event_case(nul, sizeof(nul)-1, 1, 0, "embedded NUL EVENT header");
+
+    http_request_t *request = http_request_init();
+    expect(request && !http_request_upgrade_data(request), "EVENT buffer initialized");
+    expect(http_request_add_event_data(request, "x", SIZE_MAX) == -1, "EVENT append rejects size_t wrap without reading input");
+    const char combined[] = "\0 \r\nHTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcEVENT/1.0 200 OK\r\n\r\n";
+    expect(!http_request_add_event_data(request, combined, sizeof(combined)-1), "combined reverse messages append");
+    char *header = NULL, *body = NULL;
+    size_t header_len, body_len;
+    expect(http_request_parse_event_data(request, &header, &header_len, &body, &body_len) &&
+        !strncmp(header, "HTTP/1.1", 8) && body_len == 3 && !memcmp(body, "abc", 3),
+        "leading junk is excluded from header and binary body offsets");
+    free(header); free(body);
+    expect(http_request_parse_event_data(request, &header, &header_len, &body, &body_len) &&
+        !strncmp(header, "EVENT/1.0", 9) && body_len == 0 && !body,
+        "combined trailing EVENT remains correctly framed");
+    free(header); free(body);
+    expect(!http_request_parse_event_data(request, &header, &header_len, &body, &body_len) &&
+        !http_request_has_error(request), "drained reverse channel waits without error");
+    http_request_destroy(request);
+}
+
 int main(void) {
+    reverse_event_checks();
     text_case("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 0\r\n\r\n", 1, "valid options");
     text_case("POST /pair-setup-pin RTSP/1.0\r\ncseq: 1\r\ncontent-length: 3\r\n\r\nabc", 1, "fragmented lower-case headers");
     text_case("POST /x RTSP/1.0\r\nContent-Length: -1\r\n\r\n", 0, "negative content length");

@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $StorePublishDirectory,
     [Parameter(Mandatory)] [string] $ComplianceDirectory,
     [Parameter(Mandatory)] [string] $ValidatedReceiverSha256,
-    [string] $Version = '1.2.1.0',
+    [string] $Version = '1.2.2.0',
     [Parameter(Mandatory)] [string] $OutputPath
 )
 $ErrorActionPreference = 'Stop'

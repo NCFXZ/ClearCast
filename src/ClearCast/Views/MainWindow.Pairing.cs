@@ -10,6 +10,7 @@ public sealed partial class MainWindow
 {
     private const string PairingReadError = "无法读取已保存的配对记录。";
     private bool _resettingPairings;
+    private bool _pairingLoadFailed;
 
     private void RefreshSavedPairings()
     {
@@ -27,6 +28,7 @@ public sealed partial class MainWindow
             loadFailed = true;
             ShowPairingResetFeedback(PairingReadError);
         }
+        _pairingLoadFailed = loadFailed;
 
         var items = new List<PairingDeviceRow>(pairings.Count);
         foreach (var group in pairings.GroupBy(pairing => pairing.Name ?? Texts.UnnamedPairing))
@@ -50,7 +52,7 @@ public sealed partial class MainWindow
     {
         bool canRemove = !busy && !_hasVideo;
         PairingDeviceList.IsEnabled = canRemove;
-        RepairPairingButton.IsEnabled = canRemove && PairingDeviceList.Items.Count > 0;
+        RepairPairingButton.IsEnabled = canRemove && (PairingDeviceList.Items.Count > 0 || _pairingLoadFailed);
     }
 
     private async void RepairPairingClicked(object sender, RoutedEventArgs e) => await RemoveSavedPairingsAsync(null, null);

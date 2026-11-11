@@ -1,0 +1,98 @@
+--- a/ext/soup/gstsouphttpsrc.h
++++ b/ext/soup/gstsouphttpsrc.h
+@@ -136,6 +136,8 @@
+   Retry retry;
+ 
+   gboolean location_trusted;
++
++  GSocketConnectable *remote_connectable;
+ };
+ 
+ struct _GstSoupHTTPSrcClass {
+--- a/ext/soup/gstsouphttpsrc.c
++++ b/ext/soup/gstsouphttpsrc.c
+@@ -205,6 +205,7 @@
+   PROP_RETRY_BACKOFF_FACTOR,
+   PROP_RETRY_BACKOFF_MAX,
+   PROP_LOCATION_TRUSTED,
++  PROP_REMOTE_CONNECTABLE,
+ };
+ 
+ enum
+@@ -479,6 +480,13 @@
+           "TLS database with anchor certificate authorities used to validate the server certificate",
+           G_TYPE_TLS_DATABASE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+ 
++  /* ClearCast: enumerate checked socket addresses without rewriting the URI,
++   * HTTP Host header or TLS server identity. Requires libsoup 3. */
++  g_object_class_install_property (gobject_class, PROP_REMOTE_CONNECTABLE,
++      g_param_spec_object ("remote-connectable", "Remote connectable",
++          "Checked connection endpoints (libsoup 3 only; set in NULL/READY)",
++          G_TYPE_SOCKET_CONNECTABLE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
++
+   /**
+    * GstSoupHTTPSrc::tls-interaction:
+    *
+@@ -743,6 +751,7 @@
+   if (src->tls_database)
+     g_object_unref (src->tls_database);
+   g_free (src->method);
++  g_clear_object (&src->remote_connectable);
+ 
+   if (src->tls_interaction)
+     g_object_unref (src->tls_interaction);
+@@ -845,6 +854,14 @@
+       g_clear_object (&src->tls_database);
+       src->tls_database = g_value_dup_object (value);
+       break;
++    case PROP_REMOTE_CONNECTABLE:
++      if (GST_STATE (src) > GST_STATE_READY) {
++        GST_WARNING_OBJECT (src, "Cannot replace endpoints while streaming");
++        break;
++      }
++      gst_soup_http_src_session_close (src);
++      g_set_object (&src->remote_connectable, g_value_get_object (value));
++      break;
+     case PROP_TLS_INTERACTION:
+       g_clear_object (&src->tls_interaction);
+       src->tls_interaction = g_value_dup_object (value);
+@@ -959,6 +976,9 @@
+     case PROP_TLS_DATABASE:
+       g_value_set_object (value, src->tls_database);
+       break;
++    case PROP_REMOTE_CONNECTABLE:
++      g_value_set_object (value, src->remote_connectable);
++      break;
+     case PROP_TLS_INTERACTION:
+       g_value_set_object (value, src->tls_interaction);
+       break;
+@@ -1182,11 +1202,17 @@
+       "timeout", src->timeout, "tls-interaction", src->tls_interaction,
+       /* Unset the limit the number of maximum allowed connections */
+       "max-conns", src->session_is_shared ? G_MAXINT : 10,
+-      "max-conns-per-host", src->session_is_shared ? G_MAXINT : 2, NULL);
++      "max-conns-per-host", src->session_is_shared ? G_MAXINT : 2,
++      "remote-connectable", src->remote_connectable, NULL);
+   g_assert (session->session);
+ 
+   if (gst_soup_loader_get_api_version () == 3) {
+-    if (src->proxy != NULL) {
++    if (src->remote_connectable != NULL) {
++      /* Do not let proxy configuration bypass the checked address enumerator. */
++      GProxyResolver *direct = g_simple_proxy_resolver_new (NULL, NULL);
++      g_object_set (session->session, "proxy-resolver", direct, NULL);
++      g_object_unref (direct);
++    } else if (src->proxy != NULL) {
+       GProxyResolver *proxy_resolver;
+       char *proxy_string = gst_soup_uri_to_string (src->proxy);
+       proxy_resolver = g_simple_proxy_resolver_new (proxy_string, NULL);
+@@ -1293,7 +1319,8 @@
+     return FALSE;
+   }
+ 
+-  can_share = (src->timeout == DEFAULT_TIMEOUT)
++  can_share = (src->remote_connectable == NULL)
++      && (src->timeout == DEFAULT_TIMEOUT)
+       && (src->cookies == NULL)
+       && (src->ssl_strict == DEFAULT_SSL_STRICT)
+       && (src->tls_interaction == NULL) && (src->proxy == NULL)

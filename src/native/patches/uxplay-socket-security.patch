@@ -1,0 +1,18 @@
+--- a/lib/netutils.c
++++ b/lib/netutils.c
+@@ -143,7 +143,15 @@
+         goto cleanup;
+     }
+ 
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++    /* TCP listeners must not permit another process to steal their endpoint.
++     * Keep UDP reuse for the existing RTP/mDNS lifecycle. */
++    const int exclusive = 1;
++    int ret = use_udp ? setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr)) :
++        setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&exclusive, sizeof(exclusive));
++#else
+     int ret = setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof (reuseaddr));
++#endif
+     if (ret == -1) {
+         goto cleanup;
+     }

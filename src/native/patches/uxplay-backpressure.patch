@@ -1,0 +1,213 @@
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -26,6 +26,8 @@
+ #include "audio_renderer.h"
+ #ifdef CLEARCAST_IN_PROCESS
+ #include "clearcast_audio_activity_gst.h"
++#include "clearcast_appsrc_backpressure.h"
++#include "clearcast_bus_backpressure.h"
+ #endif
+ #define SECOND_IN_NSECS 1000000000ULL
+ 
+@@ -177,7 +179,11 @@
+ 
+         if (!audio_rtp) {
+             /* Normal path: local audio output */
++#ifdef CLEARCAST_IN_PROCESS
++            g_string_append (launch, "level post-messages=false ! ");
++#else
+             g_string_append (launch, "level ! ");
++#endif
+             g_string_append (launch, audiosink);
+             switch(i) {
+             case 1:  /*ALAC*/
+@@ -218,6 +224,11 @@
+         gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
+         renderer_type[i]->bus = gst_element_get_bus(renderer_type[i]->pipeline);
+         renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "audio_source");
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_appsrc_configure(renderer_type[i]->appsrc, FALSE);
++        clearcast_bus_prepare(renderer_type[i]->bus);
++        gst_bus_set_sync_handler(renderer_type[i]->bus, clearcast_bus_sync, NULL, NULL);
++#endif
+         renderer_type[i]->volume = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "volume");
+         if (renderer_type[i]->volume) {
+             g_object_set(renderer_type[i]->volume, "volume", volume_level, NULL);
+@@ -269,7 +280,11 @@
+     clearcast_media_audio_pipeline(NULL, 0);
+ #endif
+     if (renderer) {
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+         gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#endif
+         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+         renderer = NULL;
+     }
+@@ -317,9 +332,19 @@
+ #endif
+     int id = -1;
+     get_renderer_type(ct, &id);
++#ifdef CLEARCAST_IN_PROCESS
++    if (id >= 0 && renderer_type[id]) {
++        clearcast_appsrc_reset(renderer_type[id]->appsrc);
++        clearcast_bus_reset(renderer_type[id]->bus);
++    }
++#endif
+     if (id >= 0 && renderer) {
+         if(*ct != renderer->ct) {
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+             gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#endif
+             gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+             logger_log(logger, LOGGER_INFO, "changed audio connection, format %s", format[id]);
+             renderer = renderer_type[id];
+@@ -396,7 +421,11 @@
+         clearcast_media_audio_pipeline(renderer->pipeline, activity_epoch);
+ #endif
+ 
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_appsrc_push_buffer(renderer->appsrc, buffer);
++#else
+         gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);
++#endif
+     } else {
+         logger_log(logger, LOGGER_ERR, "*** ERROR invalid  audio frame (compression_type %d) skipped ", renderer->ct);
+         logger_log(logger, LOGGER_ERR, "***       first byte of invalid frame was  0x%2.2x ", (unsigned int) data[0]);
+@@ -455,6 +484,9 @@
+ }
+ 
+ static gboolean gstreamer_audio_pipeline_bus_callback(GstBus *bus, GstMessage *message, void *loop) {
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_bus_popped(bus, message);
++#endif
+     switch (GST_MESSAGE_TYPE(message)) {
+     case GST_MESSAGE_ERROR: {
+         GError *err = NULL;
+@@ -464,7 +496,11 @@
+         g_error_free(err);
+         g_free(debug);
+         if (renderer && renderer->appsrc) {
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+             gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
++#endif
+         }
+         gst_bus_set_flushing(bus, TRUE);
+         if (renderer) gst_element_set_state (renderer->pipeline, GST_STATE_READY);
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -30,6 +30,7 @@
+ extern void clearcast_pipeline_error(void);
+ extern void clearcast_set_video_sink(GstElement *sink);
+ #include "clearcast_video_context.h"
++#include "clearcast_bus_backpressure.h"
+ #endif
+ 
+ #ifdef CLEARCAST_IN_PROCESS
+@@ -50,7 +51,11 @@
+         gst_message_unref(message);
+         return GST_BUS_DROP;
+     }
++#ifdef CLEARCAST_IN_PROCESS
++    return clearcast_bus_sync(bus, message, GINT_TO_POINTER(2));
++#else
+     return GST_BUS_PASS;
++#endif
+ }
+ 
+ /* can be called to make a previously-prepared external video window available for GStreamer to use.
+@@ -469,6 +474,9 @@
+             gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
+             renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "video_source");
+             g_assert(renderer_type[i]->appsrc);
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_appsrc_configure(renderer_type[i]->appsrc, TRUE);
++#endif
+             g_object_set(renderer_type[i]->appsrc, "caps", caps, "stream-type", 0, "is-live", TRUE, "format", GST_FORMAT_TIME, NULL);
+             g_string_free(launch, TRUE);
+             gst_caps_unref(caps);
+@@ -512,6 +520,9 @@
+         }
+ #endif
+         renderer_type[i]->bus = gst_element_get_bus(renderer_type[i]->pipeline);
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_bus_prepare(renderer_type[i]->bus);
++#endif
+         gst_bus_set_sync_handler(renderer_type[i]->bus, window_handle_bus_sync_handler, NULL, NULL);
+         gst_element_set_state (renderer_type[i]->pipeline, GST_STATE_READY);
+         GstState state;
+@@ -659,7 +670,11 @@
+         buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+ 	g_assert(buffer != NULL);
+         gst_buffer_fill(buffer, 0, data, *data_len);
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_appsrc_push_buffer(renderer->appsrc, buffer);
++#else
+         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
++#endif
+     }  
+ }
+ 
+@@ -719,7 +734,11 @@
+         if (sync) {
+             GST_BUFFER_PTS(buffer) = pts;
+         }
++#ifdef CLEARCAST_IN_PROCESS
++        clearcast_appsrc_push_buffer(renderer->appsrc, buffer);
++#else
+         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
++#endif
+ #ifdef X_DISPLAY_FIX
+         if (renderer->gst_window && !(renderer->gst_window->window) && renderer->use_x11) {
+             X11_search_attempts++;
+@@ -760,7 +779,11 @@
+     if (renderer) {
+         logger_log(logger, LOGGER_DEBUG,"video_renderer_stop");
+         if (renderer->appsrc) {
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+             gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
++#endif
+         }
+         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
+         //gst_element_set_state (renderer->playbin, GST_STATE_NULL);
+@@ -803,7 +826,11 @@
+             gst_element_get_state(renderer->pipeline, &state, NULL, 100 * GST_MSECOND);
+             if (state != GST_STATE_NULL) {
+                 if (!hls_video && renderer->appsrc) {
++#ifdef CLEARCAST_IN_PROCESS
++                    clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+                     gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#endif
+                 }
+                 gst_element_set_state(renderer->pipeline, GST_STATE_NULL);
+             }
+@@ -897,6 +924,9 @@
+ }
+ 
+ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *message, void *loop) {
++#ifdef CLEARCAST_IN_PROCESS
++    clearcast_bus_popped(bus, message);
++#endif
+     GstState old_state, new_state;
+     const gchar no_state[] = "";
+     const gchar *old_state_name = no_state, *new_state_name = no_state;
+@@ -1025,7 +1055,11 @@
+         g_error_free (err);
+         g_free (debug);
+         if (renderer->appsrc) {
++#ifdef CLEARCAST_IN_PROCESS
++            clearcast_appsrc_end_of_stream(GST_APP_SRC(renderer->appsrc));
++#else
+             gst_app_src_end_of_stream (GST_APP_SRC(renderer->appsrc));
++#endif
+         }
+         if (!hls_video || closed_window) {
+             gst_bus_set_flushing(bus, TRUE);

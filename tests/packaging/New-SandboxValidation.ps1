@@ -39,7 +39,10 @@ function New-PayloadHashManifest([string] $Directory, [string] $ResourceIndex) {
     $requiredFiles = @('ClearCast.exe', 'ClearCast.dll', $ResourceIndex,
         'receiver\clearcast_receiver.dll', 'receiver\gst-plugin-scanner.exe',
         'receiver\libgstcodecparsers-1.0-0.dll', 'receiver\lib\gstreamer-1.0\libgstvideoparsersbad.dll',
-        'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json')
+        'receiver\libgstadaptivedemux-1.0-0.dll',
+        'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json',
+        'receiver\gstreamer-http-security-manifest.json', 'receiver\LICENSE-GStreamerHttpSecurity.txt',
+        'receiver\lib\gstreamer-1.0\libgstsoup.dll')
     $dependencies = Get-Content -LiteralPath (Join-Path $payloadRoot 'receiver\security-dependencies-manifest.json') -Raw | ConvertFrom-Json
     foreach ($component in $dependencies.components) {
         foreach ($file in $component.files) {
@@ -149,7 +152,7 @@ $configuration = @"
     <MappedFolder><HostFolder>$toolsXml</HostFolder><SandboxFolder>C:\ClearCastTools</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
     <MappedFolder><HostFolder>$outputXml</HostFolder><SandboxFolder>C:\ClearCastOutput</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
   </MappedFolders>
-  <LogonCommand><Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ClearCastScripts\Test-InstalledPackages.ps1</Command></LogonCommand>
+  <LogonCommand><Command>powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ClearCastScripts\Test-InstalledPackages.ps1</Command></LogonCommand>
 </Configuration>
 "@
 $configurationPath = Join-Path $work 'Validate-ClearCast.wsb'

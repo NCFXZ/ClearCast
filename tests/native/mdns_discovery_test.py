@@ -4,6 +4,7 @@ Only records counts and service ports, never other devices' names or packets.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 from receiver_test_support import ROOT, Receiver
+from media_fixture_support import media_fixture_address
 
 import argparse
 import json
@@ -96,7 +97,7 @@ def main():
             receiver = Receiver(state=Path(directory) / "state")
             try:
                 for cycle in range(3):
-                    receiver.start()
+                    receiver.start(address=media_fixture_address())
                     log = (receiver.state / "receiver.log").read_text(encoding="utf-8")
                     interface = re.findall(r"ready address=([0-9.]+)", log)[-1]
                     assert interface != "0.0.0.0", "No active discovery interface"

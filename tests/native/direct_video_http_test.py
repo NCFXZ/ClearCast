@@ -1,6 +1,6 @@
 """Decode synthetic HTTP/HLS media and exercise the production source policy.
 
-Runs only loopback HTTP(S) servers; no AirPlay receiver ports or real devices.
+Uses an existing local LAN address and ephemeral ports; no AirPlay receiver ports.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+from media_fixture_support import media_fixture_address
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,6 +34,7 @@ def main():
     parser.add_argument("--openssl", type=Path, default=ROOT / ".runtime/msys64/ucrt64/bin/openssl.exe")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--case", help="Run only case names containing this text")
+    parser.add_argument("--host", help="Existing local unicast IPv4 address for fixture URLs")
     args = parser.parse_args()
     runtime = args.runtime.resolve()
     environment = dict(os.environ)
@@ -45,6 +47,7 @@ def main():
     environment["GST_PLUGIN_SCANNER_1_0"] = str(scanner)
     environment["GIO_EXTRA_MODULES"] = str(runtime / "lib/gio/modules")
     checks = []
+    host = media_fixture_address(args.host)
     with tempfile.TemporaryDirectory(prefix="direct-http-", dir=ROOT / ".runtime") as temporary:
         work = Path(temporary)
         environment["GST_REGISTRY"] = str(work / "registry.bin")
@@ -54,10 +57,12 @@ def main():
              "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15", "-movflags", "+faststart", work / "video.mp4"], env=tools_environment)
         run([args.ffmpeg, "-v", "error", "-i", work / "video.mp4", "-c", "copy", "-hls_time", "1", "-hls_list_size", "0",
              "-hls_segment_filename", work / "segment-%03d.ts", work / "stream.m3u8"], env=tools_environment)
-        run([args.openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
-             "-addext", "subjectAltName=IP:127.0.0.1", "-addext", "basicConstraints=critical,CA:TRUE",
+        run([args.openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=media.clearcast.test",
+             "-addext", f"subjectAltName=IP:{host},DNS:media.clearcast.test,DNS:rebind.clearcast.test", "-addext", "basicConstraints=critical,CA:TRUE",
              "-keyout", work / "key.pem", "-out", work / "certificate.pem"], env=tools_environment)
         requests = collections.Counter()
+        authorities = collections.Counter()
+        sni_names = collections.Counter()
         lock = threading.Lock()
 
         class Handler(BaseHTTPRequestHandler):
@@ -68,19 +73,31 @@ def main():
                 path = self.path.split("?", 1)[0]
                 with lock:
                     requests[path] += 1
+                    authorities[self.headers.get("Host")] += 1
                 if path.startswith("/redirect"):
                     self.send_response(302)
                     self.send_header("Location", "/segment-000.ts" if path.endswith(".ts") else "/video.mp4")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                if path.startswith("/blocked-"):
-                    authority = f"127.0.0.1:{self.server.server_port}"
+                if path == "/cross-origin.m3u8":
+                    data = (work / "stream.m3u8").read_text().replace(
+                        "segment-001.ts", f"http://media.clearcast.test:{self.server.server_port}/segment-001.ts").encode()
+                    content_type = "application/vnd.apple.mpegurl"
+                elif path == "/cross-tls.m3u8":
+                    data = (work / "stream.m3u8").read_text().replace(
+                        "segment-001.ts", f"https://media.clearcast.test:{https.server_port}/segment-001.ts").encode()
+                    content_type = "application/vnd.apple.mpegurl"
+                elif path.startswith("/blocked-"):
+                    authority = f"{host}:{self.server.server_port}"
                     location = {
                         "/blocked-credentials.m3u8": f"http://user:secret@{authority}/segment-000.ts",
                         "/blocked-file.m3u8": (work / "video.mp4").as_uri(),
                         "/blocked-appsrc.m3u8": "appsrc://buffer",
                         "/blocked-redirect.m3u8": f"http://{authority}/redirect.ts",
+                        "/blocked-loopback.m3u8": f"http://127.0.0.1:{self.server.server_port}/forbidden.ts",
+                        "/blocked-dns.m3u8": f"http://loopback.clearcast.test:{self.server.server_port}/forbidden.ts",
+                        "/blocked-mapped.m3u8": f"http://[::ffff:127.0.0.1]:{self.server.server_port}/forbidden.ts",
                     }[path]
                     data = ("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
                             f"#EXTINF:2,\n{location}\n#EXT-X-ENDLIST\n").encode()
@@ -99,42 +116,74 @@ def main():
                 with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                     self.wfile.write(data)
 
-        http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        https = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        http = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        https = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(work / "certificate.pem", work / "key.pem")
+        def observe_sni(_connection, server_name, _context):
+            with lock:
+                sni_names[server_name] += 1
+        tls.set_servername_callback(observe_sni)
         https.socket = tls.wrap_socket(https.socket, server_side=True)
         workers = [threading.Thread(target=server.serve_forever, daemon=True) for server in (http, https)]
         for worker in workers:
             worker.start()
         try:
-            base = f"http://127.0.0.1:{http.server_port}"
-            secure = f"https://127.0.0.1:{https.server_port}"
+            base = f"http://{host}:{http.server_port}"
+            secure = f"https://{host}:{https.server_port}"
+            dns = f"http://media.clearcast.test:{http.server_port}"
+            secure_dns = f"https://media.clearcast.test:{https.server_port}"
             cases = [("HTTP MP4 decoded", base + "/video.mp4", False, None),
+                     ("HTTP source remains direct with environment proxy", base + "/video.mp4", False, None),
                      ("HTTP HLS decoded", base + "/stream.m3u8", False, None),
+                     ("HTTP cross-origin HLS decoded", base + "/cross-origin.m3u8", False, None),
+                     ("Trusted HTTPS cross-origin HLS decoded", base + "/cross-tls.m3u8", False, None),
                      ("HTTP redirect rejected", base + "/redirect.mp4", True, "/video.mp4"),
                      ("Nested HLS redirect rejected", base + "/blocked-redirect.m3u8", True, "/segment-000.ts"),
                      ("Nested HLS credentials rejected", base + "/blocked-credentials.m3u8", True, "/segment-000.ts"),
                      ("Nested local-file URI rejected", base + "/blocked-file.m3u8", True, None),
                      ("Nested appsrc URI rejected", base + "/blocked-appsrc.m3u8", True, None),
+                     ("Nested HLS loopback rejected", base + "/blocked-loopback.m3u8", True, "/forbidden.ts"),
+                     ("Nested HLS DNS loopback rejected", base + "/blocked-dns.m3u8", True, "/forbidden.ts"),
+                     ("Nested HLS mapped loopback rejected", base + "/blocked-mapped.m3u8", True, "/forbidden.ts"),
+                     ("DNS media Host preserved", dns + "/video.mp4", False, None),
+                     ("DNS mixed answers filter loopback", f"http://mixed.clearcast.test:{http.server_port}/video.mp4", False, None),
+                     ("DNS rebinding cannot trigger second lookup", f"http://rebind.clearcast.test:{http.server_port}/video.mp4", False, None),
                      ("Untrusted HTTPS certificate rejected", secure + "/video.mp4", True, None),
                      ("Trusted HTTPS MP4 decoded", secure + "/video.mp4", False, None),
-                     ("Trusted HTTPS HLS decoded", secure + "/stream.m3u8", False, None)]
+                     ("Trusted HTTPS HLS decoded", secure + "/stream.m3u8", False, None),
+                     ("Trusted HTTPS DNS Host and SNI preserved", secure_dns + "/video.mp4", False, None),
+                     ("Trusted HTTPS hostname mismatch rejected", f"https://wrong.clearcast.test:{https.server_port}/video.mp4", True, "/video.mp4")]
+            for blocked_host in ["127.0.0.1", "127.99.5.7", "127.1", "0x7f000001", "2130706433", "localhost", "loopback.clearcast.test",
+                                 "[::1]", "[::ffff:127.0.0.1]", "0.0.0.0", "224.0.0.1", "255.255.255.255"]:
+                cases.append((f"Loopback or nonunicast {blocked_host} rejected", f"http://{blocked_host}:{http.server_port}/forbidden.mp4", True, "/forbidden.mp4"))
             for name, uri, rejection, forbidden_fetch in cases:
                 if args.case and args.case.casefold() not in name.casefold():
                     continue
                 before = requests[forbidden_fetch] if forbidden_fetch else 0
+                before_authority = authorities[f"media.clearcast.test:{https.server_port if uri.startswith('https:') else http.server_port}"]
+                before_sni = sni_names["media.clearcast.test"]
                 certificate = runtime / "certs/ca-bundle.crt"
                 if not certificate.is_file():
                     certificate = runtime / "etc/ssl/certs/ca-bundle.crt"
                 if name.startswith("Trusted HTTPS"):
                     certificate = work / "certificate.pem"
-                result = run([args.fixture.resolve(), uri, "--reject" if rejection else "--play", certificate], env=environment)
+                case_environment = environment
+                if name == "HTTP source remains direct with environment proxy":
+                    case_environment = dict(environment, http_proxy="http://127.0.0.1:9")
+                result = run([args.fixture.resolve(), uri, "--reject" if rejection else "--play", certificate, host], env=case_environment)
                 row = json.loads(result.stdout.strip().splitlines()[-1])
                 if forbidden_fetch:
                     assert requests[forbidden_fetch] == before, f"Rejected request followed its target: {name}"
                 if not rejection:
                     assert row["frames"] >= 15 and row["width"] == 320 and row["height"] == 180, (name, row)
+                if name == "DNS rebinding cannot trigger second lookup":
+                    assert row["dnsLookups"] == 1, (name, row)
+                if "Host" in name:
+                    authority = f"media.clearcast.test:{https.server_port if uri.startswith('https:') else http.server_port}"
+                    assert authorities[authority] > before_authority, (name, authorities)
+                if "SNI" in name:
+                    assert sni_names["media.clearcast.test"] > before_sni, (name, sni_names)
                 checks.append({"name": name, "passed": True, "result": row})
                 print(name, "PASS", flush=True)
         finally:
@@ -143,7 +192,7 @@ def main():
                 server.server_close()
             for worker in workers:
                 worker.join(timeout=5)
-    report = {"passed": True, "scope": "Synthetic local HTTP(S)/HLS with production source policy and fakesink; no real AirPlay device or physical audio/GPU acceptance.", "checks": checks}
+    report = {"passed": True, "host": host, "scope": "Synthetic HTTP(S)/HLS through an existing LAN address with production source policy and fakesink; fixture-only deterministic DNS; no real AirPlay device or physical audio/GPU acceptance.", "checks": checks}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

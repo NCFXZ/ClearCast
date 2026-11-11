@@ -54,7 +54,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         _preferences = ReceiverPreferences.Load(_root);
-        Texts.SetEnglish(_preferences.Language == AppLanguage.English);
+        ApplyAppLanguage(_preferences.Language == AppLanguage.English);
         InitializeComponent();
         InitializePlaybackControls();
         ApplyAppTheme();
@@ -115,10 +115,12 @@ public sealed partial class MainWindow : Window
         _playerOverlayTimer.Interval = TimeSpan.FromMilliseconds(50);
         _playerOverlayTimer.Tick += TrackPlayerPointer;
         RefreshDynamicText();
+        InitializeReceiverNetworkChanges();
         AppWindow.Closing += WindowClosing;
         Closed += (_, _) =>
         {
             _closed = true;
+            StopReceiverNetworkChanges();
             AppWindow.Changed -= WindowChanged;
             CancelPlayerPresenterTransition();
             StopPageEntrance();
@@ -280,8 +282,7 @@ public sealed partial class MainWindow : Window
         {
             bool english = ReferenceEquals(selected, EnglishLanguageItem);
             _preferences = _preferences with { Language = english ? AppLanguage.English : AppLanguage.SimplifiedChinese };
-            Texts.SetEnglish(english);
-            WindowLayout.Language = english ? "en-US" : "zh-CN";
+            ApplyAppLanguage(english);
             RefreshComboBoxLabels();
             RefreshDynamicText();
             RefreshSavedPairings();
@@ -464,6 +465,8 @@ public sealed partial class MainWindow : Window
             return;
 
         _hasVideo = available;
+        ResetMediaDiagnosticsRaster();
+        ResetMediaDiagnosticsStats();
         ResetVideoBackdrop();
         _ = MusicBackground.SetArtworkAsync(available ? null : _musicArtworkBytes, WindowLayout.ActualTheme == ElementTheme.Dark);
         VideoPlaceholder.Visibility = available || _hasMusic ? Visibility.Collapsed : Visibility.Visible;
@@ -476,7 +479,7 @@ public sealed partial class MainWindow : Window
         if (available)
         {
             ShowPlayerOverlay();
-            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateVideoHost);
+            QueueVideoHostUpdate();
             ApplyAutoFullScreenAtVideoStart();
         }
         else
@@ -490,6 +493,7 @@ public sealed partial class MainWindow : Window
             _videoHost?.Hide();
         }
         UpdateMusicBackgroundState();
+        UpdateMediaDiagnostics();
     }
 
     private void UpdateVideoHost()
@@ -837,6 +841,8 @@ public sealed partial class MainWindow : Window
             {
                 case ReceiverEventKind.Ready:
                     _receiverReady = true;
+                    _networkRecoveryRequested = false;
+                    QueueReceiverNetworkCheck();
                     UpdateReceiverButtons();
                     if (!_hasVideo && !_hasMusic)
                         WaitForMirror();
@@ -903,7 +909,9 @@ public sealed partial class MainWindow : Window
             SetPlayerFrameSize(stats.Width, stats.Height);
         }
 
+        SampleMediaDiagnosticsStats(stats, now);
         _sampledAt = now;
+        UpdateMediaDiagnostics();
     }
 
     private void ResetStreamStats()
@@ -931,10 +939,15 @@ public sealed partial class MainWindow : Window
 
     private void CopyErrorClicked(object sender, RoutedEventArgs e)
     {
+        bool copied = CopyToClipboard(BuildReceiveErrorDetails());
+        SetCopyErrorLabel(copied ? "已复制" : "重试复制");
+    }
+
+    private string BuildReceiveErrorDetails()
+    {
         string errorCodeLabel = Texts.Get("错误代码", "Error code");
         string diagnostics = AirPlayReceiver.ReadDiagnostics(_root);
-        bool copied = CopyToClipboard($"ClearCast\r\n{ReceiverInfoBar.Message}\r\n{errorCodeLabel} 0x{_receiveErrorCode:X8}\r\n{diagnostics}");
-        SetCopyErrorLabel(copied ? "已复制" : "重试复制");
+        return $"ClearCast\r\n{ReceiverInfoBar.Message}\r\n{errorCodeLabel} 0x{_receiveErrorCode:X8}\r\n{diagnostics}";
     }
 
     private void SetCopyErrorLabel(string message)

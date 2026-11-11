@@ -1,0 +1,96 @@
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -97,6 +97,8 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     uint64_t pin_retry_after;
+     unsigned int failed_pin_attempts;
++    unsigned int pin_cooldown_level;
++    uint64_t last_pin_failure;
+     unsigned short pending_pairing_pin;
+     int pending_pairing_generation;
+     int latest_pairing_generation;
+@@ -383,16 +385,29 @@
+     const char *host = http_request_get_header(request, "Host");
+     hls_request =  (host && !cseq && !client_session_id);
+ #ifdef CLEARCAST_IN_PROCESS
++    bool clearcast_rtsp_media_method = !strcmp(method, "SETUP") || !strcmp(method, "RECORD") ||
++        !strcmp(method, "FLUSH") || !strcmp(method, "TEARDOWN") ||
++        !strcmp(method, "SET_PARAMETER") || !strcmp(method, "GET_PARAMETER");
++    if (raop->use_pin && clearcast_rtsp_media_method && !pairing_session_is_verified(conn->session)) {
++        *response = http_response_create();
++        http_response_init(*response, protocol, 401, "Unauthorized");
++        http_response_set_disconnect(*response, 1);
++        goto finish;
++    }
+     bool clearcast_media_endpoint = !strcmp(url, "/play") || !strcmp(url, "/reverse") || !strcmp(url, "/stop") ||
+         !strcmp(url, "/action") || !strcmp(url, "/playback-info") || !strcmp(url, "/fp-setup2") ||
+         !strncmp(url, "/scrub", 6) || !strncmp(url, "/rate", 5) || !strncmp(url, "/getProperty", 12) ||
+         !strncmp(url, "/setProperty", 12) || strstr(url, ".m3u8");
+-    if (!strncmp(protocol, "HTTP/", 5) || clearcast_media_endpoint || hls_request) {
+-        clearcast_http_discovery = !strcmp(url, "/server-info") || !strcmp(url, "/pair-pin-start") ||
+-            !strcmp(url, "/pair-setup-pin") || !strcmp(url, "/pair-setup") || !strcmp(url, "/pair-verify");
+-        if (clearcast_http_discovery) hls_request = false;
+-        bool allowed = clearcast_http_discovery || (hls_request ?
+-            !strcmp(protocol, "HTTP/1.1") && clearcast_video_local_playlist(conn, method, url) :
++    // Discovery is neutral for every protocol/header variant. It must never
++    // claim a media slot or stop an existing RAOP owner before authentication.
++    clearcast_http_discovery = !strcmp(method, "OPTIONS") || !strcmp(url, "/info") ||
++        !strcmp(url, "/server-info") || !strcmp(url, "/pair-pin-start") ||
++        !strcmp(url, "/pair-setup-pin") || !strcmp(url, "/pair-setup") || !strcmp(url, "/pair-verify");
++    if (clearcast_http_discovery) hls_request = false;
++    if (!strncmp(protocol, "HTTP/", 5) || clearcast_media_endpoint || hls_request || client_session_id) {
++        // ClearCast decodes remote HTTP/HLS with GStreamer. Its local-playlist
++        // legacy route has no consumer and must not enter upstream allocation.
++        bool allowed = clearcast_http_discovery || (!hls_request &&
+             client_session_id && *client_session_id && strlen(client_session_id) <= 128 &&
+             clearcast_media_peer_verified(conn->remote, conn->remotelen, conn->zone_id) &&
+             clearcast_video_owner_matches(conn, client_session_id, true));
+@@ -414,8 +429,9 @@
+     if (conn->connection_type == CONNECTION_TYPE_UNKNOWN && !clearcast_http_discovery
+ #ifdef CLEARCAST_IN_PROCESS
+         // A discovery or pairing connection must not reserve the single media slot.
+-        && (!raop->use_pin || !(cseq || ble) ||
+-            (pairing_session_is_verified(conn->session) && !strcmp(method, "SETUP")))
++        && (!raop->use_pin || ((cseq || ble) ?
++            pairing_session_is_verified(conn->session) && !strcmp(method, "SETUP") :
++            clearcast_media_endpoint && !strcmp(protocol, "HTTP/1.1") && client_session_id))
+ #endif
+     ) {
+         if (cseq || ble) {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -266,8 +266,7 @@
+     clearcast_pairing_result(status, status == 0 ? 0 : conn->pairing_generation, reason);
+ }
+ #define CLEARCAST_PIN_LIFETIME_MS 60000
+-#define CLEARCAST_PIN_MAX_FAILURES 5
+-#define CLEARCAST_PIN_COOLDOWN_MS 60000
++#include "clearcast_pairing_policy.h"
+ 
+ static void clearcast_clear_pending_pin(raop_t *raop) {
+     raop->pending_pairing_pin = 0;
+@@ -520,7 +519,7 @@
+ #ifdef CLEARCAST_IN_PROCESS
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
+-        raop->failed_pin_attempts = 0;
++        clearcast_pin_failure_reset(&raop->failed_pin_attempts, &raop->pin_cooldown_level, &raop->last_pin_failure);
+         // Persist the authenticated key before Apple opens a fresh pair-verify
+         // connection. SETUP can add the sender's display name later.
+         if (raop->callbacks.register_client) {
+@@ -548,11 +547,12 @@
+  authentication_failed:;
+ #ifdef CLEARCAST_IN_PROCESS
+     pairing_session_reset_pin(conn->session);
+-    if (++raop->failed_pin_attempts >= CLEARCAST_PIN_MAX_FAILURES) {
+-        raop->pin_retry_after = GetTickCount64() + CLEARCAST_PIN_COOLDOWN_MS;
++    uint64_t retry_after = clearcast_pin_failure_deadline(GetTickCount64(), &raop->failed_pin_attempts,
++        &raop->pin_cooldown_level, &raop->last_pin_failure);
++    if (retry_after) {
++        raop->pin_retry_after = retry_after;
+         rejection_reason = 4; /* Report the cooldown on the failure that starts it. */
+         clearcast_clear_pending_pin(raop);
+-        raop->failed_pin_attempts = 0;
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
+     }

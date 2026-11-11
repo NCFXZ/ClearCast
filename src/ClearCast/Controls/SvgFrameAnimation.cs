@@ -25,6 +25,8 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
     private readonly List<int> _startupPresentationIndices = [];
     private readonly List<double> _startupRenderingCallbacks = [];
     private SvgImageSource?[]? _frames;
+    private (int Generation, int Width, int Height)? _rasterRequest;
+    private bool _rasterRunning;
     private XamlRoot? _root;
     private int _decodeGeneration;
     private int _contiguousFrames;
@@ -75,6 +77,12 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
     internal double StartupElapsedMilliseconds => _startup.Elapsed.TotalMilliseconds;
     internal IReadOnlyList<double> StartupRenderingCallbackTimesMilliseconds => _startupRenderingCallbacks;
     internal double MaximumSourceAssignmentMilliseconds { get; private set; }
+#if CLEARCAST_UI_TESTS
+    internal Func<Task>? UiBeforeFrameDecodeAsync;
+    internal int UiDecodeGenerationStarts, UiFrameDecodeActive, UiMaxFrameDecodeActive;
+    internal bool UiRasterizationPending => _rasterRequest is not null;
+    internal void UiRequestRasterization(int width, int height) => RequestRasterization(width, height);
+#endif
 
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -113,26 +121,51 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
         // Match the final screen pixels so a high-DPI display never magnifies it.
         int width = Math.Max(1, (int)Math.Ceiling(ActualWidth * root.RasterizationScale));
         int height = Math.Max(1, (int)Math.Ceiling(ActualHeight * root.RasterizationScale));
+        RequestRasterization(width, height);
+    }
+
+    private void RequestRasterization(int width, int height)
+    {
+        if (_disposed) return;
         if (width == TargetPixelWidth && height == TargetPixelHeight)
             return;
         TargetPixelWidth = width;
         TargetPixelHeight = height;
         LoadError = null;
-        int generation = ++_decodeGeneration;
-        var frames = new SvgImageSource?[FrameCount];
-        bool progressive = _frames is null || LoadedFrameCount < FrameCount;
-        if (progressive)
+        _rasterRequest = (++_decodeGeneration, width, height);
+        if (!_rasterRunning) _ = RasterizePendingAsync();
+    }
+
+    private async Task RasterizePendingAsync()
+    {
+        _rasterRunning = true;
+        try
         {
-            Pause();
-            _playback.Reset();
-            _frames = frames;
-            LoadedFrameCount = 0;
-            CurrentFrameIndex = -1;
-            _contiguousFrames = 0;
-            _bufferedPlaybackStarted = false;
-            _waitingForFrame = false;
+            while (!_disposed && _rasterRequest is { } request)
+            {
+                _rasterRequest = null;
+                var frames = new SvgImageSource?[FrameCount];
+                bool progressive = _frames is null || LoadedFrameCount < FrameCount;
+                if (progressive)
+                {
+                    Pause();
+                    _playback.Reset();
+                    _frames = frames;
+                    LoadedFrameCount = 0;
+                    CurrentFrameIndex = -1;
+                    _contiguousFrames = 0;
+                    _bufferedPlaybackStarted = false;
+                    _waitingForFrame = false;
+                }
+#if CLEARCAST_UI_TESTS
+                UiDecodeGenerationStarts++;
+#endif
+                // SetSourceAsync cannot be interrupted. Wait for this generation's
+                // bounded workers before starting only the newest requested size.
+                await LoadFramesAsync(frames, request.Generation, request.Width, request.Height, progressive);
+            }
         }
-        _ = LoadFramesAsync(frames, generation, width, height, progressive);
+        finally { _rasterRunning = false; }
     }
 
     private async Task LoadFramesAsync(SvgImageSource?[] frames, int generation, int width, int height, bool progressive)
@@ -143,6 +176,14 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
 
             async Task DecodeFrameAsync(int index)
             {
+#if CLEARCAST_UI_TESTS
+                UiFrameDecodeActive++;
+                UiMaxFrameDecodeActive = Math.Max(UiMaxFrameDecodeActive, UiFrameDecodeActive);
+                try
+                {
+                    if (UiBeforeFrameDecodeAsync is { } beforeDecode) await beforeDecode();
+                    if (!IsCurrent()) return;
+#endif
                 var bytes = await (_svgBytes[index] ??= File.ReadAllBytesAsync(Path.Combine(
                     AppContext.BaseDirectory, "Assets", "MirroringAnimation", $"frame-{index:000}.svg")));
                 if (!IsCurrent())
@@ -167,6 +208,10 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
                         PresentFrame(0, source);
                     UpdatePlayback();
                 }
+#if CLEARCAST_UI_TESTS
+                }
+                finally { UiFrameDecodeActive--; }
+#endif
             }
 
             // Give the first visible frame priority, then decode ahead using a
@@ -303,6 +348,7 @@ public sealed partial class SvgFrameAnimation : UserControl, IDisposable
     {
         _disposed = true;
         ++_decodeGeneration;
+        _rasterRequest = null;
         Pause();
         DetachRoot();
         Loaded -= OnLoaded;

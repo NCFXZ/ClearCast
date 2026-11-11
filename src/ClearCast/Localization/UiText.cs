@@ -39,13 +39,24 @@ internal sealed partial class UiText : INotifyPropertyChanged
 
     public string PairingCode => Get("AirPlay 验证码", "AirPlay pairing code");
     public string DismissPairingCode => Get("关闭验证码提示", "Dismiss pairing code");
+    public string DismissReceiverError => Get("关闭错误提示", "Dismiss error");
+    public string ScrollUp => Get("向上滚动", "Scroll up");
+    public string ScrollDown => Get("向下滚动", "Scroll down");
+    public string PageUp => Get("向上翻页", "Page up");
+    public string PageDown => Get("向下翻页", "Page down");
+    public string VerticalScrollThumb => Get("垂直滚动条滑块", "Vertical scroll thumb");
+    public string ScrollLeft => Get("向左滚动", "Scroll left");
+    public string ScrollRight => Get("向右滚动", "Scroll right");
+    public string PageLeft => Get("向左翻页", "Page left");
+    public string PageRight => Get("向右翻页", "Page right");
+    public string HorizontalScrollThumb => Get("水平滚动条滑块", "Horizontal scroll thumb");
     public string ReceiverError => Get("接收遇到问题", "Receiver error");
     public string LandingHeading => Get("将屏幕、音乐或视频投到此电脑", "Mirror or play media on this PC");
     public string LandingDescription => Get($"请将设备与此电脑连接到同一网络，在设备上打开「屏幕镜像」或播放器中的 AirPlay，选择「{_receiverName}」。",
         $"Connect your device and this PC to the same network. Open Screen Mirroring or AirPlay in your player, then select “{_receiverName}”.");
     public string RetryReceiver => Get("重试接收", "Try again");
 
-    public string Disconnect => Get("断开投放", "Disconnect");
+    public string Disconnect => Get("断开连接", "Disconnect");
     public string FullScreen => Get("全屏", "Full screen");
     public string ExitFullScreen => Get("退出全屏", "Exit full screen");
     public string RotateLeft => Get("向左旋转 90°", "Rotate left 90°");

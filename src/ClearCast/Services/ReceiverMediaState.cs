@@ -8,6 +8,19 @@ internal enum ReceiverMediaKind { None, Audio, Video }
 [Flags]
 internal enum MediaControls { None = 0, PlayPause = 1, Previous = 2, Next = 4, Seek = 8 }
 
+internal readonly record struct ReceiverMediaDiagnostics
+{
+    public string? VideoCodec { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public double FrameRate { get; init; }
+    public long VideoBitrate { get; init; }
+    public string? AudioCodec { get; init; }
+    public int SampleRate { get; init; }
+    public int Channels { get; init; }
+    public long AudioBitrate { get; init; }
+}
+
 internal readonly record struct ReceiverAudioBeat(ulong Sequence, float Strength, int AgeMs)
 {
     internal const int MaximumAgeMs = 250;
@@ -70,6 +83,7 @@ internal sealed record ReceiverMediaState(
     internal long SeekPosition(double sliderValue) => CanSeek && double.IsFinite(sliderValue)
         ? SeekStartMs + (long)Math.Round(Math.Clamp(sliderValue, 0, 1000) / 1000 * (SeekEndMs - SeekStartMs)) : PositionMs;
     public ReceiverAudioActivity AudioActivity { get; init; }
+    public ReceiverMediaDiagnostics Diagnostics { get; init; }
 
     internal static ReceiverMediaState Empty { get; } = new(0, ReceiverMediaKind.None, false, "", "", "", 0, 0, 0, 0, MediaControls.None);
 
@@ -114,7 +128,7 @@ internal sealed record ReceiverMediaState(
             ulong session = 0;
             if (root.TryGetProperty("session", out _) && !TryUInt64(root, "session", out session))
                 return false;
-            if (!TryAudioActivity(root, out var activity))
+            if (!TryAudioActivity(root, out var activity) || !TryDiagnostics(root, out var diagnostics))
                 return false;
 
             ReceiverMediaKind kind;
@@ -170,7 +184,8 @@ internal sealed record ReceiverMediaState(
                 SeekStartMs = seekStart, SeekEndMs = seekEnd,
                 Connected = connected,
                 DeviceName = connected ? deviceName.Trim() : "",
-                AudioActivity = kind == ReceiverMediaKind.Audio && playingValue.GetBoolean() ? activity : default
+                AudioActivity = kind == ReceiverMediaKind.Audio && playingValue.GetBoolean() ? activity : default,
+                Diagnostics = connected && kind != ReceiverMediaKind.None ? diagnostics : default
             };
             return true;
         }
@@ -178,6 +193,50 @@ internal sealed record ReceiverMediaState(
         {
             return false;
         }
+    }
+
+    private static bool TryDiagnostics(JsonElement root, out ReceiverMediaDiagnostics diagnostics)
+    {
+        diagnostics = default;
+        if (!root.TryGetProperty("diagnostics", out var value)) return true;
+        if (value.ValueKind != JsonValueKind.Object) return false;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in value.EnumerateObject())
+            if (!names.Add(property.Name)) return false;
+        if (!TryDiagnosticCodec(value, "videoCodec", out string? videoCodec) ||
+            !TryDiagnosticNumber(value, "width", 32768, out long width) ||
+            !TryDiagnosticNumber(value, "height", 32768, out long height) ||
+            !TryDiagnosticNumber(value, "videoBitrate", 1_000_000_000_000, out long videoBitrate) ||
+            !TryDiagnosticCodec(value, "audioCodec", out string? audioCodec) ||
+            !TryDiagnosticNumber(value, "sampleRate", 768000, out long sampleRate) ||
+            !TryDiagnosticNumber(value, "channels", 64, out long channels) ||
+            !TryDiagnosticNumber(value, "audioBitrate", 1_000_000_000_000, out long audioBitrate)) return false;
+        double frameRate = 0;
+        if (value.TryGetProperty("frameRate", out var fps) &&
+            (fps.ValueKind != JsonValueKind.Number || !fps.TryGetDouble(out frameRate) ||
+             !double.IsFinite(frameRate) || frameRate is < 0 or > 1000)) return false;
+        diagnostics = new()
+        {
+            VideoCodec = videoCodec, Width = (int)width, Height = (int)height,
+            FrameRate = frameRate, VideoBitrate = videoBitrate, AudioCodec = audioCodec,
+            SampleRate = (int)sampleRate, Channels = (int)channels, AudioBitrate = audioBitrate
+        };
+        return true;
+    }
+
+    private static bool TryDiagnosticCodec(JsonElement root, string name, out string? codec)
+    {
+        codec = null;
+        if (!root.TryGetProperty(name, out _)) return true;
+        if (!TryText(root, name, out string text) || text.Length > 64 || text.Any(char.IsControl)) return false;
+        codec = text.Length == 0 ? null : text;
+        return true;
+    }
+
+    private static bool TryDiagnosticNumber(JsonElement root, string name, long maximum, out long number)
+    {
+        number = 0;
+        return !root.TryGetProperty(name, out _) || (TryInt64(root, name, out number) && number >= 0 && number <= maximum);
     }
 
     private static bool TryAudioActivity(JsonElement root, out ReceiverAudioActivity activity)

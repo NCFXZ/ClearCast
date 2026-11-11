@@ -15,7 +15,7 @@ public sealed partial class MainWindow
 
     private async Task UiTestOwnedCompositorCaptureAsync(string output, string prefix, FrameworkElement? staticContent = null)
     {
-        const string method = "PrintWindow(PW_RENDERFULLCONTENT=2) of this test process's own HWND into a top-down 32-bit DIB; no desktop capture.";
+        const string method = "PrintWindow(PW_RENDERFULLCONTENT=2) of this test process's own HWND; exact DWM visible-frame pixels, excluding invisible resize gutters; no desktop capture.";
         const string limitation = "PrintWindow may omit or freeze WinUI hand-in Composition visuals. Unsupported capture is not a playback or application failure; XAML, palette, and animation lifecycle assertions remain separate.";
         if (!MusicBackground.IsAnimating)
         {
@@ -113,8 +113,7 @@ public sealed partial class MainWindow
 
     private UiNativeRect UiCompositorContentBounds(nint window, FrameworkElement staticContent, double padding = 16)
     {
-        if (!UiGetWindowRect(window, out var outer))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
+        var visible = UiCompositorVisibleBounds(window, out _);
         var client = new UiCompositorPoint();
         if (!UiCompositorClientToScreen(window, ref client))
             throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -122,11 +121,22 @@ public sealed partial class MainWindow
         double scale = WindowLayout.XamlRoot.RasterizationScale;
         return new UiNativeRect
         {
-            Left = (int)Math.Floor((content.X - padding) * scale) + client.X - outer.Left,
-            Top = (int)Math.Floor((content.Y - padding) * scale) + client.Y - outer.Top,
-            Right = (int)Math.Ceiling((content.X + content.Width + padding) * scale) + client.X - outer.Left,
-            Bottom = (int)Math.Ceiling((content.Y + content.Height + padding) * scale) + client.Y - outer.Top
+            Left = (int)Math.Floor((content.X - padding) * scale) + client.X - visible.Left,
+            Top = (int)Math.Floor((content.Y - padding) * scale) + client.Y - visible.Top,
+            Right = (int)Math.Ceiling((content.X + content.Width + padding) * scale) + client.X - visible.Left,
+            Bottom = (int)Math.Ceiling((content.Y + content.Height + padding) * scale) + client.Y - visible.Top
         };
+    }
+
+    private static UiNativeRect UiCompositorVisibleBounds(nint window, out UiNativeRect outer)
+    {
+        if (!UiGetWindowRect(window, out outer))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the owned window bounds.");
+        int result = UiCompositorDwmGetWindowAttribute(window, 9, out var visible, Marshal.SizeOf<UiNativeRect>());
+        if (result != 0 || visible.Width <= 0 || visible.Height <= 0 || visible.Left < outer.Left ||
+            visible.Top < outer.Top || visible.Right > outer.Right || visible.Bottom > outer.Bottom)
+            throw new InvalidOperationException("DWM did not supply bounded visible window coordinates.");
+        return visible;
     }
 
     private static UiCompositorFrame UiCaptureOwnedWindow(nint window)
@@ -134,8 +144,7 @@ public sealed partial class MainWindow
         UiCompositorGetWindowThreadProcessId(window, out uint owner);
         if (owner != (uint)Environment.ProcessId)
             throw new InvalidOperationException("Refusing to capture a window not owned by this test process.");
-        if (!UiGetWindowRect(window, out var bounds))
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the owned window bounds.");
+        var visible = UiCompositorVisibleBounds(window, out var bounds);
         int width = bounds.Width, height = bounds.Height;
         if (width is <= 0 or > 8192 || height is <= 0 or > 8192 || (long)width * height > 64 * 1024 * 1024)
             throw new InvalidOperationException("Owned window dimensions exceed the bounded capture size.");
@@ -164,7 +173,16 @@ public sealed partial class MainWindow
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "PrintWindow did not capture the owned window.");
             UiCompositorGdiFlush();
             Marshal.Copy(bits, pixels, 0, pixels.Length);
-            return new(width, height, pixels);
+            if (visible.Left == bounds.Left && visible.Top == bounds.Top && visible.Width == width && visible.Height == height)
+                return new(width, height, pixels);
+            // PrintWindow includes the invisible resize frame. Keep the exact
+            // visible pixels reported by DWM; do not rescale or paint over them.
+            byte[] frame = new byte[checked(visible.Width * visible.Height * 4)];
+            int left = visible.Left - bounds.Left, top = visible.Top - bounds.Top;
+            for (int row = 0; row < visible.Height; row++)
+                Buffer.BlockCopy(pixels, ((top + row) * width + left) * 4,
+                    frame, row * visible.Width * 4, visible.Width * 4);
+            return new(visible.Width, visible.Height, frame);
         }
         finally
         {
@@ -224,6 +242,9 @@ public sealed partial class MainWindow
     [DllImport("user32.dll", EntryPoint = "PrintWindow", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool UiCompositorPrintWindow(nint window, nint memory, uint flags);
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute", ExactSpelling = true)]
+    private static extern int UiCompositorDwmGetWindowAttribute(nint window, uint attribute, out UiNativeRect value, int size);
 
     [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId", ExactSpelling = true)]
     private static extern uint UiCompositorGetWindowThreadProcessId(nint window, out uint processId);

@@ -5,7 +5,6 @@ internal sealed partial class UiText
     private static readonly Dictionary<string, string> DynamicEnglish = new()
     {
         ["正在启动接收器…"] = "Starting the receiver…",
-        ["等待屏幕镜像连接"] = "Waiting for a device",
         ["等待 AirPlay 连接"] = "Waiting for an AirPlay device",
         ["AirPlay 已连接"] = "AirPlay connected",
         ["无法发送播放指令，请在设备上操作。"] = "Couldn't send the playback command. Use your device to control playback.",
@@ -32,6 +31,8 @@ internal sealed partial class UiText
         ["硬件解码不可用。请在设置中选择自动或软件解码后重试。"] =
             "Hardware decoding is unavailable. Choose Automatic or Software decoding in Settings and try again.",
         ["无法读取已保存的配对记录。"] = "Couldn't read saved pairings.",
+        ["已保存的配对记录过大，请在设置中清除配对记录后重试。"] =
+            "The saved pairing records are too large. Remove all saved pairings in Settings, then try again.",
         ["已删除全部配对记录。设备下次屏幕镜像时需要重新验证。"] =
             "All pairings removed. Devices will need a pairing code the next time they connect.",
         ["已删除该设备的配对记录。该设备下次屏幕镜像时需要重新验证，其他已保存设备也可能需要重新验证。"] =
@@ -65,4 +66,36 @@ internal sealed partial class UiText
 
     public string Translate(string chinese) =>
         IsEnglish && DynamicEnglish.TryGetValue(chinese, out var english) ? english : chinese;
+
+    public string RenderedMediaDiagnostics(double frameRate, ulong dropped) =>
+        Get("渲染帧率", "Rendered frame rate") + FormattableString.Invariant($": {frameRate:0.##} fps\n") +
+        Get("丢帧数", "Dropped frames") + ": " + dropped.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    public string MediaDiagnosticsText(ReceiverMediaState state)
+    {
+        if (state.Kind == ReceiverMediaKind.None || !state.Connected) return "";
+        var info = state.Diagnostics;
+        var lines = new List<string>(9);
+        void Add(string chinese, string english, string value) => lines.Add(Get(chinese, english) + ": " + value);
+        if (state.Kind == ReceiverMediaKind.Video)
+        {
+            if (info.Width > 0 && info.Height > 0)
+                Add("分辨率", "Resolution", $"{info.Width} × {info.Height}");
+            if (double.IsFinite(info.FrameRate) && info.FrameRate > 0)
+                Add("源帧率", "Source frame rate", FormattableString.Invariant($"{info.FrameRate:0.##} fps"));
+            if (!string.IsNullOrEmpty(info.VideoCodec)) Add("视频编码", "Video codec", info.VideoCodec);
+            if (info.VideoBitrate > 0) Add("视频码率", "Video bitrate", FormatBitrate(info.VideoBitrate));
+        }
+        if (!string.IsNullOrEmpty(info.AudioCodec)) Add("音频编码", "Audio codec", info.AudioCodec);
+        if (info.SampleRate > 0) Add("采样率", "Sample rate", FormattableString.Invariant($"{info.SampleRate / 1000d:0.###} kHz"));
+        if (info.Channels > 0) Add("声道数", "Channels", info.Channels.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (info.AudioBitrate > 0) Add("音频码率", "Audio bitrate", FormatBitrate(info.AudioBitrate));
+        return lines.Count > 0 ? string.Join('\n', lines) : Get("等待媒体信息…", "Waiting for media information…");
+    }
+
+    private static string FormatBitrate(long bitrate) => bitrate >= 1_000_000_000
+        ? FormattableString.Invariant($"{bitrate / 1_000_000_000d:0.##} Gbps")
+        : bitrate >= 1_000_000 ? FormattableString.Invariant($"{bitrate / 1_000_000d:0.##} Mbps")
+        : bitrate >= 1000 ? FormattableString.Invariant($"{bitrate / 1000d:0.##} kbps")
+        : FormattableString.Invariant($"{bitrate} bps");
 }

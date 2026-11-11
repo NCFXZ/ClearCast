@@ -8,7 +8,9 @@
 
 ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕内容，或从兼容的播放器投放音乐和视频。
 
-![ClearCast 中文音乐界面](shared/docs/screenshots/1.2.1.0/zh-CN-music-dark.png)
+运行时资源限额、过载处理和安全边界见[稳定性与安全说明](shared/docs/RELIABILITY_SECURITY.md)。
+
+![ClearCast 中文音乐界面](shared/docs/screenshots/1.2.2.0/zh-CN-music-dark.png)
 
 将设备与电脑连接到同一局域网，在设备的「屏幕镜像」或播放器的 AirPlay 选项中选择 ClearCast。两台设备所在的局域网需要允许设备相互访问。
 
@@ -41,6 +43,7 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 
 - **桌面界面**由 C#、.NET 10 和 WinUI 3 原生 XAML 实现。标题栏、侧栏和正文共用 Mica 底色，页面以 Windows 设置为参考，使用居中的内容列和原生主题卡片。「AirPlay」页使用本地 SVG 循环动画，按当前显示 DPI 解码；切换页面、窗口最小化或播放媒体时暂停动画。 [微软 Mica 分层指南](https://learn.microsoft.com/en-us/windows/apps/design/style/mica#app-layering-with-mica) · [微软设置页指南](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings#layout)
 - **接收服务**在 ClearCast 进程内运行。随软件发布的 `receiver\clearcast_receiver.dll` 使用 UxPlay 处理 AirPlay 发现、配对和收流。启动阶段的网卡查询和原生组件加载在后台执行。
+- **网络边界**跟随接收网卡；音频依赖当前连接的签名验证，视频跨连接控制依赖已验证设备建立的会话，不能仅凭相同 IP 继承权限。HTTP(S)/HLS 保留公网与局域网来源，连接前检查实际目标地址并拒绝回环地址。详见[稳定性与安全边界](shared/docs/RELIABILITY_SECURITY.md)。
 - **播放**由 GStreamer 直接解码来流，自动模式优先尝试 D3D11 硬件解码。镜像画面通过原生子窗口在应用内等比显示。运行时包含独立的 `gst-plugin-scanner.exe`，用于发现随包插件。媒体结束后返回 AirPlay 页，并按实际连接状态显示已连接或等待。
 - **音乐背景**预计算 32 张 96×96 的封面扭曲与模糊纹理，由同一相位时钟驱动 33 个图层，任一时刻最多两层可见。原有流动使用 34 个动画通道和一个调速控制器；独立背景缩放、偏移表达式使正常运动共 36 个通道，360ms 阻尼强拍脉冲期间为 37 个，不重启流动相位。速率依据已解码 PCM 的瞬态密度，脉冲依据独立低频瞬态；有界事件历史与代次、序号、年龄校验防止旧拍重播。暂停和过期活动不会保留旧曲目的加速或脉冲状态。浅色纹理增强封面颜色并约束最低亮度，深色处理保持原样。设计、来源及验证边界见[音乐背景说明](shared/docs/MUSIC_BACKGROUND.md)。
 
@@ -98,10 +101,11 @@ Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/downloa
 pwsh -File .\scripts\native\Build-OpenSslSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -RuntimeDirectory .runtime\openssl-security
 pwsh -File .\scripts\native\Build-LibplistSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -DiffDirectory C:\msys64\usr\bin
 pwsh -File .\scripts\native\Build-GStreamerSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
+pwsh -File .\scripts\native\Build-GStreamerHttpSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
 pwsh -File .\scripts\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
 
-安全组件构建脚本验证固定官方源码的 SHA-256，独立构建 libplist 2.8.0、OpenSSL 3.5.9 LTS，以及 GStreamer 1.28.9 的 codecparsers 和 videoparsersbad。其余组件使用 MSYS2 运行时。构建工具和安全组件使用独立目录，不覆盖 MSYS2 安装；接收器构建会验证组件、头文件和导入库的清单与哈希，缺失或不匹配时停止。构建完成后执行上一节的发布命令。
+安全组件构建脚本验证固定官方源码的 SHA-256，独立构建 libplist 2.8.0、OpenSSL 3.5.9 LTS，以及 GStreamer 1.28.9 的 codecparsers、videoparsersbad 和带受控目标地址补丁的 HTTP 源 libgstsoup。其余组件使用 MSYS2 运行时。构建工具和安全组件使用独立目录，不覆盖 MSYS2 安装；接收器构建会验证组件、头文件、导入库及源码补丁的清单与哈希，缺失或不匹配时停止。HTTP 组件的 `gstreamer-http-security-manifest.json` 和 `LICENSE-GStreamerHttpSecurity.txt` 必须随 receiver 发布。构建完成后执行上一节的发布命令。
 
 ### 清晰度与真机验收
 
@@ -135,7 +139,7 @@ Mirror your screen, or play AirPlay music and video on a Windows PC.
 
 ClearCast turns your Windows PC into an AirPlay receiver for screen sharing and media from compatible players.
 
-![ClearCast music view in English](shared/docs/screenshots/1.2.1.0/en-US-music-dark.png)
+![ClearCast music view in English](shared/docs/screenshots/1.2.2.0/en-US-music-dark.png)
 
 Connect your device and PC to the same local network, then select ClearCast in Screen Mirroring or your player’s AirPlay menu. The network must allow the two devices to communicate with each other.
 
@@ -168,6 +172,7 @@ The receiver key, saved pairings, connection log, and preferences are stored loc
 
 - **Desktop UI:** C#, .NET 10, and native WinUI 3 XAML. The title bar, sidebar, and content share a Mica backdrop. Centered content and themed cards follow the Windows Settings layout. The AirPlay page uses a local SVG loop rendered for the current display DPI; it pauses on other pages, when minimized, and while media is playing. [Microsoft Mica layering guidance](https://learn.microsoft.com/en-us/windows/apps/design/style/mica#app-layering-with-mica) · [Microsoft settings layout guidance](https://learn.microsoft.com/en-us/windows/apps/design/app-settings/guidelines-for-app-settings#layout)
 - **Receiver:** `receiver\clearcast_receiver.dll` runs in the ClearCast process and uses UxPlay for AirPlay discovery, pairing, and incoming streams. Adapter discovery and native component loading run in the background during startup.
+- **Network boundary:** Receiving follows the selected adapter. Audio requires the current transport's signature verification; video handoffs use a session issued to a verified device, never its IP address alone. Public and LAN HTTP(S)/HLS sources remain supported, with resolved destinations checked before connecting and loopback addresses rejected. See the [stability and security boundaries](shared/docs/RELIABILITY_SECURITY.md).
 - **Playback:** GStreamer decodes incoming streams directly. Automatic mode first tries D3D11 hardware decoding. A native child window displays video inside the app while preserving its aspect ratio. The runtime includes `gst-plugin-scanner.exe` for discovering the bundled plugins. When media ends, the AirPlay page shows the current connected or waiting state.
 - **Music background:** 32 precomputed 96×96 warped and blurred artwork textures share one phase clock across 33 layers, with at most two visible at a time. The existing flow uses 34 animation channels and one rate controller; independent background scale and offset expressions bring normal motion to 36 channels and a 360 ms damped beat impulse to 37, without restarting the flow phase. Decoded PCM transient density controls the pace, while a separate low-frequency detector supplies impulses. Bounded event history, epochs, sequences, and ages prevent replaying old beats. Paused or stale activity does not retain the previous track's speed or pulse. Light textures use richer artwork colors with a minimum-brightness guard; dark-theme processing is unchanged. See the [background design and validation boundaries](shared/docs/MUSIC_BACKGROUND.md).
 
@@ -225,10 +230,11 @@ Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/downloa
 pwsh -File .\scripts\native\Build-OpenSslSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -RuntimeDirectory .runtime\openssl-security
 pwsh -File .\scripts\native\Build-LibplistSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -DiffDirectory C:\msys64\usr\bin
 pwsh -File .\scripts\native\Build-GStreamerSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
+pwsh -File .\scripts\native\Build-GStreamerHttpSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
 pwsh -File .\scripts\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
 
-The security-component scripts verify pinned official source SHA-256 values and independently build libplist 2.8.0, OpenSSL 3.5.9 LTS, and GStreamer 1.28.9 codecparsers and videoparsersbad. The remaining components come from the MSYS2 runtime. Build tools and security components use separate directories without overwriting the MSYS2 installation. The receiver build validates the component binaries, headers, and import libraries against their manifests and stops on missing or mismatched files. Then run the app publish command above.
+The security-component scripts verify pinned official source SHA-256 values and independently build libplist 2.8.0, OpenSSL 3.5.9 LTS, and GStreamer 1.28.9 codecparsers, videoparsersbad and libgstsoup with the controlled destination-address patch. The remaining components come from the MSYS2 runtime. Build tools and security components use separate directories without overwriting the MSYS2 installation. The receiver build validates binaries, headers, import libraries and source patches against their manifests and stops on missing or mismatched files. Ship `gstreamer-http-security-manifest.json` and `LICENSE-GStreamerHttpSecurity.txt` with the receiver. Then run the app publish command above.
 
 ### Picture quality and device acceptance checks
 

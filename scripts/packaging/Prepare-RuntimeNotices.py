@@ -15,6 +15,18 @@ import subprocess
 import tarfile
 import zipfile
 
+HTTP_SOURCE_HASH = 'e518cd97483706a252e95e60312a22d23dec6f5e7673af6f5bde719c3a9ca7f4'
+HTTP_SOURCE_NAME = 'gst-plugins-good-1.28.9.tar.xz'
+HTTP_SOURCE_MEMBER = 'gstreamer/' + HTTP_SOURCE_NAME
+HTTP_SOURCE_URL = 'https://gstreamer.freedesktop.org/src/gst-plugins-good/' + HTTP_SOURCE_NAME
+HTTP_PATCH = 'src/native/patches/gstreamer-soup-destination.patch'
+PARSER_SOURCE_HASH = '4a4e0b7bf84f868378c48f143a7ac3a98923b488a5b74f1a35ba46bc3c43f6b1'
+PARSER_SOURCE_NAME = 'gst-plugins-bad-1.28.9.tar.xz'
+PARSER_SOURCE_MEMBER = 'gstreamer/' + PARSER_SOURCE_NAME
+PARSER_SOURCE_URL = 'https://gstreamer.freedesktop.org/src/gst-plugins-bad/' + PARSER_SOURCE_NAME
+PARSER_PATCH = 'src/native/patches/gstreamer-adaptive-demux-time.patch'
+PARSER_FILES = {'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll', 'libgstadaptivedemux-1.0-0.dll'}
+
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
@@ -30,6 +42,38 @@ def safe_relative(value):
     if path.is_absolute() or '..' in path.parts or ':' in value or not path.parts:
         raise ValueError('Unsafe relative path: ' + value)
     return path
+
+
+def http_security_manifest(runtime, repository):
+    manifest = json.loads((runtime / 'gstreamer-http-security-manifest.json').read_text(encoding='utf-8-sig'))
+    patch = repository.joinpath(*safe_relative(HTTP_PATCH).parts)
+    files = manifest.get('files', [])
+    provenance = manifest.get('sourcePatch', {})
+    if (manifest.get('schemaVersion') != 1 or manifest.get('version') != '1.28.9' or
+            manifest.get('sourceUrl') != HTTP_SOURCE_URL or manifest.get('sourceSha256', '').lower() != HTTP_SOURCE_HASH or
+            len(files) != 1 or files[0].get('relativePath') != 'lib/gstreamer-1.0/libgstsoup.dll' or
+            not re.fullmatch(r'[a-fA-F0-9]{64}', files[0].get('sha256', '')) or
+            provenance.get('relativePath') != HTTP_PATCH or provenance.get('sha256', '').lower() != file_sha(patch)):
+        raise ValueError('Controlled HTTP source manifest does not match the pinned source/file/patch.')
+    if file_sha(runtime / files[0]['relativePath']) != files[0]['sha256'].lower():
+        raise ValueError('Controlled HTTP source binary mismatch.')
+    return manifest
+
+
+def parser_security_manifest(runtime, repository):
+    manifest = json.loads((runtime / 'gstreamer-security-manifest.json').read_text(encoding='utf-8-sig'))
+    files = manifest.get('files', [])
+    patch = manifest.get('sourcePatch', {})
+    if (manifest.get('schemaVersion') != 1 or manifest.get('version') != '1.28.9' or
+            manifest.get('sourceUrl') != PARSER_SOURCE_URL or manifest.get('sourceSha256', '').lower() != PARSER_SOURCE_HASH or
+            len(files) != len(PARSER_FILES) or {file.get('relativePath') for file in files} != PARSER_FILES or
+            patch.get('relativePath') != PARSER_PATCH or patch.get('sha256', '').lower() != file_sha(repository / PARSER_PATCH)):
+        raise ValueError('Controlled parser/adaptive source manifest does not match the pinned source/file/patch.')
+    for file in files:
+        if (not re.fullmatch(r'[a-fA-F0-9]{64}', file.get('sha256', '')) or
+                file_sha(runtime / file['relativePath']) != file['sha256'].lower()):
+            raise ValueError('Controlled parser/adaptive source binary mismatch.')
+    return manifest
 
 
 def tar_bytes(path, member):
@@ -64,7 +108,8 @@ def pacman_fields(text):
     return {key: '\n'.join(value) for key, value in result.items()}
 
 
-def audit_runtime(runtime, msys):
+def audit_runtime(runtime, msys, component_directory=None):
+    component_directory = component_directory or runtime.parent
     packages, owners, controlled = {}, {}, {}
     for directory in (msys / 'var/lib/pacman/local').iterdir():
         if not (directory / 'desc').is_file():
@@ -75,8 +120,10 @@ def audit_runtime(runtime, msys):
             for name in (directory / 'files').read_text(encoding='utf-8').splitlines():
                 if name and not name.startswith('%'):
                     owners[name.casefold()] = metadata['NAME']
-    for component in ['openssl-security', 'libplist-security', 'gstreamer-security']:
-        manifest = json.loads((runtime.parent / component / 'manifest.json').read_text(encoding='utf-8-sig'))
+    for component in ['openssl-security', 'libplist-security', 'gstreamer-security', 'gstreamer-http-security']:
+        source_manifest = (runtime / 'gstreamer-http-security-manifest.json' if component == 'gstreamer-http-security'
+            else component_directory / component / 'manifest.json')
+        manifest = json.loads(source_manifest.read_text(encoding='utf-8-sig'))
         for file in manifest['files']:
             controlled[file['relativePath'].casefold()] = (component, manifest, file)
     records = []
@@ -94,6 +141,8 @@ def audit_runtime(runtime, msys):
             component, manifest, _ = custom
             record.update(controlledComponent=component, version=manifest['version'],
                 sourceUrl=manifest['sourceUrl'], sourceSha256=manifest['sourceSha256'])
+            if component in {'gstreamer-http-security', 'gstreamer-security'}:
+                record['sourcePatch'] = manifest['sourcePatch']
         elif owner:
             metadata = packages[owner]
             record.update(package=owner, version=metadata['VERSION'], sourcePackage=metadata['BASE'],
@@ -146,18 +195,24 @@ def main():
     parser.add_argument('--package-audit', type=Path, help='Optional independently prepared owner audit; otherwise audit the installed MSYS2 database directly.')
     parser.add_argument('--msys-root', type=Path, required=True)
     parser.add_argument('--runtime-directory', type=Path, required=True)
+    parser.add_argument('--security-component-directory', type=Path,
+        help='Parent directory of controlled build components; defaults to the runtime parent.')
     parser.add_argument('--additional-source-directory', type=Path, required=True)
     parser.add_argument('--output-directory', type=Path, required=True)
     parser.add_argument('--version', required=True)
     args = parser.parse_args()
+    repository = Path(__file__).resolve().parents[2]
+    component_directory = args.security_component_directory or args.runtime_directory.parent
     if not re.fullmatch(r'\d+\.\d+\.\d+\.0', args.version):
         parser.error('A four-part release version with zero Store revision is required.')
     if not re.fullmatch(r'[0-9a-fA-F]{64}', args.base_sha256) or file_sha(args.base) != args.base_sha256.lower():
         raise ValueError('Public source baseline digest mismatch.')
+    http_manifest = http_security_manifest(args.runtime_directory, repository)
+    parser_manifest = parser_security_manifest(args.runtime_directory, repository)
     output = args.output_directory.resolve()
     if output.exists():
         raise ValueError('Use a new output directory; existing notices are never overwritten.')
-    audit = json.loads(args.package_audit.read_text(encoding='utf-8-sig')) if args.package_audit else audit_runtime(args.runtime_directory, args.msys_root)
+    audit = json.loads(args.package_audit.read_text(encoding='utf-8-sig')) if args.package_audit else audit_runtime(args.runtime_directory, args.msys_root, component_directory)
     if audit['unmatched']:
         raise ValueError('Package audit contains unmatched runtime files.')
     # The certificate trust bundle is a distributed third-party data file,
@@ -188,6 +243,12 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(entry))
         members = set(archive.namelist())
+        http_source_bytes = archive.read(HTTP_SOURCE_MEMBER) if HTTP_SOURCE_MEMBER in members else None
+        if http_source_bytes is not None and (sums.get(HTTP_SOURCE_MEMBER) != HTTP_SOURCE_HASH or sha(http_source_bytes) != HTTP_SOURCE_HASH):
+            raise ValueError('Baseline controlled HTTP source archive mismatch.')
+        parser_source_bytes = archive.read(PARSER_SOURCE_MEMBER) if PARSER_SOURCE_MEMBER in members else None
+        if parser_source_bytes is not None and (sums.get(PARSER_SOURCE_MEMBER) != PARSER_SOURCE_HASH or sha(parser_source_bytes) != PARSER_SOURCE_HASH):
+            raise ValueError('Baseline controlled parser/adaptive source archive mismatch.')
 
     grouped = {}
     records = []
@@ -275,7 +336,7 @@ def main():
                 not set(names).issubset(allowed_files) or
                 (component['name'] == 'openssl' and 'libcrypto-3-x64.dll' not in names)):
             raise ValueError('Invalid controlled version or runtime file set.')
-        source_manifest = args.runtime_directory.parent / (component['name'] + '-security/manifest.json')
+        source_manifest = component_directory / (component['name'] + '-security/manifest.json')
         manifest = json.loads(source_manifest.read_text(encoding='utf-8-sig'))
         for key in ['version', 'sourceUrl', 'sourceSha256']:
             if manifest[key].lower() != component[key].lower():
@@ -289,8 +350,48 @@ def main():
         target.mkdir(parents=True, exist_ok=True)
         (target / 'source-build.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
         controlled.append(component)
-    parser_manifest = args.runtime_directory / 'gstreamer-security-manifest.json'
-    shutil.copyfile(parser_manifest, output / 'licenses/gst-plugins-bad-1.28.9/source-build.json')
+    parser_source = {'member': PARSER_SOURCE_MEMBER, 'sha256': PARSER_SOURCE_HASH, 'location': 'baseline'}
+    if parser_source_bytes is None:
+        source_path = args.additional_source_directory / PARSER_SOURCE_NAME
+        if not source_path.is_file() or file_sha(source_path) != PARSER_SOURCE_HASH:
+            raise ValueError('Missing or mismatched exact controlled parser/adaptive source archive.')
+        parser_source_bytes = source_path.read_bytes()
+        additions[PARSER_SOURCE_MEMBER] = {'path': str(source_path.resolve()), 'sha256': PARSER_SOURCE_HASH}
+        parser_source['location'] = 'additional'
+    with tarfile.open(fileobj=io.BytesIO(parser_source_bytes), mode='r:xz') as source:
+        copying = source.getmember('gst-plugins-bad-1.28.9/COPYING')
+        if not copying.isfile():
+            raise ValueError('Parser/adaptive source license must be a regular file.')
+        parser_license = source.extractfile(copying).read()
+    if (args.runtime_directory / 'LICENSE-GStreamerSecurity.txt').read_bytes() != parser_license:
+        raise ValueError('Controlled parser/adaptive source license mismatch.')
+    parser_notice = output / 'licenses/gst-plugins-bad-1.28.9'
+    parser_notice.mkdir(parents=True, exist_ok=True)
+    (parser_notice / 'COPYING').write_bytes(parser_license)
+    (parser_notice / 'source-build.json').write_text(json.dumps(parser_manifest, indent=2) + '\n', encoding='utf-8')
+    shutil.copyfile(repository / PARSER_PATCH, parser_notice / 'gstreamer-adaptive-demux-time.patch')
+    http_source = {'member': HTTP_SOURCE_MEMBER, 'sha256': HTTP_SOURCE_HASH, 'location': 'baseline'}
+    if http_source_bytes is None:
+        source_path = args.additional_source_directory / HTTP_SOURCE_NAME
+        if not source_path.is_file():
+            source_path = args.runtime_directory.parent / HTTP_SOURCE_NAME
+        if not source_path.is_file() or file_sha(source_path) != HTTP_SOURCE_HASH:
+            raise ValueError('Missing or mismatched exact controlled HTTP source archive.')
+        http_source_bytes = source_path.read_bytes()
+        additions[HTTP_SOURCE_MEMBER] = {'path': str(source_path.resolve()), 'sha256': HTTP_SOURCE_HASH}
+        http_source['location'] = 'additional'
+    with tarfile.open(fileobj=io.BytesIO(http_source_bytes), mode='r:xz') as source:
+        copying = source.getmember('gst-plugins-good-1.28.9/COPYING')
+        if not copying.isfile():
+            raise ValueError('HTTP source license must be a regular file.')
+        license_bytes = source.extractfile(copying).read()
+    if (args.runtime_directory / 'LICENSE-GStreamerHttpSecurity.txt').read_bytes() != license_bytes:
+        raise ValueError('Controlled HTTP source license mismatch.')
+    http_notice = output / 'licenses/gst-plugins-good-1.28.9'
+    http_notice.mkdir(parents=True, exist_ok=True)
+    (http_notice / 'COPYING').write_bytes(license_bytes)
+    (http_notice / 'source-build.json').write_text(json.dumps(http_manifest, indent=2) + '\n', encoding='utf-8')
+    shutil.copyfile(repository / HTTP_PATCH, http_notice / 'gstreamer-soup-destination.patch')
 
     intro = baseline.split('## Native runtime inventory')[0]
     intro = intro.replace('ClearCast 1.1.0', 'ClearCast ' + args.version).replace('/v1.1.0', '/v' + args.version)
@@ -299,12 +400,16 @@ def main():
     inventory += '## Controlled components\n\n'
     for component in controlled:
         inventory += f'- {component["name"]} {component["version"]}: {component["sourceUrl"]}; exact source SHA-256 `{component["sourceSha256"]}` and shipped file hashes in `licenses/{component["name"]}-{component["version"]}/source-build.json`.\n'
+    inventory += f'- GStreamer HTTP source 1.28.9: {HTTP_SOURCE_URL}; exact source SHA-256 `{HTTP_SOURCE_HASH}`, shipped libgstsoup hash and controlled patch identity in `licenses/gst-plugins-good-1.28.9/source-build.json`; the patch and COPYING are included beside it.\n'
+    inventory += f'- GStreamer parser/adaptive components 1.28.9: {PARSER_SOURCE_URL}; exact source SHA-256 `{PARSER_SOURCE_HASH}`, three shipped binary hashes and controlled timing patch identity in `licenses/gst-plugins-bad-1.28.9/source-build.json`; the patch and COPYING are included beside it.\n'
     inventory += '\nAll native PE file identities are recorded in `runtime-components.json`. The ClearCast receiver is built from the pinned UxPlay source plus the application source patches, rather than an unmodified package binary.\n'
     (output / 'THIRD-PARTY-COMPONENTS.md').write_text(inventory, encoding='utf-8')
     (output / 'runtime-components.json').write_text(json.dumps({'schemaVersion': 1, 'version': args.version, 'files': records}, indent=2) + '\n', encoding='utf-8')
     result = {'noticeDirectory': str(output), 'msysPackageCount': len(grouped), 'fileCount': len(records),
               'peFileCount': sum(Path(item['relativePath']).suffix.lower() in {'.dll', '.exe'} for item in records),
               'baselineSha256': args.base_sha256.lower(), 'additionalSources': additions,
+              'httpSource': http_source,
+              'parserSource': parser_source,
               'inventorySha256': file_sha(output / 'THIRD-PARTY-COMPONENTS.md')}
     (output / 'source-coverage.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result, indent=2))

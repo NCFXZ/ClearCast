@@ -7,6 +7,8 @@
 
 #include <gst/base/gstbasesink.h>
 #include <windows.h>
+#include "clearcast_appsrc_backpressure.h"
+#include "clearcast_bus_backpressure.h"
 
 #define CLEARCAST_DECODER_LOCK() \
     g_autoptr(GRecMutexLocker) decoder_lock = g_rec_mutex_locker_new(&clearcast_renderer_lock)
@@ -141,6 +143,7 @@ static bool clearcast_decoder_link_pipeline(video_renderer_t *instance) {
 }
 
 static bool clearcast_decoder_configure(video_renderer_t *instance, int decoder) {
+    if (instance && instance->appsrc) clearcast_appsrc_reset(instance->appsrc);
     if (!instance || !instance->appsrc ||
         (strcmp(instance->codec, h264) && strcmp(instance->codec, h265))) {
         return true;
@@ -174,6 +177,7 @@ static bool clearcast_decoder_reset_pipeline(int decoder) {
                  gst_element_get_state(pipeline, NULL, NULL, 250 * GST_MSECOND) == GST_STATE_CHANGE_SUCCESS;
     bool configured = ready && clearcast_decoder_configure(renderer, decoder);
     gst_bus_set_flushing(renderer->bus, FALSE);
+    clearcast_bus_reset(renderer->bus);
     if (!configured || gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         return false;
     }
@@ -193,7 +197,7 @@ static void clearcast_decoder_revert(int error) {
                 GST_BUFFER_PTS(keyframe) = clearcast_decoder_keyframe_time >= base
                     ? clearcast_decoder_keyframe_time - base : 0;
             }
-            gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), keyframe);
+            clearcast_appsrc_push_buffer(renderer->appsrc, keyframe);
         }
     }
     clearcast_decoder_complete(failed, error);

@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)] [string] $StorePublishDirectory,
     [Parameter(Mandatory)] [string] $ComplianceDirectory,
     [Parameter(Mandatory)] [string] $ValidatedReceiverSha256,
-    [string] $Version = '1.2.1.0',
+    [string] $Version = '1.2.2.0',
     [Parameter(Mandatory)] [string] $OutputPath
 )
 $ErrorActionPreference = 'Stop'
@@ -25,8 +25,11 @@ try {
             'Assets', 'LICENSE', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md',
             'receiver\clearcast_receiver.dll', 'receiver\gst-plugin-scanner.exe',
             'receiver\gstreamer-security-manifest.json', 'receiver\security-dependencies-manifest.json',
+            'receiver\gstreamer-http-security-manifest.json', 'receiver\LICENSE-GStreamerHttpSecurity.txt',
+            'receiver\lib\gstreamer-1.0\libgstsoup.dll',
             'receiver\libplist-2.0.dll', 'receiver\libcrypto-3-x64.dll', 'receiver\libssl-3-x64.dll',
             'receiver\libgstcodecparsers-1.0-0.dll',
+            'receiver\libgstadaptivedemux-1.0-0.dll', 'receiver\LICENSE-GStreamerSecurity.txt',
             'receiver\lib\gstreamer-1.0\libgstvideoparsersbad.dll')) {
             $source = Join-Path $payloadInput.Source $relative
             if (-not (Test-Path -LiteralPath $source)) { continue }
@@ -83,6 +86,21 @@ try {
         $manifest.files[0].sha256 = '0' * 64
         $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $notice
     } { [IO.File]::WriteAllBytes($notice, $backupNotice) } '*hash does not match*'
+    $httpManifestPath = Join-Path $work 'store\receiver\gstreamer-http-security-manifest.json'
+    $httpManifestBackup = [IO.File]::ReadAllBytes($httpManifestPath)
+    Check-Rejected 'Missing controlled HTTP manifest' { Remove-Item -LiteralPath $httpManifestPath } {
+        [IO.File]::WriteAllBytes($httpManifestPath, $httpManifestBackup)
+    } '*Missing receiver\gstreamer-http-security-manifest.json*'
+    Check-Rejected 'Wrong controlled HTTP patch provenance' {
+        $value = Get-Content -LiteralPath $httpManifestPath -Raw | ConvertFrom-Json
+        $value.sourcePatch.sha256 = '0' * 64
+        $value | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $httpManifestPath
+    } { [IO.File]::WriteAllBytes($httpManifestPath, $httpManifestBackup) } '*HTTP source manifest or notice*'
+    $httpBinary = Join-Path $work 'store\receiver\lib\gstreamer-1.0\libgstsoup.dll'
+    $httpBinaryBackup = [IO.File]::ReadAllBytes($httpBinary)
+    Check-Rejected 'Tampered controlled HTTP source binary' { [IO.File]::WriteAllBytes($httpBinary, [byte[]]@(1,2,3)) } {
+        [IO.File]::WriteAllBytes($httpBinary, $httpBinaryBackup)
+    } '*HTTP source binary or notice hash does not match*'
     & $builder @options | Out-Null
     if (Test-Path -LiteralPath $options.OutputDirectory) { throw 'ValidateOnly created packaging output.' }
     $results += [pscustomobject]@{ name = 'Restored payload accepted without output'; passed = $true }

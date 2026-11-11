@@ -72,7 +72,7 @@ public sealed partial class MainWindow
         _pageHosts[page] = host;
         UpdateLandingAnimationState();
         if (IsMirrorPageSelected && !animate)
-            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateVideoHost);
+            QueueVideoHostUpdate();
     }
 
     private DispatcherQueueTimer CreatePageEntranceTimer()

@@ -4,6 +4,8 @@
 
 将发送设备与 Windows 电脑连接到允许设备互访的同一局域网，打开 ClearCast。在设备的「屏幕镜像」或兼容播放器的 AirPlay 选项中选择 ClearCast，按电脑提示完成验证码配对。
 
+控制中心「正在播放」中的 AirPlay 音频输出选择，不等同于开启「屏幕镜像」，也不能要求每个视频 App 随后自动发送视频。希望连接后显示手机整体画面时，选择「控制中心 → 屏幕镜像 → ClearCast」；希望直接投放视频时，使用视频 App 自身的 AirPlay 入口。接收端只能播放发送端实际提供的音频、镜像或视频来源。操作区别见 Apple 的[音频输出说明](https://support.apple.com/zh-cn/105068)及[视频投放与屏幕镜像说明](https://support.apple.com/zh-cn/102661)。
+
 音乐连接会显示发送端提供的封面、曲名、歌手、专辑和进度。没有提供的信息使用占位内容。发送端返回有效的 DACP 定位状态时显示可拖动进度；定位后必须确认实际播放位置，拒绝或未生效时恢复只读进度。播放/暂停、上一首、下一首按钮按发送端能力显示；不支持远程控制时可继续在发送设备上操作。
 
 音乐内容在左侧导航以外的页面区域内居中，依次展示封面、曲名、歌手、进度和上一首/播放/下一首。封面颜色形成柔和的背景并缓慢流动，覆盖标题栏和左侧导航后的整个应用区域；切换到「设置」或「关于」后仍继续流动。背景遵循当前浅色或深色主题，不改变用户的主题选择。音乐暂停、窗口最小化或隐藏、关闭系统动画时停止流动，高对比度模式关闭彩色背景。界面不增加音量、更多或歌词入口。
@@ -14,9 +16,17 @@
 
 直接视频提供电脑端暂停/继续和进度控制。只有播放管线报告有效可定位范围时才能拖动；屏幕镜像不显示这些控件。拖动和方向键调整完成后提交定位，轮询不会覆盖正在拖动的位置；换源、切歌或连接结束会使旧请求失效。
 
-非全屏时，视频保持完整比例，在画面区域内居中，四角采用与音乐封面相同的圆角；比例不同产生的空余区域显示动态背景。控制条独立放在视频下方，已播放和剩余时间分别位于进度条两端。下一行左侧为文字断开按钮，中央为后退 10 秒、播放/暂停和前进 10 秒，右侧为向左/右旋转及全屏。镜像和直播只显示断开、旋转和全屏，包括带有 DVR 定位窗口的直播；有限时长视频可暂停，不支持定位时保留只读进度。不再展示连接、分辨率或帧率。全屏控制条改为画面内的底部浮层，空闲时隐藏，暂停、拖动、鼠标停留或键盘操作时保持可见。
+直接视频的 HTTP(S)/HLS 解码由 GStreamer 负责。ClearCast 禁用 UxPlay 的旧 `mlhls://`、`/action` 播放列表改写及本地桥接路由，避免进入不需要的旧解析器；普通 HTTP(S) 媒体和已有安全来源的缓存续播继续使用现有路径。资源限额及安全边界见[稳定性与安全说明](RELIABILITY_SECURITY.md)。
 
-在 AirPlay 页面按空格键可触发当前可用的播放/暂停操作，包括视频原生画面取得焦点时；音乐要求发送端支持远程播放控制。镜像和直播不触发该快捷键。10 秒定位按当前媒体范围限制，继续通过会话及内容代次校验。
+有效的新视频播放请求会准备并自动启动当前视频，无须另行补发继续播放指令。管线创建与播放状态更新共用生命周期锁，避免创建期间的最新状态被旧值覆盖；准备完成与播放速率按当前代管线实际状态报告。加载期间明确收到的暂停仍然生效，不能通过定时强制续播覆盖用户的暂停操作。HTTP `/server-info` 保留兼容的上游能力掩码 `0x27F`，RTSP 和 TXT 使用各自既有的发现配置；不能直接把完整能力位复制到旧 HTTP 回复，这已在真实发送端触发过不同握手且不再发送视频的回归。
+
+非全屏时，视频保持完整比例，在画面区域内居中，四角采用与音乐封面相同的圆角；比例不同产生的空余区域显示动态背景。控制条独立放在视频下方，已播放和剩余时间分别位于进度条两端。下一行左侧为「断开连接」，中央为后退 10 秒、播放/暂停和前进 10 秒，右侧为向左/右旋转及全屏。镜像和直播只显示断开、旋转和全屏，包括带有 DVR 定位窗口的直播；有限时长视频可暂停，不支持定位时保留只读进度。全屏控制条改为画面内的底部浮层，空闲时隐藏，暂停、拖动、鼠标停留或键盘操作时保持可见。
+
+播放时，在 AirPlay 页面按 F12 可显示或隐藏媒体信息，默认隐藏。信息字体为 11 DIP，背景半透明。窗口模式贴齐实际可见视频左上角，不留外边距，随缩放、旋转和原尺寸裁剪更新；全屏模式距屏幕左上角保留 16 DIP，控制条隐藏后仍保留。面板按可用范围限制大小。XAML 按当前 DPI 栅格化信息面板，通过单个分层窗口以预乘 Alpha 叠在视频上，透明部分直接透出视频，不对画面挖孔；关闭、隐藏、换源及过期异步捕获均受当前状态约束。音乐显示在专辑封面正上方。视频可显示源分辨率、源帧率、视频编码与码率，以及伴随音轨的编码、采样率、声道数与码率；纯音乐显示音频信息。源帧率来自协商的媒体格式；另外每秒从现有视频 sink 计数计算渲染帧率，并显示该 sink 累积丢帧数，首次取样或计数重置时等待下一次有效取样。码率来自媒体流报告的标签，不是网络吞吐量，也不根据解码后的像素或 PCM 推算。未知字段不显示，尚无信息时显示等待提示。信息仅用于当前内存中的播放状态，不保存到用户设置；断开后隐藏，切换媒体重新读取。
+
+前后 10 秒由原生层在命令执行时读取当前实际播放位置，再增加或减少 10 秒，不使用界面轮询缓存的位置。定位采用准确模式，避免吸附到附近关键帧。上一次定位尚未完成时，连续点击按最新已接受的目标累计；完成后重新使用实际播放时间。目标限制在当前有限时长视频的可定位范围内，并继续校验会话及内容代次；镜像和直播不使用此操作。
+
+在 AirPlay 页面按空格键可触发当前可用的播放/暂停操作，包括视频原生画面取得焦点时；音乐要求发送端支持远程播放控制。WinUI 预览键盘事件先消费空格按下及松开，避免已获焦的旋转、全屏或断开按钮执行默认点击；长按只切换一次。镜像和直播会消费空格，但不执行播放控制或其他按钮操作；设置和关于页保留正常键盘行为。
 
 等待页在连接后显示发送设备名称；名称只接受已验证连接提供的 SETUP 元数据或客户端名称头，缺失时保留通用 AirPlay 连接提示，断开后清除。等待页插画使用用户提供的 200 帧、25 fps、8 秒循环纯矢量 SVG，通过现有原生 `SvgImageSource` 组件按显示 DPI 解码；离开页面或最小化时暂停。
 
@@ -37,6 +47,7 @@
 - 定位滑块使用固定的 0–1000 界面范围，提交时映射到当前会话的实际毫秒范围，避免持续更改 WinUI 滑块边界。视频时长或定位能力尚未返回时隐藏定位滑块；不会发送推测的定位命令。
 - 视频与音乐共用 [PlaybackSeekBar](../../src/ClearCast/Controls/PlaybackSeekBar.cs)，由 `RangeBase` 校验数值，使用有界的轨道与圆点布局，避开原生 `Slider` 冷显示零进度时的布局异常。鼠标、键盘和辅助功能的交互都走同一会话控制入口；丢失焦点、取消捕获或内容代次变化时取消未完成的定位。
 - [MainWindow.Player](../../src/ClearCast/Views/MainWindow.Player.cs) 保持窗口、原生视频 HWND、全屏及恢复逻辑的单一实现。自动全屏只在视频由无到有时触发，音乐状态不进入这一分支。
+- [MainWindow.MediaDiagnostics](../../src/ClearCast/Views/MainWindow.MediaDiagnostics.cs) 共用 F12 切换及中英文格式化，原生视频子窗口和 WinUI 控件取得焦点时均可操作，长按不重复切换。信息面板由单个分层窗口按预乘 Alpha 合成在原生视频上，位图按文本、尺寸或 DPI 变化更新，避免双重 DPI 缩放；原生视频区域只为全屏控制条留出 XAML 显示区域；[clearcast_media_diagnostics](../../src/native/clearcast_media_diagnostics.h) 只从实际活动管线的解码器格式及媒体标签读取参数，可选快照字段沿用 8 KiB 总上限及托管边界校验。
 - [MusicBackdrop](../../src/ClearCast/Controls/MusicBackdrop.cs) 对音乐封面和视频采样复用同一套 [ArtworkFlow](../../src/ClearCast/Controls/ArtworkFlow.cs) 纹理生成与 WinUI Composition 场景。音乐预计算 32 张 96 × 96 纹理，由单一相位时钟混合；视频按持续相位只生成当前一张纹理，保持相同局部扭曲和模糊。细节见[音乐背景](MUSIC_BACKGROUND.md)。视频通过新旧纹理的 100 毫秒交叉淡化过渡，底色在完全覆盖后更新；取消或替换时释放旧资源。
 - [MainWindow.VideoBackdrop](../../src/ClearCast/Views/MainWindow.VideoBackdrop.cs) 在非全屏背景可见时通过独立 33 毫秒计时器请求采样；采样、纹理准备和过渡串行，避免更新积压或重叠淡化。原生 [clearcast_video_frame](../../src/native/clearcast_video_frame.h) 将当前视频 sink 的已解码样本转换成固定 32 × 32 BGRA 内存块；持有样本引用，在媒体锁之外转换，并在发布前复核 sink 代次。停止、换源或窗口关闭后的旧异步结果不能重新启用背景。
 
@@ -78,6 +89,10 @@ The music content is centered in the page beside the left navigation. A muted co
 
 The current protocol scope includes existing mirroring and audio plus HTTP(S)/HLS video playback in the same video host. It does not establish support for AirPlay 2 multiroom, DRM, every streaming account, or every application. Automated parser, protocol, image, and window checks do not replace physical-device playback acceptance.
 
-Direct video offers desktop pause/resume and seeking within the actual pipeline range. Screen mirroring has no transport controls. Auxiliary audio SETUP/FLUSH/closure does not replace a direct-video owner; URL playback does not depend on mirror feedback heartbeats. Device background behavior still requires physical-device acceptance.
+Direct video offers desktop pause/resume and seeking within the actual pipeline range. Ten-second skips read the actual pipeline position when each command executes and use accurate seeking instead of snapping to a nearby keyframe. While a seek is pending, consecutive skips accumulate from the latest accepted target; after completion they use the advancing playback position again. Targets stay within the current finite video's seekable range and retain session/content validation. Screen mirroring has no transport controls. Auxiliary audio SETUP/FLUSH/closure does not replace a direct-video owner; URL playback does not depend on mirror feedback heartbeats. Device background behavior still requires physical-device acceptance.
+
+On the AirPlay page, Space toggles supported video or music playback once per press. Preview key-down and key-up handlers consume it before a focused rotation, full-screen or disconnect button can perform its default action. Mirroring and live video consume Space without invoking playback or another action. Settings and About retain normal keyboard behavior.
 
 Outside full screen, the entire video remains visible at its original aspect ratio with rounded corners. A blurred, warped background sampled from decoded video fills the whole app, including the title bar and navigation, using the same renderer as music. Background changes crossfade over 300 milliseconds instead of following scene cuts abruptly. Below the video, elapsed and remaining time flank the timeline. Disconnect is on the left, back ten seconds/play/forward ten seconds in the center, and rotation/full-screen actions on the right. Mirroring and live video omit transport and timeline controls. Space toggles supported video or music playback. Full screen uses an auto-hiding bottom overlay. The waiting page displays the verified sender's name when supplied and plays the provided 200-frame SVG loop at 25 fps.
+
+Press F12 on the AirPlay page during playback to toggle media information. The 11-DIP information panel sits flush with the actual video upper-left corner in a window, and 16 DIP from the screen upper-left corner in full screen. A single layered window alpha-composites its WinUI-rendered text and translucent rounded background over the native video without cutting out the picture. Its size stays within the available bounds. Music places it directly above the artwork. Available fields include source resolution/frame rate, video/audio codecs and reported stream bitrates, sample rate and channel count. Rendered frame rate is sampled from the existing video sink counters once per second, alongside its cumulative dropped-frame count. Source frame rate is the negotiated format rate; bitrate is stream metadata, not measured network throughput. Unknown fields are omitted. The panel starts hidden, stays independent of the auto-hiding controls, and hides when playback ends.

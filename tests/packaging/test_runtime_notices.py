@@ -76,6 +76,30 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         audit.write_text(json.dumps({'files': [], 'packages': {}, 'unmatched': []}))
         runtime = self.work / 'receiver'
         runtime.mkdir()
+        # Satisfy the independent HTTP provenance gate so these cases still
+        # reach the controlled-component/path validation they are testing.
+        binary = runtime / 'lib/gstreamer-1.0/libgstsoup.dll'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'fixture-only HTTP binary')
+        manifest = {'schemaVersion': 1, 'version': '1.28.9',
+            'sourceUrl': notices.HTTP_SOURCE_URL, 'sourceSha256': notices.HTTP_SOURCE_HASH,
+            'sourcePatch': {'relativePath': notices.HTTP_PATCH,
+                            'sha256': notices.file_sha(ROOT / notices.HTTP_PATCH)},
+            'files': [{'relativePath': 'lib/gstreamer-1.0/libgstsoup.dll',
+                       'sha256': notices.file_sha(binary)}]}
+        (runtime / 'gstreamer-http-security-manifest.json').write_text(json.dumps(manifest))
+        parser_files = []
+        for relative in sorted(notices.PARSER_FILES):
+            binary = runtime / relative
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_bytes(b'fixture-only parser/adaptive binary')
+            parser_files.append({'relativePath': relative, 'sha256': notices.file_sha(binary)})
+        parser_manifest = {'schemaVersion': 1, 'version': '1.28.9',
+            'sourceUrl': notices.PARSER_SOURCE_URL, 'sourceSha256': notices.PARSER_SOURCE_HASH,
+            'sourcePatch': {'relativePath': notices.PARSER_PATCH,
+                            'sha256': notices.file_sha(ROOT / notices.PARSER_PATCH)},
+            'files': parser_files}
+        (runtime / 'gstreamer-security-manifest.json').write_text(json.dumps(parser_manifest))
         (runtime / 'security-dependencies-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'components': components}))
         return subprocess.run([sys.executable, str(TOOL), '--base', str(baseline), '--base-sha256', hashlib.sha256(baseline.read_bytes()).hexdigest(),
             '--package-audit', str(audit), '--msys-root', str(self.work / 'msys'), '--runtime-directory', str(runtime),

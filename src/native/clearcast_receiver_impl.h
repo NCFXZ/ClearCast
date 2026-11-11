@@ -18,26 +18,14 @@
 #include "lib/mdnsd/mdnsd.h"
 #include "clearcast_media_http.h"
 #include "clearcast_video_frame.h"
+#include "clearcast_event_queue.h"
+#include "clearcast_network_scope.h"
 namespace { void write_diagnostic(const char* format, ...) noexcept; }
 #include "clearcast_media_audio.h"
 
 extern "C" void clearcast_decoder_result(int decoder, int error);
 
 namespace {
-
-enum ReceiverEventType {
-    Ready = 1, Connecting, Video, MirrorEnded, Fatal, PairingRequired, PairingRejected,
-    DecoderChanged, DecoderChangeFailed, PairingCompleted, ConnectionRejected,
-    PairingAuthenticationRequired
-};
-
-struct ReceiverEvent {
-    int type;
-    int width;
-    int height;
-    int codec;
-    int error;
-};
 
 struct ReceiverOptions {
     std::string state_directory;
@@ -62,9 +50,7 @@ GstBaseSink* stats_sink = nullptr;
 uint64_t video_frame_generation = 0;
 int requested_rotation = 0;
 int applied_rotation = -1;
-std::array<ReceiverEvent, 64> events;
-size_t event_head = 0;
-size_t event_count = 0;
+ClearCastEventQueue events;
 std::atomic<bool> mirror_active(false);
 std::atomic<bool> decoder_commands_ready(false);
 std::atomic<int> receiver_failure(0);
@@ -170,12 +156,7 @@ void set_stats_sink(GstElement* sink) {
 
 void enqueue_event(ReceiverEvent event) {
     ExclusiveLock lock(event_lock);
-    if (event_count == events.size()) {
-        event_head = (event_head + 1) % events.size();
-        --event_count;
-    }
-    events[(event_head + event_count) % events.size()] = event;
-    ++event_count;
+    events.push(event);
 }
 
 #include "clearcast_media_video.h"
@@ -184,10 +165,28 @@ static bool clearcast_mirror_media_active() {
     return mirror_active && !direct_video_active;
 }
 
+static clearcast_diagnostics::Info clearcast_video_diagnostics(bool direct) {
+    GstElement* pipeline = direct ? clearcast_direct_video_ref(true) : nullptr;
+    if (!direct) {
+        GstObject* object = nullptr;
+        { ExclusiveLock lock(stats_lock); if (stats_sink && mirror_active) object = GST_OBJECT(gst_object_ref(stats_sink)); }
+        // The mirror renderer owns a standalone pipeline. Keep references while
+        // walking parents so a simultaneous disconnect can safely dispose it.
+        for (int depth = 0; object && depth < 16; ++depth) {
+            if (GST_IS_PIPELINE(object)) { pipeline = GST_ELEMENT(object); object = nullptr; break; }
+            GstObject* parent = gst_object_get_parent(object);
+            gst_object_unref(object); object = parent;
+        }
+        if (object) gst_object_unref(object);
+    }
+    auto result = clearcast_diagnostics::collect(pipeline, true, direct);
+    if (pipeline) gst_object_unref(pipeline);
+    return result;
+}
+
 void clear_events() {
     ExclusiveLock lock(event_lock);
-    event_head = 0;
-    event_count = 0;
+    events.clear();
 }
 
 bool parse_dimension(const char*& value, unsigned short& dimension) {
@@ -334,6 +333,10 @@ int load_pairing_keys() {
     if (!file) {
         return errno == ENOENT ? 0 : ERROR_READ_FAULT;
     }
+    if (fseek(file.get(), 0, SEEK_END) != 0) return ERROR_READ_FAULT;
+    const long file_bytes = ftell(file.get());
+    if (file_bytes < 0 || fseek(file.get(), 0, SEEK_SET) != 0) return ERROR_READ_FAULT;
+    if (static_cast<size_t>(file_bytes) > clearcast_pairing_max_bytes) return ERROR_FILE_TOO_LARGE;
 
     // Bound metadata memory and consume oversized lines without treating their
     // continuation as another device. Cache metadata to avoid duplicate SETUP writes.
@@ -341,6 +344,7 @@ int load_pairing_keys() {
     char prefix[1024];
     size_t length = 0;
     bool truncated = false;
+    bool capacity_exceeded = false;
     const auto add_key = [&](bool ended_with_newline) {
         if (ended_with_newline && length && prefix[length - 1] == '\r') {
             --length;
@@ -353,6 +357,11 @@ int load_pairing_keys() {
             return g_ascii_isalnum(c) || c == '+' || c == '/';
         })) {
             const std::string key(prefix, key_length);
+            if (registered_client_metadata.find(key) == registered_client_metadata.end() &&
+                registered_client_metadata.size() >= clearcast_pairing_max_clients) {
+                capacity_exceeded = true;
+                return;
+            }
             if (registered_client_metadata.emplace(key, "").second) {
                 registered_keys.emplace_back(key);
             }
@@ -371,7 +380,9 @@ int load_pairing_keys() {
         }
     };
 
-    for (int ch; (ch = fgetc(file.get())) != EOF;) {
+    size_t consumed = 0;
+    for (int ch; !capacity_exceeded && (ch = fgetc(file.get())) != EOF;) {
+        if (++consumed > clearcast_pairing_max_bytes) { capacity_exceeded = true; break; }
         if (ch == '\n') {
             add_key(true);
             length = 0;
@@ -382,12 +393,12 @@ int load_pairing_keys() {
             truncated = true;
         }
     }
-    if (ferror(file.get())) {
+    if (!capacity_exceeded) add_key(false);
+    if (ferror(file.get()) || capacity_exceeded) {
         registered_keys.clear();
         registered_client_metadata.clear();
-        return ERROR_READ_FAULT;
+        return capacity_exceeded ? ERROR_FILE_TOO_LARGE : ERROR_READ_FAULT;
     }
-    add_key(false);
     return 0;
 }
 
@@ -443,9 +454,11 @@ int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread
         diagnostic_previous_path = options.state_directory + "/receiver.previous.log";
     }
     write_diagnostic("receiver starting");
+    int error = clearcast_network_scope_select(options.mdns_address);
+    if (error) return error;
     ntp_global_init();
     configure_receiver(options);
-    int error = load_pairing_keys();
+    error = load_pairing_keys();
     if (error) {
         write_diagnostic("could not read saved clients; pairing identity unchanged");
         return error;
@@ -510,7 +523,7 @@ int run_receiver(const ReceiverOptions& options, HWND& host, HANDLE& host_thread
     if (clearcast_stopping) {
         return 0;
     }
-    mdnsd_set_ipv4_override(options.mdns_address);
+    mdnsd_set_ipv4_override(clearcast_network_scope_ipv4());
     if (start_dnssd(hw_address, server_name)) {
         return ERROR_SERVICE_NOT_ACTIVE;
     }
@@ -571,6 +584,7 @@ DWORD WINAPI receiver_worker(void* parameter) {
     decoder_commands_ready = false;
     stop_raop_server();
     stop_dnssd();
+    clearcast_network_scope_clear();
     clearcast_direct_video_clear();
     clearcast_media_audio_shutdown();
     mdnsd_set_ipv4_override(0);
@@ -718,6 +732,14 @@ extern "C" void clearcast_pipeline_error() {
     }
 }
 
+extern "C" gboolean clearcast_media_input_cancelled() {
+    return clearcast_stopping || reset_loop || receiver_failure;
+}
+
+extern "C" __declspec(dllexport) int clearcast_receiver_network_current() {
+    return clearcast_network_scope_is_current();
+}
+
 extern "C" __declspec(dllexport) const char* clearcast_receiver_get_name() {
     return receiver_display_name();
 }
@@ -828,17 +850,15 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_event(
         return 0;
     }
     ExclusiveLock lock(event_lock);
-    if (!event_count) {
+    ReceiverEvent event;
+    if (!events.pop(event)) {
         return 0;
     }
-    const auto& event = events[event_head];
     *type = event.type;
     *width = event.width;
     *height = event.height;
     *codec = event.codec;
     *error_code = event.error;
-    event_head = (event_head + 1) % events.size();
-    --event_count;
     return 1;
 }
 

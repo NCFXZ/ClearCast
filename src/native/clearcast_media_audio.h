@@ -12,11 +12,13 @@
 #include <atomic>
 #include <cmath>
 #include <array>
+#include "clearcast_media_diagnostics.h"
 
 namespace {
 static bool clearcast_direct_video_snapshot(bool&, int64_t&, int64_t&);
 static bool clearcast_mirror_media_active();
 static bool clearcast_direct_video_controls(uint64_t&, int&, int64_t&, int64_t&, bool&);
+static clearcast_diagnostics::Info clearcast_video_diagnostics(bool);
 }
 extern "C" void clearcast_direct_video_stop();
 extern "C" bool clearcast_direct_video_is_active();
@@ -81,7 +83,35 @@ static uint64_t content_counter = 0;
 static std::map<std::string, Verification> verified;
 static std::map<uint64_t, Connection> connections;
 static std::atomic<bool> stopping(true);
+static std::atomic_flag command_pending = ATOMIC_FLAG_INIT;
+struct CommandAdmission {
+    const bool admitted;
+    CommandAdmission() : admitted(!command_pending.test_and_set()) {}
+    ~CommandAdmission() { if (admitted) command_pending.clear(); }
+};
 static HANDLE monitor = nullptr;
+static SRWLOCK audio_pipeline_lock = SRWLOCK_INIT;
+static GstElement* audio_pipeline = nullptr;
+static std::atomic<uint64_t> audio_pipeline_generation(1);
+struct AudioDiagnostics {
+    clearcast_diagnostics::Info info;
+    uint64_t generation = 0;
+};
+inline void set_audio_pipeline(GstElement* pipeline) {
+    if (pipeline) gst_object_ref(pipeline);
+    GstElement* previous;
+    { Lock lock(audio_pipeline_lock); previous = audio_pipeline; audio_pipeline = pipeline; ++audio_pipeline_generation; }
+    if (previous) gst_object_unref(previous);
+}
+inline AudioDiagnostics audio_diagnostics() {
+    GstElement* pipeline;
+    AudioDiagnostics result;
+    { Lock lock(audio_pipeline_lock); pipeline = audio_pipeline ? GST_ELEMENT(gst_object_ref(audio_pipeline)) : nullptr;
+        result.generation = audio_pipeline_generation; }
+    result.info = clearcast_diagnostics::collect(pipeline, false, true);
+    if (pipeline) gst_object_unref(pipeline);
+    return result;
+}
 
 // The streaming callback never acquires state_lock. The epoch is attached to
 // encoded buffers before decode; old queues cannot publish under a new owner.
@@ -175,6 +205,7 @@ inline void clear_audio_locked() {
     const uint64_t revision = state.revision + 1, artwork = state.artwork_revision + 1;
     state = State(); state.revision = revision; state.artwork_revision = artwork;
     state.content_revision = ++content_counter;
+    set_audio_pipeline(nullptr);
     reset_activity_locked();
 }
 inline bool peer_verified_locked(const std::string& key) {
@@ -315,9 +346,10 @@ inline unsigned short dns_port(const unsigned char* packet, size_t size, const s
 }
 struct Socket { SOCKET value = INVALID_SOCKET; ~Socket() { if (value != INVALID_SOCKET) closesocket(value); } };
 inline bool socket_ready(SOCKET socket, bool write, uint64_t deadline) {
-    if (GetTickCount64() >= deadline || stopping) return false;
+    const uint64_t now = GetTickCount64();
+    if (now >= deadline || stopping) return false;
     fd_set values; FD_ZERO(&values); FD_SET(socket, &values);
-    uint64_t remaining = deadline - GetTickCount64();
+    const uint64_t remaining = deadline - now;
     timeval timeout = {long(remaining / 1000), long(remaining % 1000) * 1000};
     return select(0, write ? nullptr : &values, write ? &values : nullptr, nullptr, &timeout) > 0;
 }
@@ -426,7 +458,8 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
     if (dmap_supported) *dmap_supported = false;
     Socket socket; socket.value = ::socket(peer.length == 4 ? AF_INET : AF_INET6, SOCK_STREAM, IPPROTO_TCP);
     if (socket.value == INVALID_SOCKET) return WSAGetLastError();
-    u_long nonblocking = 1; ioctlsocket(socket.value, FIONBIO, &nonblocking);
+    u_long nonblocking = 1;
+    if (ioctlsocket(socket.value, FIONBIO, &nonblocking) == SOCKET_ERROR) return WSAGetLastError();
     auto address = peer.address(port); const uint64_t deadline = GetTickCount64() + 1200;
     int result = connect(socket.value, reinterpret_cast<sockaddr*>(&address),
         peer.length == 4 ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
@@ -447,7 +480,14 @@ inline int request(const Peer& peer, unsigned short port, const std::string& tok
     size_t sent = 0;
     while (sent < text.size()) {
         if (!socket_ready(socket.value, true, deadline)) return WSAETIMEDOUT;
-        int count = send(socket.value, text.data() + sent, int(text.size() - sent), 0);
+        int count;
+        if (owner) {
+            // The socket is nonblocking. Validate and send atomically with
+            // respect to replacement/stop, without holding this lock in select.
+            Lock lock(state_lock);
+            if (state.owner != owner || !state.active || stopping || (content && state.content_revision != content)) return ERROR_CANCELLED;
+            count = send(socket.value, text.data() + sent, int(text.size() - sent), 0);
+        } else count = send(socket.value, text.data() + sent, int(text.size() - sent), 0);
         if (count <= 0) return WSAECONNRESET;
         sent += count;
     }
@@ -585,10 +625,6 @@ extern "C" void clearcast_media_remote(uint64_t id, const char* dacp, const char
         state.dacp = dacp; state.remote = remote; state.port = 0; state.controls = state.denied_controls = 0; ++state.revision;
     }
 } catch (...) {}
-extern "C" bool clearcast_media_peer_verified(const unsigned char* peer, int length, unsigned int zone) try {
-    using namespace clearcast_media; Peer address; if (!address.assign(peer, length, zone)) return false;
-    Lock lock(state_lock); return peer_verified_locked(address.key());
-} catch (...) { return false; }
 extern "C" void clearcast_media_retain_peer(const unsigned char* peer, int length, unsigned int zone, bool active) try {
     using namespace clearcast_media; Peer address; if (!address.assign(peer, length, zone)) return;
     Lock lock(state_lock); auto entry = verified.find(address.key());
@@ -612,7 +648,9 @@ extern "C" void clearcast_media_audio_setup(uint64_t id, const unsigned char* pe
     write_diagnostic("audio setup usingScreen=%d directVideo=%d", using_screen,
         int(clearcast_direct_video_is_active()));
 #endif
-    Lock lock(state_lock); if (!peer_verified_locked(address.key())) return;
+    Lock lock(state_lock);
+    auto authenticated = connections.find(id);
+    if (authenticated == connections.end() || authenticated->second.peer != address.key()) return;
     if (using_screen) { clear_audio_locked(); return; }
     if (state.owner != id || !state.configured) clear_audio_locked();
     state.owner = id; state.peer = address; state.configured = true; verified[address.key()].audio = true;
@@ -642,6 +680,13 @@ static void clearcast_media_audio_packet(uint64_t source_id) {
 }
 extern "C" uint64_t clearcast_media_audio_activity_epoch() {
     return clearcast_media::activity_enabled ? clearcast_media::activity_generation.load() : 0;
+}
+extern "C" void clearcast_media_audio_pipeline(GstElement* pipeline, uint64_t epoch) {
+    using namespace clearcast_media;
+    Lock lock(state_lock);
+    if (pipeline && (!epoch || !activity_enabled || epoch != activity_generation)) return;
+    { Lock pipeline_guard(audio_pipeline_lock); if (audio_pipeline == pipeline) return; }
+    set_audio_pipeline(pipeline);
 }
 extern "C" uint64_t clearcast_media_audio_activity_epoch_for_source(uint64_t source_id) {
     using namespace clearcast_media;
@@ -762,11 +807,22 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_media(char* buffer,
     if (direct_video) clearcast_direct_video_controls(video_session, video_controls, seek_start, seek_end, video_live);
     const bool mirror = clearcast_mirror_media_active();
     const bool video = direct_video || mirror;
+    auto diagnostics = video ? clearcast_video_diagnostics(direct_video) : clearcast_diagnostics::Info();
+    // No GStreamer graph traversal occurs under the media state lock. A session
+    // clear or renderer replacement revokes the sample before publication.
+    auto audio = !direct_video ? audio_diagnostics() : AudioDiagnostics();
     if(mirror&&!direct_video){video_playing=true;video_position=video_duration=0;}
     Lock lock(state_lock);
     if (state.playing && state.last_packet && GetTickCount64() - state.last_packet > 2500 &&
         (!state.sender_state_tick||GetTickCount64()-state.sender_state_tick>5000)) pause_locked();
     const char* kind = video ? "video" : state.active ? "audio" : "none";
+    if (audio.generation == audio_pipeline_generation) {
+        if (!video && state.active) diagnostics = audio.info;
+        if (mirror) {
+            diagnostics.audio_codec = audio.info.audio_codec; diagnostics.sample_rate = audio.info.sample_rate;
+            diagnostics.channels = audio.info.channels; diagnostics.audio_bitrate = audio.info.audio_bitrate;
+        }
+    }
     const bool playing = video ? video_playing : state.playing;
     const bool connected = !stopping && (!connections.empty() || state.configured || video);
     std::string device_name;
@@ -787,7 +843,8 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_media(char* buffer,
         ",\"contentRevision\":" + std::to_string(direct_video ? video_session : state.content_revision) +
         ",\"seekStartMs\":" + std::to_string(direct_video ? seek_start : 0) +
         ",\"seekEndMs\":" + std::to_string(direct_video ? seek_end : state.duration) +
-        ",\"audioActivity\":" + activity_json(GetTickCount64(), !video && state.active && state.playing) + "}";
+        ",\"audioActivity\":" + activity_json(GetTickCount64(), !video && state.active && state.playing) +
+        ",\"diagnostics\":" + clearcast_diagnostics::json(diagnostics) + "}";
     const int required = int(json.size()) + 1;
     if (required > 8192) return 0;
     if (buffer && capacity >= required) memcpy(buffer, json.c_str(), required);
@@ -801,30 +858,37 @@ extern "C" __declspec(dllexport) int clearcast_receiver_read_artwork(uint64_t re
     if (buffer && capacity >= length && length) memcpy(buffer, state.artwork.data(), length);
     return length;
 }
-extern "C" __declspec(dllexport) int clearcast_receiver_media_command(int command) try {
+static int clearcast_media_command_audio(int command, uint64_t session = 0, uint64_t expected_content = 0) {
     using namespace clearcast_media;
     if (command < 1 || command > 3) return ERROR_INVALID_PARAMETER;
-    Peer peer; std::string token; unsigned short port; uint64_t owner;
+    CommandAdmission admission;
+    if (!admission.admitted) return ERROR_BUSY;
+    Peer peer; std::string token; unsigned short port; uint64_t owner, content;
     const int capability = command == 1 ? 1 : command == 2 ? 2 : 4;
     {
         Lock lock(state_lock);
+        if (session && (state.owner != session || state.content_revision != expected_content)) return ERROR_CANCELLED;
         if (!state.active || !(state.controls & capability) || stopping || !peer_verified_locked(state.peer.key())) return ERROR_NOT_SUPPORTED;
-        peer = state.peer; token = state.remote; port = state.port; owner = state.owner;
+        peer = state.peer; token = state.remote; port = state.port; owner = state.owner; content = state.content_revision;
     }
     const char* commands[] = {"playpause", "previtem", "nextitem"};
-    int result = request(peer, port, token, commands[command - 1], owner);
+    int result = request(peer, port, token, commands[command - 1], owner, nullptr, nullptr, nullptr, nullptr, content);
+    Lock lock(state_lock);
+    if (stopping || state.owner != owner || state.content_revision != content) return ERROR_CANCELLED;
     if (result) {
-        Lock lock(state_lock);
-        if (state.owner == owner) {
-            if(result==ERROR_ACCESS_DENIED||result==ERROR_NOT_SUPPORTED)state.denied_controls|=capability;
-            state.controls &= ~capability; ++state.revision;
-        }
+        if(result==ERROR_ACCESS_DENIED||result==ERROR_NOT_SUPPORTED)state.denied_controls|=capability;
+        state.controls &= ~capability; ++state.revision;
     }
     return result;
+}
+extern "C" __declspec(dllexport) int clearcast_receiver_media_command(int command) try {
+    return clearcast_media_command_audio(command);
 } catch (...) { return ERROR_OUTOFMEMORY; }
 
 static int clearcast_media_seek_audio(uint64_t session, uint64_t content, int64_t target) {
     using namespace clearcast_media;
+    CommandAdmission admission;
+    if (!admission.admitted) return ERROR_BUSY;
     Peer peer; std::string token; unsigned short port;
     {
         Lock lock(state_lock);

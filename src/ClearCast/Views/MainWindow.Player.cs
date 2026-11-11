@@ -30,6 +30,25 @@ public sealed partial class MainWindow
     private long _playerOverlayActivity;
     private bool _playerOverlayTargetVisible;
     private bool _playerControlsPointerOver;
+    private bool _videoHostUpdateQueued;
+#if CLEARCAST_UI_TESTS
+    private int _uiVideoHostUpdateCallbacks;
+#endif
+
+    private void QueueVideoHostUpdate()
+    {
+        if (_videoHostUpdateQueued || _closed) return;
+        _videoHostUpdateQueued = true;
+        if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            _videoHostUpdateQueued = false;
+            if (_closed) return;
+#if CLEARCAST_UI_TESTS
+            _uiVideoHostUpdateCallbacks++;
+#endif
+            UpdateVideoHost();
+        })) _videoHostUpdateQueued = false;
+    }
 
     private NativeVideoHost CreatePlayerVideoHost()
     {
@@ -37,6 +56,7 @@ public sealed partial class MainWindow
         host.DoubleClicked += TogglePlayerFullScreen;
         host.EscapePressed += () => SetPlayerFullScreen(false);
         host.PlayPausePressed += () => _ = ToggleCurrentPlaybackAsync();
+        host.DiagnosticsPressed += ToggleMediaDiagnostics;
         return host;
     }
 
@@ -46,13 +66,15 @@ public sealed partial class MainWindow
             return;
         _playerFrameSize = new SizeInt32(width, height);
         if (_hasVideo)
-            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, UpdateVideoHost);
+            QueueVideoHostUpdate();
     }
 
     private void PositionPlayer(RectInt32 slot, bool visible, double scale)
     {
         if (_videoHost is not { } host)
             return;
+        var layout = GetPlayerVideoLayout(slot);
+        PositionMediaDiagnostics(slot, layout.Picture, scale);
         if (!visible)
         {
             // Pre-size the hidden HWND before the decoder creates its swap chain.
@@ -60,41 +82,47 @@ public sealed partial class MainWindow
             return;
         }
 
-        RectInt32? overlay = GetPlayerOverlayBounds(scale);
-        int cornerRadius = _playerFullScreen ? 0 : (int)Math.Round(MusicArtworkFrame.CornerRadius.TopLeft * scale);
-        // Use physical pixels for 1:1 output. Clip to the slot if the frame exceeds it.
+        host.Update(layout.Host, true, layout.Clip, GetPlayerOverlayBounds(scale),
+            _playerFullScreen ? 0 : (int)Math.Round(MusicArtworkFrame.CornerRadius.TopLeft * scale));
+        if (GetMediaDiagnosticsBounds(scale) is { } info)
+        {
+            QueueMediaDiagnosticsRaster(info);
+            host.PositionDiagnostics(info, _diagnosticsRasterApplied is { } applied &&
+                applied.Width == info.Width && applied.Height == info.Height);
+        }
+        else host.PositionDiagnostics(default, false);
+    }
+
+    private (RectInt32 Host, RectInt32? Clip, RectInt32 Picture) GetPlayerVideoLayout(RectInt32 slot)
+    {
+        if (_playerFrameSize.Width <= 0 || _playerFrameSize.Height <= 0)
+            return (slot, null, slot);
+
+        bool rotated = _playerRotation % 2 != 0;
+        int sourceWidth = rotated ? _playerFrameSize.Height : _playerFrameSize.Width;
+        int sourceHeight = rotated ? _playerFrameSize.Width : _playerFrameSize.Height;
+        // Physical pixels are also used for 1:1 output. Anchor overlays to the
+        // visible part of the picture when a native-size frame exceeds the slot.
         if (_preferences.OriginalSize && _playerFrameSize.Width > 0 && _playerFrameSize.Height > 0)
         {
-            bool swapDimensions = _playerRotation % 2 != 0;
-            int width = swapDimensions ? _playerFrameSize.Height : _playerFrameSize.Width;
-            int height = swapDimensions ? _playerFrameSize.Width : _playerFrameSize.Height;
+            int width = sourceWidth, height = sourceHeight;
             int x = slot.X + (slot.Width - width) / 2;
             int y = slot.Y + (slot.Height - height) / 2;
+            int left = Math.Max(slot.X, x), top = Math.Max(slot.Y, y);
+            int right = Math.Min(slot.X + slot.Width, x + width), bottom = Math.Min(slot.Y + slot.Height, y + height);
+            var picture = new RectInt32(left, top, right - left, bottom - top);
             RectInt32? clip = null;
             if (width > slot.Width || height > slot.Height)
-            {
-                int left = Math.Max(slot.X - x, 0);
-                int top = Math.Max(slot.Y - y, 0);
-                clip = new RectInt32(left, top, Math.Min(width - left, slot.Width),
-                    Math.Min(height - top, slot.Height));
-            }
-            if (host.Update(new RectInt32(x, y, width, height), true, clip, overlay, cornerRadius))
-                return;
+                clip = new RectInt32(left - x, top - y, picture.Width, picture.Height);
+            return (new RectInt32(x, y, width, height), clip, picture);
         }
 
-        if (!_playerFullScreen && _playerFrameSize.Width > 0 && _playerFrameSize.Height > 0)
-        {
-            bool rotated = _playerRotation % 2 != 0;
-            int sourceWidth = rotated ? _playerFrameSize.Height : _playerFrameSize.Width;
-            int sourceHeight = rotated ? _playerFrameSize.Width : _playerFrameSize.Height;
-            double fit = Math.Min((double)slot.Width / sourceWidth, (double)slot.Height / sourceHeight);
-            int width = Math.Max(1, (int)Math.Round(sourceWidth * fit));
-            int height = Math.Max(1, (int)Math.Round(sourceHeight * fit));
-            host.Update(new RectInt32(slot.X + (slot.Width - width) / 2, slot.Y + (slot.Height - height) / 2, width, height), true,
-                cornerRadius: cornerRadius);
-            return;
-        }
-        host.Update(slot, true, exclusion: overlay, cornerRadius: cornerRadius);
+        double fit = Math.Min((double)slot.Width / sourceWidth, (double)slot.Height / sourceHeight);
+        int fitWidth = Math.Max(1, (int)Math.Round(sourceWidth * fit));
+        int fitHeight = Math.Max(1, (int)Math.Round(sourceHeight * fit));
+        var fitted = new RectInt32(slot.X + (slot.Width - fitWidth) / 2, slot.Y + (slot.Height - fitHeight) / 2, fitWidth, fitHeight);
+        // The full-screen sink draws its own letterboxing inside the host.
+        return (_playerFullScreen ? slot : fitted, null, fitted);
     }
 
     private RectInt32? GetPlayerOverlayBounds(double scale)

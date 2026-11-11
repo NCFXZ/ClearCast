@@ -9,6 +9,7 @@ from ctypes import wintypes as w
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import time
@@ -85,7 +86,8 @@ def run_case(mode):
     try:
         assert not (receiver.state / 'gstreamer-registry.bin').exists()
         assert receiver.dll.clearcast_receiver_start_v2(str(receiver.state).encode(),
-            b'1920x1080', 30, 1, 0, b'0001', receiver.hwnd, 0) == 0
+            b'1920x1080', 30, 1, 0, b'0001', receiver.hwnd,
+            int.from_bytes(socket.inet_aton('127.0.0.1'), 'little')) == 0
         receiver.running = True
         if mode != 'stop_immediately':
             deadline = time.monotonic() + 10

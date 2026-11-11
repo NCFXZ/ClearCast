@@ -26,6 +26,9 @@ internal sealed class NativeVideoHost : IDisposable
     private (int X, int Y, int Width, int Height, bool Visible)? _lastLayout;
     private (uint Time, int X, int Y)? _lastClick;
     private (RectInt32? Bounds, RectInt32? Exclusion, int Radius) _windowRegion;
+    private readonly NativeMediaInfoOverlay _diagnosticsOverlay;
+    private RectInt32 _diagnosticsBounds;
+    private bool _diagnosticsVisible;
     private bool _presentationSuspended;
     private readonly nint _parent;
     private readonly DispatcherQueue _dispatcher;
@@ -36,6 +39,7 @@ internal sealed class NativeVideoHost : IDisposable
     public event Action? DoubleClicked;
     public event Action? EscapePressed;
     public event Action? PlayPausePressed;
+    public event Action? DiagnosticsPressed;
 
     public NativeVideoHost(nint parent, DispatcherQueue dispatcher)
     {
@@ -46,6 +50,9 @@ internal sealed class NativeVideoHost : IDisposable
             0, 0, 1, 1, parent, 0, 0, 0);
         if (Handle == 0)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "无法创建屏幕镜像画面区域。");
+        // A sibling of the video host can also occupy full-screen letterboxing
+        // when native-size video is smaller than the app's client area.
+        _diagnosticsOverlay = new NativeMediaInfoOverlay(_parent);
     }
 
     public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null, int cornerRadius = 0)
@@ -66,18 +73,46 @@ internal sealed class NativeVideoHost : IDisposable
         if (!ApplyRegion(clip, localExclusion, cornerRadius))
             return false;
         if (_lastLayout == layout)
+        {
+            UpdateDiagnosticsPosition();
             return true;
+        }
 
         // HWND_TOP keeps the video slot above the sibling WinUI composition window.
         if (!SetWindowPos(Handle, 0, layout.X, layout.Y, layout.Width, layout.Height,
             NoActivate | (visible ? ShowWindowFlag : HideWindowFlag)))
+        {
+            _diagnosticsOverlay.Hide();
             return false;
+        }
 
         bool visibilityChanged = _lastLayout?.Visible != visible;
         _lastLayout = layout;
         if (visibilityChanged && !visible && !_presentationSuspended)
             RemoveInputHooks();
+        UpdateDiagnosticsPosition();
         return true;
+    }
+
+    public bool UpdateDiagnostics(byte[] pixels, int width, int height)
+    {
+        bool updated = _diagnosticsOverlay.Update(pixels, width, height);
+        UpdateDiagnosticsPosition();
+        if (!updated) Marshal.SetLastPInvokeError(_diagnosticsOverlay.LastError);
+        return updated;
+    }
+
+    public void PositionDiagnostics(RectInt32 bounds, bool visible)
+    {
+        _diagnosticsBounds = bounds;
+        _diagnosticsVisible = visible;
+        UpdateDiagnosticsPosition();
+    }
+
+    private void UpdateDiagnosticsPosition()
+    {
+        if (_lastLayout is not { } layout) { _diagnosticsOverlay.Hide(); return; }
+        _diagnosticsOverlay.Position(_diagnosticsBounds, _diagnosticsVisible && layout.Visible && !_presentationSuspended);
     }
 
     public void Hide()
@@ -114,6 +149,7 @@ internal sealed class NativeVideoHost : IDisposable
 
     private void HideWindow()
     {
+        _diagnosticsOverlay.Hide();
         if (_lastLayout is not { Visible: true } layout ||
             !SetWindowPos(Handle, 0, 0, 0, 0, 0, KeepPlacement | NoActivate | HideWindowFlag))
             return;
@@ -139,7 +175,7 @@ internal sealed class NativeVideoHost : IDisposable
                 return false;
         }
 
-        // The region leaves the XAML full-screen button visible and clickable above video.
+        // The transport remains XAML; video information is alpha-composited by its owned child.
         if (exclusion is { } button)
         {
             nint cutout = CreateRegion(button);
@@ -219,23 +255,42 @@ internal sealed class NativeVideoHost : IDisposable
             if (message.Message is LeftButtonDown or LeftButtonDoubleClick &&
                 (message.Window == Handle || IsChild(Handle, message.Window)))
             {
-                _dispatcher.TryEnqueue(() => CheckDoubleClick(message));
+                QueueInput(() => CheckDoubleClick(message));
             }
             else if (message.Message == KeyDown && message.WParam == 0x1B &&
                 (message.LParam & (1 << 30)) == 0 &&
                 (message.Window == _parent || IsChild(_parent, message.Window)))
             {
-                _dispatcher.TryEnqueue(() => EscapePressed?.Invoke());
+                QueueInput(() => EscapePressed?.Invoke());
             }
             else if (message.Message == KeyDown && message.WParam == 0x20 &&
                 (message.LParam.ToInt64() & (1L << 30)) == 0 &&
                 (message.Window == Handle || IsChild(Handle, message.Window)))
             {
-                _dispatcher.TryEnqueue(() => PlayPausePressed?.Invoke());
+                QueueInput(() => PlayPausePressed?.Invoke());
+            }
+            else if (message.Message == KeyDown && message.WParam == 0x7B &&
+                (message.LParam.ToInt64() & (1L << 30)) == 0 &&
+                (message.Window == Handle || IsChild(Handle, message.Window)))
+            {
+                QueueInput(() => DiagnosticsPressed?.Invoke());
             }
         }
         return CallNextHookEx(0, code, operation, data);
     }
+
+    private void QueueInput(Action action)
+    {
+        nint expected = Handle;
+        if (expected != 0) _dispatcher.TryEnqueue(() =>
+        {
+            // A queued message from a retired decoder host must not control its replacement.
+            if (Handle == expected) action();
+        });
+    }
+#if CLEARCAST_UI_TESTS
+    internal void UiQueueInput(Action action) => QueueInput(action);
+#endif
 
     private void CheckDoubleClick(WindowMessage message)
     {
@@ -261,6 +316,7 @@ internal sealed class NativeVideoHost : IDisposable
 
     public void Dispose()
     {
+        _diagnosticsOverlay.Dispose();
         if (Handle == 0)
             return;
         RemoveInputHooks();

@@ -5,6 +5,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 from receiver_test_support import ROOT, Receiver, connect, request, verify_pairing
 from receiver_test_bootstrap import loaded_dependency_evidence
+from media_fixture_support import media_fixture_address
 
 import argparse
 import ctypes as c
@@ -22,7 +23,7 @@ import uuid
 
 
 def http_request(sock, path, body=b"", method="POST", session="clearcast-direct-fixture", expected=200, cseq=False, protocol="HTTP/1.1", headers=None):
-    fields = {"Host": "127.0.0.1", "Content-Length": str(len(body))}
+    fields = {"Host": str(sock.getpeername()[0]), "Content-Length": str(len(body))}
     if headers:
         fields.update(headers)
     if session is not None:
@@ -68,6 +69,14 @@ def start_media_server(work, blocked=None):
             if filename.parent != work or not filename.is_file():
                 self.send_error(404)
                 return
+            gate = blocked.get("gate")
+            if gate is not None:
+                requested = blocked.get("requested")
+                if requested is not None:
+                    requested.set()
+                if not gate.wait(timeout=10):
+                    self.send_error(503)
+                    return
             data = filename.read_bytes()
             start, end = 0, len(data) - 1
             requested = self.headers.get("Range", "")
@@ -88,7 +97,7 @@ def start_media_server(work, blocked=None):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     return server, worker
@@ -120,15 +129,23 @@ def main():
         tools = ROOT / ".runtime/msys64/ucrt64/bin"
         environment = dict(os.environ)
         environment["PATH"] = str(tools) + os.pathsep + environment.get("PATH", "")
-        for command in ([tools / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15", "-t", "8",
-                         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15", "-movflags", "+faststart", work / "video.mp4"],
-                        [tools / "ffmpeg.exe", "-v", "error", "-i", work / "video.mp4", "-c", "copy", "-hls_time", "1", "-hls_list_size", "0",
-                         "-hls_segment_filename", work / "segment-%03d.ts", work / "stream.m3u8"]):
+        for command in ([tools / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15",
+                         "-f", "lavfi", "-i", "anullsrc=sample_rate=48000:channel_layout=stereo", "-t", "8",
+                         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "15",
+                         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", work / "video.mp4"],
+                        [tools / "ffmpeg.exe", "-v", "error", "-i", work / "video.mp4", "-vf", "scale=256:144", "-r", "24",
+                         "-c:v", "libx264", "-preset", "ultrafast", "-g", "24", "-c:a", "aac", "-ar", "44100", "-ac", "1",
+                         "-hls_time", "1", "-hls_list_size", "0",
+                         "-hls_segment_filename", work / "segment-%03d.ts", work / "stream.m3u8"],
+                        [tools / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15",
+                         "-t", "60", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                         "-g", "300", "-keyint_min", "1", "-sc_threshold", "0", "-force_key_frames", "0,9.4,23.6,41.2",
+                         "-movflags", "+faststart", work / "sparse.mp4"]):
             subprocess.run([str(value) for value in command], check=True, capture_output=True, env=environment, timeout=30)
 
         blocked = {"media": False}
         server, worker = start_media_server(work, blocked)
-        base = f"http://127.0.0.1:{server.server_port}"
+        base = f"http://{media_fixture_address()}:{server.server_port}"
         receiver = Receiver(runtime=args.runtime, state=work / "state")
         receiver.dll.clearcast_receiver_read_media.argtypes = [c.c_void_p, c.c_int]
         receiver.dll.clearcast_receiver_read_stats.argtypes = [c.POINTER(c.c_uint64), c.POINTER(c.c_uint64), c.POINTER(c.c_int), c.POINTER(c.c_int)]
@@ -153,6 +170,28 @@ def main():
         def body(uri):
             return plistlib.dumps({"uuid": str(uuid.uuid4()), "Content-Location": uri, "Start-Position-Seconds": 0.0}, fmt=plistlib.FMT_BINARY)
 
+        def diagnostics_match(width, height, fps, rate, channels):
+            value = snapshot().get("diagnostics", {})
+            return (value.get("videoCodec") == "H.264" and value.get("audioCodec") == "AAC" and
+                    (value.get("width"), value.get("height")) == (width, height) and
+                    type(value.get("frameRate")) in (int, float) and abs(value["frameRate"] - fps) < .001 and
+                    (value.get("sampleRate"), value.get("channels")) == (rate, channels))
+
+        def record_diagnostics(stage, width, height, fps, rate, channels):
+            wait(lambda: diagnostics_match(width, height, fps, rate, channels))
+            value = snapshot()["diagnostics"]
+            for key in ("videoBitrate", "audioBitrate"):
+                # Sources may omit bitrate tags; no bitrate is invented from
+                # decoded pixels, PCM bytes or the fixture encoder settings.
+                assert type(value[key]) is int and 0 <= value[key] <= 1_000_000_000_000, (stage, key, value)
+            report.setdefault("mediaDiagnostics", {})[stage] = value
+
+        def assert_diagnostics_cleared():
+            value = snapshot()["diagnostics"]
+            assert value["videoCodec"] == value["audioCodec"] == "", value
+            assert all(value[key] == 0 for key in ("width", "height", "frameRate", "videoBitrate",
+                                                   "sampleRate", "channels", "audioBitrate")), value
+
         with connect() as unpaired:
             http_request(unpaired, "/play", body(base + "/video.mp4"), expected=401)
         assert snapshot()["kind"] == "none"
@@ -166,9 +205,33 @@ def main():
         checks.append("Unauthenticated HTTP1.1/HTTP1.0/RTSP media variants with and without CSeq are rejected")
         with connect() as discovery:
             data = http_request(discovery, "/server-info", method="GET", session=None, headers={"X-Apple-Client-Name": "Unverified device"})
-            assert plistlib.loads(data)["features"] & 1
+            features = plistlib.loads(data)["features"]
+            # Preserve the pinned upstream HTTP video-discovery mask. Replacing
+            # it with the full RTSP/TXT mask made real iOS senders negotiate a
+            # different setup path and close before sending /reverse or /play.
+            assert features == 0x27F, features
+        with connect() as discovery:
+            _, data, _ = request(discovery, "/info", method="GET")
+            rtsp_features = plistlib.loads(data)["features"]
+            _, data, _ = request(discovery, "/info", plistlib.dumps({"qualifier": ["txtAirPlay"]}, fmt=plistlib.FMT_BINARY),
+                                 method="GET", content_type="application/x-apple-binary-plist")
+            txt = plistlib.loads(data)["txtAirPlay"]
+        txt_records = {}
+        offset = 0
+        while offset < len(txt):
+            length = txt[offset]
+            offset += 1
+            assert offset + length <= len(txt), "AirPlay TXT record exceeds its length prefix"
+            key, _, value = txt[offset:offset + length].partition(b"=")
+            txt_records[key] = value
+            offset += length
+        txt_features = sum(int(word, 0) << (32 * index) for index, word in enumerate(txt_records[b"features"].split(b",")))
+        assert rtsp_features == txt_features, (rtsp_features, txt_features)
+        assert all(rtsp_features & (1 << bit) for bit in (0, 4, 7, 9)), rtsp_features
+        report["discoveryFeatures"] = {"httpServerInfo": features, "rtspInfo": rtsp_features, "airplayTxt": txt_features}
         assert snapshot().get("deviceName", "") == ""
         checks.append("Unauthenticated server discovery remains available")
+        checks.append("HTTP video discovery retains its interoperable upstream mask; RTSP and AirPlay TXT agree on video HLS mirroring and audio capabilities")
 
         with connect() as paired:
             private, server_key = receiver.pair(paired)
@@ -181,9 +244,40 @@ def main():
                     http_request(outsider, "/play", body(base + "/video.mp4"), expected=401, cseq=sequence, protocol=protocol)
             checks.append("A different unverified peer cannot use the pairing across protocol/CSeq variants")
             with connect() as unsupported:
+                verify_pairing(unsupported, private, server_key)
                 http_request(unsupported, "/play", body(base + "/video.mp4"), expected=505, protocol="HTTP/1.0")
             checks.append("Authenticated media rejects unsupported HTTP versions before media side effects")
             with connect() as control:
+                verify_pairing(control, private, server_key)
+                # Hold source bytes back until startup /playback-info and /rate
+                # run. A sender pause during loading remains a genuine pause;
+                # readiness must not silently turn it into an automatic resume.
+                source_gate, source_requested = threading.Event(), threading.Event()
+                blocked.update(gate=source_gate, requested=source_requested)
+                try:
+                    http_request(control, "/play", body(base + "/video.mp4"))
+                    assert source_requested.wait(timeout=8), "Direct player did not request its source"
+                    initial = plistlib.loads(http_request(control, "/playback-info", method="GET"))
+                    assert not initial["readyToPlay"] and initial["rate"] == 0 and initial["playbackBufferEmpty"], initial
+                    http_request(control, "/rate?value=0")
+                finally:
+                    source_gate.set()
+                    blocked.pop("gate", None)
+                    blocked.pop("requested", None)
+                wait(lambda: bool(plistlib.loads(http_request(control, "/playback-info", method="GET"))["readyToPlay"]))
+                preroll = plistlib.loads(http_request(control, "/playback-info", method="GET"))
+                assert preroll["rate"] == 0 and not snapshot()["playing"], preroll
+                paused_position = snapshot()["positionMs"]
+                time.sleep(.35)
+                assert abs(snapshot()["positionMs"] - paused_position) < 150
+                checks.append("Startup reports not-ready instead of playing; an explicit rate zero during loading remains paused after preroll")
+                http_request(control, "/rate?value=1")
+                wait(lambda: snapshot()["playing"] and snapshot()["positionMs"] >= 350)
+                assert plistlib.loads(http_request(control, "/playback-info", method="GET"))["rate"] == 1
+                checks.append("A sender resume following startup pause advances the actual pipeline")
+                http_request(control, "/stop")
+                wait(lambda: snapshot()["kind"] == "none")
+                observed.clear()
                 http_request(control, "/play", body(base + "/video.mp4"))
                 wait(lambda: any(event[0] == 3 and event[1:3] == [320, 180] for event in observed))
                 assert snapshot()["kind"] == "video"
@@ -194,6 +288,11 @@ def main():
                     return rendered.value > 1 and (width.value, height.value) == (320, 180)
                 wait(frames_presented)
                 checks.append("Common D3D11 sink reports presented frames and decoded dimensions")
+                wait(lambda: snapshot()["playing"] and snapshot()["positionMs"] >= 350)
+                assert plistlib.loads(http_request(control, "/playback-info", method="GET"))["rate"] == 1
+                checks.append("A new play request autoplays and advances without an extra rate-one request after a paused previous session")
+                record_diagnostics("mp4", 320, 180, 15, 48000, 2)
+                checks.append("Actual MP4 diagnostics report H.264 320x180 at 15 fps and AAC 48 kHz stereo with bounded optional bitrates")
                 backdrop = c.create_string_buffer(4097)
                 backdrop[4096] = b"\xA5"
                 epoch = c.c_uint64()
@@ -240,7 +339,9 @@ def main():
                 receiver.dll.clearcast_receiver_media_control.argtypes = [c.c_uint64, c.c_uint64, c.c_int, c.c_int64]
                 def desktop(command, value=0, state=None):
                     state = state or snapshot()
-                    return receiver.dll.clearcast_receiver_media_control(state["controlSession"], state["contentRevision"], command, value)
+                    result = receiver.dll.clearcast_receiver_media_control(state["controlSession"], state["contentRevision"], command, value)
+                    report.setdefault("desktopCommands", []).append({"command": command, "value": value, "result": result})
+                    return result
                 assert desktop(1) == 0
                 wait(lambda: not snapshot()["playing"])
                 wait(lambda: snapshot()["controls"] & 8)
@@ -253,12 +354,16 @@ def main():
                 old_session = snapshot()
                 http_request(control, "/stop")
                 wait(lambda: snapshot()["kind"] == "none")
+                assert_diagnostics_cleared()
                 assert any(event[0] == 4 for event in observed)
                 checks.append("HTTP stop ends video and restores waiting state")
+                checks.append("HTTP stop clears all negotiated video and audio diagnostics")
                 observed.clear()
                 http_request(control, "/play", body(base + "/stream.m3u8"))
                 wait(lambda: snapshot()["kind"] == "video" and any(event[0] == 3 for event in observed))
                 checks.append("HLS restarts through the same authenticated connection and host")
+                record_diagnostics("replacementHls", 256, 144, 24, 44100, 1)
+                checks.append("Replacement HLS reports its own 256x144 24 fps and AAC 44.1 kHz mono instead of the previous MP4 format")
                 assert desktop(4, 1000, old_session) != 0
                 checks.append("A delayed desktop command cannot seek a replacement session")
                 observed.clear()
@@ -270,13 +375,16 @@ def main():
                     blocked["media"] = False
                 observed.clear()
                 wait(lambda: snapshot()["kind"] == "video" and any(event[0] == 3 for event in observed))
+                record_diagnostics("decoderRollbackHls", 256, 144, 24, 44100, 1)
                 assert not any(event[0] == 4 for event in observed)
                 checks.append("A failed decoder rebuild rolls back without dropping the HTTP session")
                 assert receiver.dll.clearcast_receiver_set_decoder(0) == 0
                 wait(lambda: any(event[0] == 8 and event[1] == 0 for event in observed))
                 checks.append("Decoder change rebuilds direct player while retaining the AirPlay control session")
                 wait(lambda: snapshot()["kind"] == "none", timeout=14)
+                assert_diagnostics_cleared()
                 checks.append("HLS end of stream returns to waiting without fatal receiver restart")
+                checks.append("HLS end of stream clears diagnostics from the disposed pipeline")
                 assert not any(event[0] == 5 for event in observed)
                 playlist = (work / "stream.m3u8").read_text(encoding="utf-8")
                 (work / "live.m3u8").write_text(playlist.replace("#EXT-X-ENDLIST", "").replace("#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-PLAYLIST-TYPE:EVENT"), encoding="utf-8")
@@ -286,7 +394,89 @@ def main():
                 finally:
                     report["liveState"] = snapshot()
                 checks.append("A live HLS playlist reports live status separately from its seek window")
+                assert desktop(5, 10000) != 0
+                checks.append("Relative skipping rejects live streams even when their rolling window is seekable")
                 http_request(control, "/stop")
+                wait(lambda: snapshot()["kind"] == "none")
+                assert_diagnostics_cleared()
+
+                http_request(control, "/play", body(base + "/sparse.mp4"))
+                wait(lambda: snapshot()["kind"] == "video" and snapshot()["controls"] & 8)
+                http_request(control, "/rate?value=0")
+                wait(lambda: not snapshot()["playing"])
+                skip_state = snapshot()
+                assert desktop(5, 10000, old_session) != 0
+                assert all(desktop(5, value, skip_state) == 87 for value in (0, 1, -9999, 10001))
+                checks.append("Relative skipping accepts only signed ten-second offsets and rejects a replaced session")
+
+                def wait_position(target, tolerance=120):
+                    wait(lambda: snapshot()["kind"] == "video" and abs(snapshot()["positionMs"] - target) <= tolerance)
+                    return snapshot()["positionMs"]
+
+                assert desktop(4, 7250, skip_state) == 0
+                baseline = wait_position(7250)
+                assert not snapshot()["playing"]
+                assert desktop(5, 10000, skip_state) == 0
+                forward = wait_position(baseline + 10000)
+                assert not snapshot()["playing"]
+                assert desktop(5, -10000, skip_state) == 0
+                backward = wait_position(baseline)
+                assert not snapshot()["playing"]
+                report["relativeSkipPaused"] = {"baselineMs": baseline, "forwardMs": forward, "backwardMs": backward}
+                checks.append("Paused relative skip moves exactly ten seconds from a non-keyframe position on an irregular-GOP source and preserves pause")
+
+                # No snapshot or managed position refresh occurs between these
+                # commands; every request deliberately reuses the old snapshot.
+                assert desktop(5, 10000, skip_state) == 0
+                assert desktop(5, 10000, skip_state) == 0
+                assert desktop(5, -10000, skip_state) == 0
+                wait_position(baseline + 10000)
+                assert not snapshot()["playing"]
+                checks.append("Consecutive plus-ten plus-ten minus-ten commands accumulate before any client position refresh")
+
+                # A new absolute request replaces a still-pending relative seek,
+                # then HTTP scrub replaces that target within the same session.
+                assert desktop(5, 10000, skip_state) == 0
+                assert desktop(4, 11750, skip_state) == 0
+                assert desktop(5, 10000, skip_state) == 0
+                wait_position(21750)
+                assert desktop(5, 10000, skip_state) == 0
+                http_request(control, "/scrub?position=12.75")
+                assert desktop(5, 10000, skip_state) == 0
+                wait_position(22750)
+                assert not snapshot()["playing"]
+                checks.append("Absolute seek and HTTP scrub replace older pending targets accurately without changing pause state")
+
+                http_request(control, "/rate?value=1")
+                wait(lambda: snapshot()["positionMs"] >= 24400)
+                live_position = snapshot()["positionMs"]
+                assert desktop(5, -10000, skip_state) == 0
+                wait_position(live_position - 10000, tolerance=450)
+                assert snapshot()["playing"]
+                time.sleep(1.5)
+                after_playing = snapshot()["positionMs"]
+                assert after_playing >= live_position - 10000 + 1000
+                assert desktop(5, 10000, skip_state) == 0
+                wait_position(after_playing + 10000, tolerance=450)
+                assert snapshot()["playing"]
+                assert plistlib.loads(http_request(control, "/playback-info", method="GET"))["rate"] == 1
+                report["relativeSkipPlaying"] = {"firstBaselineMs": live_position, "laterBaselineMs": after_playing}
+                checks.append("Playing relative skip uses the current clock after playback advances and never retains the previous seek anchor")
+
+                http_request(control, "/rate?value=0")
+                assert desktop(4, 1250, skip_state) == 0
+                wait_position(1250)
+                assert desktop(5, -10000, skip_state) == 0
+                wait_position(0)
+                assert not snapshot()["playing"]
+                assert desktop(4, 59500, skip_state) == 0
+                wait_position(59500)
+                assert desktop(5, 10000, skip_state) == 0
+                wait(lambda: snapshot()["kind"] == "none" or snapshot()["positionMs"] >= 59900)
+                checks.append("Relative skip clamps to the actual beginning and end of the finite seek range")
+                if snapshot()["kind"] != "none":
+                    http_request(control, "/stop")
+                wait(lambda: snapshot()["kind"] == "none")
         report["passed"] = True
         report["checks"] = checks
         report["presentedFramesBeforePause"] = rendered.value

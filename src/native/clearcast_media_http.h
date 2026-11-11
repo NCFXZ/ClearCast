@@ -7,6 +7,7 @@
 #include <gst/gsturi.h>
 #include <gio/gio.h>
 #include <string>
+#include "clearcast_media_connectable.h"
 
 static std::string clearcast_http_ca_file;
 static GTlsDatabase* clearcast_http_database;
@@ -25,7 +26,16 @@ static bool clearcast_http_uri_allowed(const char* value) {
     const char* scheme = g_uri_get_scheme(uri);
     const char* host = g_uri_get_host(uri);
     bool allowed = scheme && (!g_ascii_strcasecmp(scheme, "http") || !g_ascii_strcasecmp(scheme, "https")) &&
-        host && *host && !g_uri_get_userinfo(uri) && !g_uri_get_fragment(uri);
+        host && *host && !g_uri_get_userinfo(uri) && !g_uri_get_fragment(uri) && g_uri_get_port(uri) != 0;
+    if (allowed) {
+        GInetAddress* literal = g_inet_address_new_from_string(host);
+        if (literal) {
+            allowed = clearcast_http_address_allowed(literal);
+            g_object_unref(literal);
+        }
+        // Other spellings (including short/hex IPv4 and DNS aliases) are
+        // checked by the actual socket-address enumerator before connecting.
+    }
     g_uri_unref(uri);
     return allowed;
 }
@@ -54,13 +64,31 @@ static GstStateChangeReturn clearcast_http_change_state(GstElement* source, GstS
     if (transition == GST_STATE_CHANGE_NULL_TO_READY || transition == GST_STATE_CHANGE_READY_TO_PAUSED) {
         gchar* uri = gst_uri_handler_get_uri(GST_URI_HANDLER(source));
         bool allowed = clearcast_http_uri_allowed(uri);
-        g_free(uri);
         GObjectClass* klass = G_OBJECT_GET_CLASS(source);
         if (!allowed || !g_object_class_find_property(klass, "automatic-redirect") ||
-            !g_object_class_find_property(klass, "ssl-strict")) {
+            !g_object_class_find_property(klass, "ssl-strict") ||
+            !g_object_class_find_property(klass, "remote-connectable")) {
+            g_free(uri);
             GST_ELEMENT_ERROR(source, RESOURCE, NOT_AUTHORIZED, ("Media URL rejected by the receiver HTTP policy."), (nullptr));
             return GST_STATE_CHANGE_FAILURE;
         }
+        GUri* parsed = g_uri_parse(uri, G_URI_FLAGS_NONE, nullptr);
+        const char* host = g_uri_get_host(parsed);
+        int port = g_uri_get_port(parsed);
+        if (port < 0) port = !g_ascii_strcasecmp(g_uri_get_scheme(parsed), "https") ? 443 : 80;
+        GSocketConnectable* previous = nullptr;
+        g_object_get(source, "remote-connectable", &previous, nullptr);
+        bool same_host = previous && G_TYPE_CHECK_INSTANCE_TYPE(previous, clearcast_http_connectable_type()) &&
+            !g_ascii_strcasecmp(g_network_address_get_hostname(G_NETWORK_ADDRESS(previous)), host) &&
+            g_network_address_get_port(G_NETWORK_ADDRESS(previous)) == port;
+        if (!same_host) {
+            GSocketConnectable* endpoint = clearcast_http_connectable_new(host, static_cast<guint16>(port));
+            g_object_set(source, "remote-connectable", endpoint, nullptr);
+            g_object_unref(endpoint);
+        }
+        g_clear_object(&previous);
+        g_uri_unref(parsed);
+        g_free(uri);
         g_object_set(source, "automatic-redirect", FALSE, "ssl-strict", TRUE, "timeout", 15u, nullptr);
         if (!clearcast_http_ca_file.empty()) {
             if (!clearcast_http_database || !g_object_class_find_property(klass, "tls-database")) return GST_STATE_CHANGE_FAILURE;
@@ -112,6 +140,10 @@ static bool clearcast_http_policy_initialize(const char* ca_file) {
     gst_object_unref(factory);
     if (!loaded) return false;
     GType parent = gst_element_factory_get_element_type(GST_ELEMENT_FACTORY(loaded));
+    GObjectClass* parent_class = G_OBJECT_CLASS(g_type_class_ref(parent));
+    bool guarded = g_object_class_find_property(parent_class, "remote-connectable") != nullptr;
+    g_type_class_unref(parent_class);
+    if (!guarded) { gst_object_unref(loaded); return false; }
     GTypeQuery query;
     g_type_query(parent, &query);
     GType type = g_type_register_static_simple(parent, "ClearCastHttpSource", query.class_size,

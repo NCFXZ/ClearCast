@@ -1,0 +1,158 @@
+--- a/lib/pairing.h
++++ b/lib/pairing.h
+@@ -43,6 +43,9 @@
+ void pairing_session_set_setup_status(pairing_session_t *session);
+ bool pairing_session_has_pin_key(const pairing_session_t *session, const unsigned char key[ED25519_KEY_SIZE]);
+ bool pairing_session_is_verified(const pairing_session_t *session);
++#ifdef CLEARCAST_IN_PROCESS
++bool pairing_session_get_verified_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE]);
++#endif
+ void pairing_session_reset_pin(pairing_session_t *session);
+ int pairing_session_check_handshake_status(pairing_session_t *session);
+ int pairing_session_handshake(pairing_session_t *session, const unsigned char ecdh_key[X25519_KEY_SIZE],
+--- a/lib/pairing.c
++++ b/lib/pairing.c
+@@ -171,6 +171,16 @@
+     return session->status == STATUS_FINISHED;
+ }
+ 
++#ifdef CLEARCAST_IN_PROCESS
++bool
++pairing_session_get_verified_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE])
++{
++    if (!session || !key || !pairing_session_is_verified(session) || !session->ed_theirs) return false;
++    ed25519_key_get_raw(key, session->ed_theirs);
++    return true;
++}
++#endif
++
+ int
+ pairing_session_handshake(pairing_session_t *session, const unsigned char ecdh_key[X25519_KEY_SIZE],
+                           const unsigned char ed_key[ED25519_KEY_SIZE])
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -36,11 +36,11 @@
+ #include <windows.h>
+ #include <math.h>
+ #include "clearcast_pairing_peer.h"
++#include "clearcast_session_authorization.h"
+ extern void clearcast_media_verified(uint64_t, const unsigned char*, int, unsigned int);
+ extern void clearcast_media_client_name(uint64_t, const char*);
+ extern void clearcast_media_closed(uint64_t);
+ extern void clearcast_media_remote(uint64_t, const char*, const char*);
+-extern bool clearcast_media_peer_verified(const unsigned char*, int, unsigned int);
+ extern void clearcast_media_retain_peer(const unsigned char*, int, unsigned int, bool);
+ extern bool clearcast_direct_video_uri_allowed(const char*);
+ extern uint64_t clearcast_diagnostic_connected(const char *remote);
+@@ -111,6 +111,8 @@
+     int media_owner_peer_len;
+     unsigned int media_owner_zone;
+     char media_owner_session[129];
++    clearcast_session_policy media_authority;
++    clearcast_session_link media_owner_authority;
+ #endif
+   
+      /* public key as string */
+@@ -163,37 +165,58 @@
+     uint64_t pin_expires_at;
+     uint64_t diagnostic_id;
+     bool diagnostic_skip_response;
++    clearcast_session_link media_authority;
+ #endif
+ };
+ typedef struct raop_conn_s raop_conn_t;
+ 
+ #ifdef CLEARCAST_IN_PROCESS
++static bool clearcast_media_authorize_connection(raop_conn_t *conn, const char *session) {
++    unsigned char public_key[ED25519_KEY_SIZE];
++    bool verified = pairing_session_get_verified_key(conn->session, public_key);
++    AcquireSRWLockExclusive(&conn->raop->media_owner_lock);
++    bool allowed = clearcast_session_authorize(&conn->raop->media_authority, &conn->media_authority,
++        verified ? public_key : NULL, conn->remote, conn->remotelen, conn->zone_id, session, GetTickCount64());
++    ReleaseSRWLockExclusive(&conn->raop->media_owner_lock);
++    return allowed;
++}
++
+ static bool clearcast_video_owner_matches(raop_conn_t *conn, const char *session, bool allow_empty) {
+     raop_t *raop = conn->raop;
+     bool matches;
+     AcquireSRWLockShared(&raop->media_owner_lock);
+     matches = !raop->media_owner_peer_len ? allow_empty :
+-        session && !strcmp(session, raop->media_owner_session) && conn->remotelen == raop->media_owner_peer_len &&
+-        conn->zone_id == raop->media_owner_zone && !memcmp(conn->remote, raop->media_owner_peer, conn->remotelen);
++        clearcast_session_same_owner(&raop->media_authority, raop->media_owner_authority,
++            conn->media_authority, session);
+     ReleaseSRWLockShared(&raop->media_owner_lock);
+     return matches;
+ }
+ 
+ static bool clearcast_video_owner_begin(raop_conn_t *conn, const char *session) {
+     raop_t *raop = conn->raop;
+-    if (!session || !*session || strlen(session) > 128 || (conn->remotelen != 4 && conn->remotelen != 16) ||
+-        !clearcast_media_peer_verified(conn->remote, conn->remotelen, conn->zone_id)) return false;
++    if (!clearcast_media_authorize_connection(conn, session)) return false;
++    unsigned char old_peer[16];
++    int old_length = 0;
++    unsigned old_zone = 0;
+     AcquireSRWLockExclusive(&raop->media_owner_lock);
+     bool allowed = !raop->media_owner_peer_len ||
+-        (!strcmp(session, raop->media_owner_session) && conn->remotelen == raop->media_owner_peer_len &&
+-         conn->zone_id == raop->media_owner_zone && !memcmp(conn->remote, raop->media_owner_peer, conn->remotelen));
++        clearcast_session_same_owner(&raop->media_authority, raop->media_owner_authority,
++            conn->media_authority, session);
+     if (allowed) {
++        if (raop->media_owner_authority.slot != conn->media_authority.slot) {
++            old_length = raop->media_owner_peer_len; old_zone = raop->media_owner_zone;
++            memcpy(old_peer, raop->media_owner_peer, sizeof(old_peer));
++            clearcast_session_end(&raop->media_authority, &raop->media_owner_authority);
++        }
++        raop->media_owner_authority = conn->media_authority;
++        clearcast_session_lookup(&raop->media_authority, conn->media_authority)->active = true;
+         memcpy(raop->media_owner_peer, conn->remote, conn->remotelen);
+         raop->media_owner_peer_len = conn->remotelen;
+         raop->media_owner_zone = conn->zone_id;
+         memcpy(raop->media_owner_session, session, strlen(session) + 1);
+     }
+     ReleaseSRWLockExclusive(&raop->media_owner_lock);
++    if (old_length) clearcast_media_retain_peer(old_peer, old_length, old_zone, false);
+     if (allowed) clearcast_media_retain_peer(conn->remote, conn->remotelen, conn->zone_id, true);
+     return allowed;
+ }
+@@ -207,6 +230,7 @@
+     length = raop->media_owner_peer_len;
+     zone = raop->media_owner_zone;
+     memcpy(peer, raop->media_owner_peer, sizeof(peer));
++    clearcast_session_end(&raop->media_authority, &raop->media_owner_authority);
+     raop->media_owner_peer_len = 0;
+     memset(raop->media_owner_session, 0, sizeof(raop->media_owner_session));
+     ReleaseSRWLockExclusive(&raop->media_owner_lock);
+@@ -408,8 +432,7 @@
+         // ClearCast decodes remote HTTP/HLS with GStreamer. Its local-playlist
+         // legacy route has no consumer and must not enter upstream allocation.
+         bool allowed = clearcast_http_discovery || (!hls_request &&
+-            client_session_id && *client_session_id && strlen(client_session_id) <= 128 &&
+-            clearcast_media_peer_verified(conn->remote, conn->remotelen, conn->zone_id) &&
++            clearcast_media_authorize_connection(conn, client_session_id) &&
+             clearcast_video_owner_matches(conn, client_session_id, true));
+         if (!allowed) {
+             *response = http_response_create();
+@@ -660,6 +683,9 @@
+         handler(conn, request, *response, &response_data, &response_datalen);
+ #ifdef CLEARCAST_IN_PROCESS
+         if (pairing_session_is_verified(conn->session)) {
++            // Some clients verify and play on one TCP transport, others pass
++            // this verified session ID to a separate HTTP transport.
++            if (client_session_id) clearcast_media_authorize_connection(conn, client_session_id);
+             clearcast_media_verified(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id);
+             clearcast_media_remote(conn->diagnostic_id, http_request_get_header(request, "DACP-ID"),
+                 http_request_get_header(request, "Active-Remote"));
+@@ -784,6 +810,9 @@
+ 
+     free(conn->local);
+ #ifdef CLEARCAST_IN_PROCESS
++    AcquireSRWLockExclusive(&raop->media_owner_lock);
++    clearcast_session_close(&raop->media_authority, &conn->media_authority, GetTickCount64());
++    ReleaseSRWLockExclusive(&raop->media_owner_lock);
+     clearcast_media_closed(conn->diagnostic_id);
+ #endif
+     free(conn->remote);

@@ -73,19 +73,29 @@ python tests/native/receiver_security_test.py
 
 覆盖验证码与签名校验、未验证媒体请求、畸形请求、慢速/不读响应客户端、日志大小与隐私、重复配对记录、配对文件读取失败、空闲 CPU 和启停资源回收。确定性变异和本机协议夹具不构成穷尽模糊测试，也不替代真实音视频流、硬件解码或网络条件测试。发布时应记录实际结果和对应 DLL 哈希。
 
+当前夹具还验证配对记录的 16 MiB/4096 客户端边界、超限不更新身份、容量用尽后不继续追加，以及边界内的已保存密钥仍可验证。端口独占修改需要同时通过实际连接的连续重启检查，不能仅依赖临时端口的 setsockopt 断言。
+
 ## HTTP 解析器与请求头
 
-`http_headers_test.c` 检查请求头字段名大小写；`http_request_security_test.c` 检查请求边界、分段和确定性畸形输入。两者共包含 10,163 项检查。使用接收器构建输出中实际的 `build` 目录：
+`http_headers_test.c` 检查请求头字段名大小写；`http_request_security_test.c` 检查请求边界、分段和确定性畸形输入。使用接收器构建输出中实际的 `build` 目录：
 
 ```powershell
 $ucrt = (Resolve-Path .runtime/msys64/ucrt64).Path # 或设为 C:\msys64\ucrt64
 $receiverBuild = '<Build-Receiver.ps1 输出的实际 build 目录>'
 $env:PATH = "$ucrt\bin;$env:PATH"
-& "$ucrt\bin\cmake.exe" --build $receiverBuild --target clearcast_http_headers_test clearcast_http_security_test clearcast_video_context_test clearcast_srp_salt_fixture clearcast_media_audio_test clearcast_media_http_test clearcast_pairing_peer_fixture clearcast_audio_rhythm_test clearcast_audio_rhythm_gst_test clearcast_audio_timing_test clearcast_video_frame_test
+& "$ucrt\bin\cmake.exe" --build $receiverBuild --parallel
 & "$ucrt\bin\ctest.exe" --test-dir $receiverBuild --output-on-failure
 ```
 
-HTTP CTest 名称分别为 `http_headers_case_insensitive` 和 `http_request_security`。同次构建还包含 `video_context_lifecycle` 的 23 项上下文所有权、GPU 选择和设备移除夹具检查，上述三个 C 夹具共 10,186 项检查。它们不启动 AirPlay 接收服务，GPU 夹具也不替代真实硬件解码测试。
+`Build-Receiver.ps1` 将当前 `-OutputDirectory` 明确写入该构建目录的 `CLEARCAST_TEST_RUNTIME`，用于测试对应候选，并不始终指向默认 `.runtime/receiver`。可在 `CMakeCache.txt` 核对实际值；如要改测另一个已完整构建的运行时，先执行 `cmake -S src/native -B $receiverBuild -DCLEARCAST_TEST_RUNTIME=<绝对路径>`，或用所需输出目录重新运行构建脚本。仅更新默认运行时不会自动改写旧 QA 构建目录的测试配置。
+
+`media_http_source_policy --policy --runtime <目录>` 在 `gst_init` 前设置传入运行时的插件、scanner 和 TLS 模块目录，清空额外插件路径，并建立独立临时注册表缓存；退出时清理自己创建的缓存。CTest 无须从调用 shell 继承 GStreamer 插件环境变量，仍需可加载原生依赖的 DLL 搜索路径。直接视频 URL 模式保留现有 CA/DNS 参数，由其 Python 夹具提供隔离环境。
+
+HTTP CTest 名称分别为 `http_headers_case_insensitive` 和 `http_request_security`。同次构建还包含 `video_context_lifecycle` 的上下文所有权、GPU 选择和设备移除夹具检查。它们不启动 AirPlay 接收服务，GPU 夹具也不替代真实硬件解码测试。
+
+`http_request_security` 也覆盖 EVENT 短头、长度溢出、前导字节及连续消息。新增 `http_input_handler_bounds` 使用真实生产处理器检查畸形请求和旧桥接入口拒绝，保留正常 HTTP(S) 和缓存 UUID 续播的正向用例。`auth_routing_protects_owner` 使用真实分发器与现有 RAOP 所有者的停止探针，检查协议/CSeq/会话头变体不占用媒体槽或停止已有传输。`pairing_escalating_failure_budget` 以注入的时间验证递增冷却，不实际等待多轮长冷却。`socket_exclusive_binding` 仅使用临时端口检查 Windows 独占及重新绑定；其余这些夹具不打开接收端口。
+
+可在接收器构建完成后用 `cmake --build <build> --parallel` 构建全部夹具，再执行完整 CTest。背压入口 `media_backpressure_bounds` 使用实际 appsrc 和受控慢消费者，检查临时恢复、持续过载、停止/EOS 取消、FIFO、消息洪水及关键事件保留。策略、取舍及第三方边界见[稳定性与安全说明](RELIABILITY_SECURITY.md)。
 
 `srp_leading_zero_salt_proofs` 额外运行 11 项真实 SRP 证明检查：仅在独立测试 DLL 内固定随机 salt 的有效长度为 16、15、8、1 字节，使用独立客户端计算证明并验证服务器证明，覆盖错误 PIN 与旧截断编码的负向对照。生产 DLL 的随机数实现和导出不受测试夹具影响。该项要求 CMake 找到安装了 `cryptography` 的 Python；可通过 `-DPython3_EXECUTABLE=<python.exe>` 明确指定。结果默认写入 `.runtime/qa-srp-salt-results.json`。
 
@@ -125,7 +135,7 @@ python tests/native/direct_video_http_test.py `
   --report .runtime/qa-media/direct-video-http-results.json
 ```
 
-该项通过真实便携运行时解码 MP4/HLS 到 `fakesink`，验证实际帧数及尺寸，检查顶层和嵌套 HLS 重定向、带凭据 URL、文件和 `appsrc` URI 被拒绝，并分别验证不可信 TLS 证书拒绝与可信测试 CA 下的 HTTPS 播放。测试 CA 和私钥只存在于独立临时目录；生产运行时保留严格证书验证及随包 CA。
+该项通过真实便携运行时解码 MP4/HLS 到 `fakesink`，验证实际帧数及尺寸，检查顶层和嵌套 HLS 重定向、带凭据 URL、文件和 `appsrc` URI 被拒绝，并分别验证不可信 TLS 证书拒绝与可信测试 CA 下的 HTTPS 播放。实际目的地址检查覆盖数字回环变体、DNS 混合/重绑定、HLS 分片和 IPv4-mapped 地址；正向服务使用已有 LAN 单播地址，保留原 Host/SNI/证书主机名，测试 DNS 替身只编译到夹具 EXE。测试 CA 和私钥只存在于独立临时目录；生产运行时保留严格证书验证及随包 CA。
 
 下面的夹具占用接收端口，必须与应用及其他真实 DLL 协议测试串行运行：
 
@@ -135,6 +145,8 @@ python tests/native/direct_video_protocol_test.py --runtime .runtime/receiver `
 ```
 
 它使用独立配对状态完成真实 PIN/SRP 和签名验证，再经 HTTP `/play` 将合成 MP4/HLS 送入实际接收 DLL 和共用 D3D11 子窗口，检查解码尺寸、已显示帧、对端与会话授权、暂停/定位/恢复、播放信息、停止/重连、解码方式切换及流结束。此项不访问真实设备或受 DRM 保护的内容，也不等同于物理显示、音频输出及各视频应用的兼容性验收。
+
+`network_scope_protocol_test.py --report .runtime/qa-media/network-scope.json` 同样占用接收端口，须串行；默认使用 `.runtime/receiver`，自定义候选须在启动 Python 前把 `CLEARCAST_PROBE_RUNTIME` 设为该目录的绝对路径（此脚本没有 `--runtime` 参数）。它在现有 LAN/回环地址之间按轮次启动，读取本进程 TCP/UDP 表，完成真实双栈 PIN、pair-verify、FairPlay 和 RTP/NTP 传输初始化，检查精确绑定、未选本机地址拒绝、LAN mDNS 应答与其他网卡静默、无效地址失败关闭及停止回收。不修改系统网卡/防火墙，不发送 RTP 媒体负载；回环发现不作为 LAN 发现验收。接口移除、索引变化和新增隐私地址由 CTest `selected_network_scope` 的合成适配器库存覆盖。
 
 ## 音乐元数据、封面、进度与发送端控制
 
@@ -157,7 +169,9 @@ python tests/native/media_metadata_protocol_test.py
 
 它覆盖未验证请求拒绝、验证后的有界畸形 DMAP/图像/进度请求、媒体快照和封面 ABI 边界、不记录曲名及停止后清理。默认报告为 `.runtime/qa-media/metadata-protocol-results.json`，可通过 `CLEARCAST_MEDIA_PROTOCOL_REPORT` 更改。该项没有发送加密 RTP 音频；它与内存夹具及回环 DACP 用例不能替代真实 iPhone/iPad/Mac 音乐投放、歌曲切换、设备音频和不同发送应用的验收。
 
-媒体 JSON 顶层的 `connected` 表示仍有存活的已认证控制连接，或已建立音频、镜像或直接视频会话；未认证 TCP、仅完成 PIN 设置及已关闭连接的 60 秒授权缓存均不算在线。协议夹具检查认证后尚无媒体时为真、关闭一个兄弟连接仍为真、最后控制连接关闭且无媒体时及接收器停止后为假；暂停和音频 SETUP 尚无首包的边界由内存状态夹具覆盖。
+媒体 JSON 顶层的 `connected` 表示仍有存活的已认证控制连接，或已建立音频、镜像或直接视频会话；未认证 TCP、仅完成 PIN 设置及已关闭连接的来源元数据均不算在线。协议夹具检查认证后尚无媒体时为真、关闭一个兄弟连接仍为真、最后控制连接关闭且无媒体时及接收器停止后为假；暂停和音频 SETUP 尚无首包的边界由内存状态夹具覆盖。同 IP 兄弟连接及来源元数据不能授权新的音频 SETUP。
+
+会话鉴权由 CTest `session_authorization_bound_handoff` 和 `session_verified_http_handoff` 覆盖。前者检查有界令牌授权、过期、活动所有者、关闭、代次及 IPv6 scope；后者使用独立 `clearcast_pairing_peer_fixture` 中的真实 PIN/SRP、Ed25519 pair-verify 和生产 HTTP 分发器，不打开 socket。它检查验证连接稍后才提供会话头、已验证会话跨 HTTP 续接、正常暂停/定位/停止/重启，以及同 IP 未知会话和另一个已验证公钥不能操作所有者。直接运行 `session_handoff_test.py --fixture <build>/clearcast_pairing_peer_fixture.dll --report <ignored-report.json>`。媒体副作用在该测试 DLL 内替换为计数，不进入发行产物，也不能代替真机跨连接兼容性验收。
 
 ## 直接视频后台保持和电脑端控制
 

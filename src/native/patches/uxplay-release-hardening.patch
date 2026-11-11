@@ -8,17 +8,19 @@
  #include <array>
  #include <fstream>
  #include <sstream>
-@@ -209,6 +210,9 @@
+@@ -209,6 +210,11 @@
  static bool registration_list = false;
  static std::string pairing_register = "";
  static std::vector <std::string> registered_keys;
 +#ifdef CLEARCAST_IN_PROCESS
 +static std::map<std::string, std::string> registered_client_metadata;
++static constexpr size_t clearcast_pairing_max_bytes = 16u * 1024u * 1024u;
++static constexpr size_t clearcast_pairing_max_clients = 4096;
 +#endif
  static double db_low = -30.0;
  static double db_high = 0.0;
  static bool taper_volume = false;
-@@ -3156,50 +3160,56 @@
+@@ -3156,50 +3162,68 @@
  }
  
  extern "C" void register_client(void *cls, const char *device_id, const char *client_pk, const char *client_name) {
@@ -43,6 +45,8 @@
 +    copy_field(saved_name, sizeof(saved_name), client_name, true);
 +    const std::string metadata = std::string(saved_id) + "," + saved_name;
 +    const auto previous = registered_client_metadata.find(client_pk);
++    if (previous == registered_client_metadata.end() &&
++        registered_client_metadata.size() >= clearcast_pairing_max_clients) return;
 +    // A reconnect should not append another identical row or discard a known name.
 +    if (previous != registered_client_metadata.end() &&
 +        (previous->second == metadata || (!*saved_name && !previous->second.empty()))) return;
@@ -52,6 +56,16 @@
 +    }
 +    FILE* file = g_fopen(pairing_register.c_str(), "a+b");
 +    if (!file) return;
++    // An authenticated peer may change metadata repeatedly. Bound the append
++    // history too; reaching capacity must never truncate existing identities.
++    const size_t row_bytes = strlen(client_pk) + 1 + 19 + 1 + metadata.size() + 1;
++    const bool sized = fseek(file, 0, SEEK_END) == 0;
++    const long size = sized ? ftell(file) : -1;
++    if (size < 0 || static_cast<size_t>(size) > clearcast_pairing_max_bytes ||
++        row_bytes + 1 > clearcast_pairing_max_bytes - static_cast<size_t>(size)) {
++        fclose(file);
++        return;
++    }
 +    time_t raw_time = time(NULL);
 +    struct tm *tm_info = localtime(&raw_time);
 +    char time_str[20];
@@ -114,7 +128,7 @@
  }
  
  extern "C" bool check_register(void *cls, const char *client_pk) {
-@@ -3208,6 +3218,9 @@
+@@ -3208,6 +3232,9 @@
          return true;
      }
      LOGD("check returning client's pairing registration");
@@ -124,7 +138,7 @@
      std::string pk = client_pk;
      if (std::find(registered_keys.rbegin(), registered_keys.rend(), pk) != registered_keys.rend()) {
          LOGD("registration found: PK=%s", client_pk);
-@@ -3216,6 +3229,7 @@
+@@ -3216,6 +3243,7 @@
          LOGE("returning client's pairing registration not found: PK=%s", client_pk);
          return false;
      }

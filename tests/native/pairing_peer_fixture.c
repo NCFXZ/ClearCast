@@ -68,29 +68,83 @@ static NETIO_STATUS NETIOAPI_API_ fixture_get_neighbors(ADDRESS_FAMILY family, P
 static VOID NETIOAPI_API_ fixture_free_neighbors(PVOID memory) { --fixture_tables; free(memory); }
 #define GetIpNetTable2 fixture_get_neighbors
 #define FreeMibTable fixture_free_neighbors
+#define httpd_count_connection_type fixture_count_connection_type
+#define httpd_get_connection_by_type fixture_get_connection_by_type
+#define httpd_set_connection_type fixture_set_connection_type
+#define httpd_nohold fixture_nohold
+#define raop_rtp_stop fixture_audio_transport_stop
+#define raop_rtp_mirror_stop fixture_mirror_transport_stop
+#define raop_ntp_stop fixture_timing_transport_stop
+#ifdef CLEARCAST_HTTP_INPUT_FIXTURE
+#include "crypto.h"
+#include "pairing.h"
+// This no-I/O handler fixture injects one verified public identity. The
+// independent pairing/dispatch fixture continues using real pair-verify.
+static bool fixture_verified_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE]) {
+    (void)session; memset(key, 0x5a, ED25519_KEY_SIZE); return true;
+}
+#define pairing_session_get_verified_key fixture_verified_key
+#endif
 #include "clearcast_pairing_peer.h"
 #include "raop.c"
+#ifdef CLEARCAST_HTTP_INPUT_FIXTURE
+#undef pairing_session_get_verified_key
+#endif
 #undef GetIpNetTable2
 #undef FreeMibTable
+#undef httpd_count_connection_type
+#undef httpd_get_connection_by_type
+#undef httpd_set_connection_type
+#undef httpd_nohold
+#undef raop_rtp_stop
+#undef raop_rtp_mirror_stop
+#undef raop_ntp_stop
 
 static raop_t *fixture_raop;
 static raop_conn_t *fixture_connections[16];
 static int fixture_pin, fixture_generation;
 static int fixture_feedback[3];
 static char fixture_registered[45];
+static raop_conn_t fixture_active_owner;
+static int fixture_classifications, fixture_transport_stops;
+static int fixture_video_stop_calls, fixture_video_rate_calls, fixture_video_scrub_calls;
+static const char *fixture_route_error, *fixture_route_error_description;
+int fixture_count_connection_type(httpd_t *httpd, connection_type_t type) { return type == CONNECTION_TYPE_RAOP; }
+void *fixture_get_connection_by_type(httpd_t *httpd, connection_type_t type, int instance) {
+    return type == CONNECTION_TYPE_RAOP ? &fixture_active_owner : NULL;
+}
+int fixture_set_connection_type(httpd_t *httpd, void *connection, connection_type_t type) {
+    ++fixture_classifications; return 0;
+}
+bool fixture_nohold(httpd_t *httpd) { return false; }
+void fixture_audio_transport_stop(raop_rtp_t *transport) { if (transport) ++fixture_transport_stops; }
+void fixture_mirror_transport_stop(raop_rtp_mirror_t *transport) { if (transport) ++fixture_transport_stops; }
+void fixture_timing_transport_stop(raop_ntp_t *transport) { if (transport) ++fixture_transport_stops; }
 static void fixture_log(void *cls, int level, const char *message) { (void)cls; (void)level; (void)message; }
 static bool fixture_check(void *cls, const char *key) { return !strcmp(fixture_registered, key); }
 static void fixture_register(void *cls, const char *id, const char *key, const char *name) {
     if (strlen(key) == 44) memcpy(fixture_registered, key, 45);
 }
+static void fixture_video_stop(void *cls) {
+    (void)cls; ++fixture_video_stop_calls; raop_clear_video_owner(fixture_raop);
+}
+static void fixture_video_rate(void *cls, float value) { (void)cls; (void)value; ++fixture_video_rate_calls; }
+static void fixture_video_scrub(void *cls, float value) { (void)cls; (void)value; ++fixture_video_scrub_calls; }
 
 void clearcast_media_verified(uint64_t id, const unsigned char *peer, int length, unsigned int zone) {}
 void clearcast_media_closed(uint64_t id) {}
 void clearcast_media_remote(uint64_t id, const char *dacp, const char *remote) {}
 void clearcast_media_client_name(uint64_t id, const char *name) {}
-bool clearcast_media_peer_verified(const unsigned char *peer, int length, unsigned int zone) { return false; }
 void clearcast_media_retain_peer(const unsigned char *peer, int length, unsigned int zone, bool retain) {}
-bool clearcast_direct_video_uri_allowed(const char *uri) { return false; }
+bool clearcast_direct_video_uri_allowed(const char *uri) {
+#ifdef CLEARCAST_HTTP_INPUT_FIXTURE
+    // The production URI policy has its own real GUri fixture. This injects
+    // one accepted source to verify handler dispatch without any media I/O.
+    return uri && (!strcmp(uri, "http://127.0.0.1/video.mp4") || !strcmp(uri, "https://127.0.0.1/stream.m3u8"));
+#else
+    return false;
+#endif
+}
 bool clearcast_direct_video_is_active(void) { return false; }
 uint64_t clearcast_diagnostic_connected(const char *remote) { static uint64_t id; return ++id; }
 void clearcast_diagnostic_closed(uint64_t id) {}
@@ -133,6 +187,10 @@ __declspec(dllexport) int clearcast_test_peer_reset(const char *keyfile) {
     fixture_raop->pairing = pairing_init_generate("AA:BB:CC:DD:EE:01", keyfile, &created);
     fixture_raop->callbacks.check_register = fixture_check;
     fixture_raop->callbacks.register_client = fixture_register;
+    fixture_raop->callbacks.on_video_stop = fixture_video_stop;
+    fixture_raop->callbacks.on_video_rate = fixture_video_rate;
+    fixture_raop->callbacks.on_video_scrub = fixture_video_scrub;
+    fixture_video_stop_calls = fixture_video_rate_calls = fixture_video_scrub_calls = 0;
     fixture_raop->use_pin = true;
     fixture_registered[0] = 0;
     fixture_mode = fixture_generation = fixture_pin = 0;
@@ -189,4 +247,56 @@ __declspec(dllexport) int clearcast_test_peer_request(int handle, const char *ra
     http_response_destroy(response);
     http_request_destroy(request);
     return result;
+}
+
+/* Real production dispatch with a synthetic existing RAOP owner. Only its
+ * transport-stop effects are spied; no transport or receiver socket is opened. */
+__declspec(dllexport) int clearcast_test_peer_dispatch(int handle, const char *raw, int length,
+    char *output, int capacity) {
+    fixture_classifications = fixture_transport_stops = 0;
+    fixture_route_error = fixture_route_error_description = NULL;
+    if (handle < 1 || handle > 16 || !fixture_connections[handle - 1] || !raw ||
+        length < 1 || length > 65536 || !output || capacity < 1) return -1;
+    http_request_t *request = http_request_init();
+    if (!request) return -1;
+    http_request_add_data(request, raw, length);
+    if (http_request_has_error(request)) {
+        fixture_route_error = http_request_get_error_name(request);
+        fixture_route_error_description = http_request_get_error_description(request);
+        http_request_destroy(request); return -2;
+    }
+    if (!http_request_is_complete(request)) { http_request_destroy(request); return -3; }
+    memset(&fixture_active_owner, 0, sizeof(fixture_active_owner));
+    fixture_active_owner.raop_rtp = (raop_rtp_t *)(uintptr_t)1;
+    fixture_active_owner.raop_rtp_mirror = (raop_rtp_mirror_t *)(uintptr_t)2;
+    fixture_active_owner.raop_ntp = (raop_ntp_t *)(uintptr_t)3;
+    fixture_raop->hls_support = true;
+    fixture_raop->httpd = (httpd_t *)(uintptr_t)1;
+    fixture_raop->dnssd = (dnssd_t *)(uintptr_t)1;
+    http_response_t *response = NULL;
+    conn_request(fixture_connections[handle - 1], request, &response);
+    int size = 0, result = -1;
+    if (response) {
+        const char *data = http_response_get_data(response, &size);
+        if (data && size <= capacity) { memcpy(output, data, size); result = size; }
+        http_response_destroy(response);
+    }
+    fixture_raop->httpd = NULL;
+    fixture_raop->dnssd = NULL;
+    http_request_destroy(request);
+    return result;
+}
+__declspec(dllexport) int clearcast_test_peer_route_effects(int field) {
+    return field == 0 ? fixture_classifications : field == 1 ? fixture_transport_stops : -1;
+}
+__declspec(dllexport) const char *clearcast_test_peer_route_error(int description) {
+    return description ? fixture_route_error_description : fixture_route_error;
+}
+__declspec(dllexport) int clearcast_test_peer_claim_owner(int handle, const char *session) {
+    return handle > 0 && handle <= 16 && fixture_connections[handle-1] &&
+        clearcast_video_owner_begin(fixture_connections[handle-1], session);
+}
+__declspec(dllexport) int clearcast_test_peer_video_effects(int field) {
+    return field == 0 ? fixture_video_stop_calls : field == 1 ? fixture_video_rate_calls :
+        field == 2 ? fixture_video_scrub_calls : -1;
 }

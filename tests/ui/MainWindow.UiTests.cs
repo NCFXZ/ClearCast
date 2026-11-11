@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -102,15 +103,13 @@ public sealed partial class MainWindow
 
     private void UiCheckEnglishVisibleText(FrameworkElement root, string context)
     {
-        foreach (var text in UiDescendants<TextBlock>(root))
+        foreach (var control in UiDescendants<FrameworkElement>(root).Prepend(root))
         {
-            // Receiver/device names are user content, and language names retain
-            // their own language so people can find the language selector.
-            if (text.Text == Texts.ChineseLanguage || ReferenceEquals(text, LandingDescription) ||
-                text.DataContext is PairingDeviceRow)
+            // Device and media names are user content, not untranslated UI.
+            if (control.DataContext is PairingDeviceRow)
                 continue;
             bool visible = true;
-            for (DependencyObject? element = text; element is not null; element = VisualTreeHelper.GetParent(element))
+            for (DependencyObject? element = control; element is not null; element = VisualTreeHelper.GetParent(element))
             {
                 if (element is UIElement { Visibility: Visibility.Collapsed })
                 {
@@ -120,9 +119,208 @@ public sealed partial class MainWindow
                 if (ReferenceEquals(element, root))
                     break;
             }
-            if (visible)
-                UiCheck(!Regex.IsMatch(text.Text ?? "", "[\\p{IsCJKUnifiedIdeographs}]"),
-                    "English visible text " + context + " " + text.Text);
+            if (!visible) continue;
+            void CheckText(string? value, string kind)
+            {
+                if (!string.IsNullOrEmpty(value))
+                    UiCheck(!Regex.IsMatch(value, "[\\p{IsCJKUnifiedIdeographs}]"),
+                        "English " + kind + " " + context + " " + value);
+            }
+            if (control is TextBlock text && text.Text != Texts.ChineseLanguage &&
+                !ReferenceEquals(text, LandingDescription) &&
+                !(ReferenceEquals(text, LandingTitle) && _receiverStatus == "AirPlay 已连接" && _mediaState.DeviceName.Length > 0) &&
+                !(ReferenceEquals(text, MusicTitle) && _mediaState.Title.Length > 0 && text.Text == _mediaState.Title) &&
+                !(ReferenceEquals(text, MusicArtist) && _mediaState.Artist.Length > 0 && text.Text == _mediaState.Artist) &&
+                !(ReferenceEquals(text, MusicAlbum) && _mediaState.Album.Length > 0 && text.Text == _mediaState.Album))
+                CheckText(text.Text, "visible text");
+            CheckText(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(control), "accessible name");
+            object? tooltip = ToolTipService.GetToolTip(control);
+            CheckText(tooltip is string value ? value : (tooltip as ToolTip)?.Content as string, "tooltip");
+        }
+    }
+
+    private async Task UiCheckPlaybackEnglishAsync(FrameworkElement controls, string context)
+    {
+        bool english = Texts.IsEnglish;
+        var state = _mediaState;
+        try
+        {
+            Texts.SetEnglish(true);
+            foreach (bool playing in new[] { true, false })
+            {
+                ApplyMediaState(state with { Playing = playing });
+                RefreshDynamicText();
+                await Task.Delay(80);
+                UiCheckEnglishVisibleText(controls, context + (playing ? " playing" : " paused"));
+            }
+        }
+        finally
+        {
+            Texts.SetEnglish(english);
+            ApplyMediaState(state);
+            RefreshDynamicText();
+        }
+    }
+
+    private async Task UiTestFrameworkErrorLanguageAsync()
+    {
+        bool english = Texts.IsEnglish, wasOpen = ReceiverInfoBar.IsOpen;
+        string message = _receiveErrorMessage, status = _receiverStatus, copyLabel = _copyErrorLabel;
+        int errorCode = _receiveErrorCode;
+        var retryVisibility = RetryReceiveButton.Visibility;
+        ToolTip? tooltip = null;
+        try
+        {
+            ShowReceiveError("设备验证未通过，请在设备上重新选择 ClearCast 后重试。", 470);
+            await UiWaitUntil(() => UiDescendants<Button>(ReceiverInfoBar).Any(button => button.Name == "CloseButton"),
+                "InfoBar close template is loaded");
+            foreach (bool useEnglish in new[] { false, true, false })
+            {
+                LanguageButton.SelectedItem = useEnglish ? EnglishLanguageItem : ChineseLanguageItem;
+                await Task.Delay(80);
+                string language = useEnglish ? "en-US" : "zh-CN";
+                string expected = useEnglish ? "Dismiss error" : "关闭错误提示";
+                var close = UiDescendants<Button>(ReceiverInfoBar).Single(button => button.Name == "CloseButton");
+                UiCheck(Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride == language &&
+                    WindowLayout.Language == language, "framework and XAML language follow the app selection " + language);
+                UiCheck(new ButtonAutomationPeer(close).GetName() == expected,
+                    "InfoBar close accessibility updates on the existing open banner " + language);
+                tooltip = ToolTipService.GetToolTip(close) as ToolTip ?? throw new InvalidOperationException("InfoBar close has no tooltip.");
+                tooltip.PlacementTarget = close;
+                tooltip.IsOpen = true;
+                await Task.Delay(80);
+                UiCheck(ReceiverInfoBar.IsOpen && tooltip.IsOpen && (string?)tooltip.Content == expected,
+                    "the actual open InfoBar tooltip matches its accessible name " + language);
+                if (useEnglish) UiCheckEnglishVisibleText(MirrorPage, "live InfoBar language switch");
+                tooltip.IsOpen = false;
+            }
+            UiInvoke(UiDescendants<Button>(ReceiverInfoBar).Single(button => button.Name == "CloseButton"));
+            await UiWaitUntil(() => !ReceiverInfoBar.IsOpen, "InfoBar close still dismisses after language switches");
+            UiCheck(!ReceiverInfoBar.IsOpen, "InfoBar native close behavior survives zh-en-zh switches");
+        }
+        finally
+        {
+            if (tooltip is not null) tooltip.IsOpen = false;
+            LanguageButton.SelectedItem = english ? EnglishLanguageItem : ChineseLanguageItem;
+            ApplyAppLanguage(english);
+            _receiveErrorMessage = message; _receiveErrorCode = errorCode; _copyErrorLabel = copyLabel;
+            RefreshDynamicText(); SetReceiverStatus(status);
+            RetryReceiveButton.Visibility = retryVisibility;
+            ReceiverInfoBar.IsOpen = wasOpen;
+        }
+    }
+
+    private async Task UiTestFrameworkScrollBarLanguageAsync()
+    {
+        bool english = Texts.IsEnglish;
+        object? theme = ThemeButton.SelectedItem;
+        var presenter = AppWindow.Presenter.Kind;
+        var size = AppWindow.Size;
+        var position = AppWindow.Position;
+        object? navigation = MainNavigation.SelectedItem;
+        var page = _selectedPage;
+        var expected = new Dictionary<string, (string Chinese, string English)>
+        {
+            ["VerticalSmallDecrease"] = ("向上滚动", "Scroll up"),
+            ["VerticalSmallIncrease"] = ("向下滚动", "Scroll down"),
+            ["VerticalLargeDecrease"] = ("向上翻页", "Page up"),
+            ["VerticalLargeIncrease"] = ("向下翻页", "Page down"),
+            ["VerticalThumb"] = ("垂直滚动条滑块", "Vertical scroll thumb"),
+            ["HorizontalSmallDecrease"] = ("向左滚动", "Scroll left"),
+            ["HorizontalSmallIncrease"] = ("向右滚动", "Scroll right"),
+            ["HorizontalLargeDecrease"] = ("向左翻页", "Page left"),
+            ["HorizontalLargeIncrease"] = ("向右翻页", "Page right"),
+            ["HorizontalThumb"] = ("水平滚动条滑块", "Horizontal scroll thumb")
+        };
+        var viewer = new ScrollViewer
+        {
+            Width = 180, Height = 120, HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Enabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            Content = new Border { Width = 800, Height = 600 }
+        };
+        viewer.Loaded += FrameworkScrollViewerLoaded;
+        viewer.ActualThemeChanged += FrameworkScrollViewerThemeChanged;
+        try
+        {
+            await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
+            WindowLayout.Children.Add(viewer);
+            await UiWaitUntil(() => viewer.ScrollableWidth > 0 && viewer.ScrollableHeight > 0,
+                "native scrollbar language fixture overflows on both axes");
+            foreach (var kind in new[] { AppWindowPresenterKind.Overlapped, AppWindowPresenterKind.FullScreen })
+            {
+                AppWindow.SetPresenter(kind);
+                foreach (bool dark in new[] { false, true })
+                {
+                    ThemeButton.SelectedItem = dark ? DarkThemeItem : LightThemeItem;
+                    foreach (bool useEnglish in new[] { false, true, false })
+                    {
+                        LanguageButton.SelectedItem = useEnglish ? EnglishLanguageItem : ChineseLanguageItem;
+                        await Task.Delay(100);
+                        string phase = kind + " " + (dark ? "dark " : "light ") + (useEnglish ? "en" : "zh");
+                        UiCheck(AppWindow.Presenter.Kind == kind &&
+                            viewer.ActualTheme == (dark ? ElementTheme.Dark : ElementTheme.Light),
+                            "native scrollbar fixture uses the real presenter and theme " + phase);
+                        var bars = UiDescendants<ScrollBar>(viewer).ToArray();
+                        UiCheck(bars.Length == 2 && bars.Select(bar => bar.Orientation).Distinct().Count() == 2,
+                            "native scrollbar fixture has separate horizontal and vertical bars " + phase);
+                        foreach (var bar in bars)
+                        {
+                            var parts = UiDescendants<FrameworkElement>(bar)
+                                .Where(part => expected.ContainsKey(part.Name)).ToDictionary(part => part.Name);
+                            UiCheck(parts.Count == 10, "native scrollbar template exposes all ten parts " + phase + " " + bar.Orientation);
+                            foreach (var entry in expected)
+                            {
+                                var peer = FrameworkElementAutomationPeer.CreatePeerForElement(parts[entry.Key]);
+                                _uiTestLayouts.Add(new { phase = "native scrollbar language", presenter = kind.ToString(), dark,
+                                    english = useEnglish, orientation = bar.Orientation.ToString(), part = entry.Key,
+                                    accessibleName = Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(parts[entry.Key]),
+                                    peerName = peer?.GetName(), peerAvailable = peer is not null });
+                                string label = useEnglish ? entry.Value.English : entry.Value.Chinese;
+                                bool active = entry.Key.StartsWith(bar.Orientation.ToString(), StringComparison.Ordinal);
+                                // The inactive orientation's collapsed thumb has no
+                                // peer. Require all names and every exposed peer,
+                                // including all five current-orientation peers.
+                                UiCheck(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(parts[entry.Key]) == label &&
+                                    (peer is not null || !active) && (peer is null || peer.GetName() == label),
+                                    "native scrollbar accessible name follows live language " + phase + " " + bar.Orientation + " " + entry.Key);
+                            }
+                        }
+                        if (useEnglish)
+                        {
+                            UiCheckEnglishVisibleText(viewer, "native scrollbar " + phase);
+                            UiCheckEnglishVisibleText(SettingsPage, "native scrollbar settings " + phase);
+                        }
+                    }
+                }
+                viewer.ChangeView(0, 0, null, true);
+                await Task.Delay(80);
+                foreach (var axis in new[] { Orientation.Vertical, Orientation.Horizontal })
+                {
+                    string name = axis + "SmallIncrease";
+                    var bar = UiDescendants<ScrollBar>(viewer).Single(element => element.Orientation == axis);
+                    var part = UiDescendants<FrameworkElement>(bar).Single(element => element.Name == name);
+                    var peer = FrameworkElementAutomationPeer.CreatePeerForElement(part);
+                    if (peer?.GetPattern(PatternInterface.Invoke) is not IInvokeProvider invoke)
+                        throw new InvalidOperationException("Native scroll button has no invoke pattern: " + name);
+                    invoke.Invoke();
+                }
+                await UiWaitUntil(() => viewer.VerticalOffset > 0 && viewer.HorizontalOffset > 0,
+                    "localized native scroll buttons retain movement on both axes " + kind);
+                UiCheck(true, "localized native scroll buttons retain movement on both axes " + kind);
+            }
+        }
+        finally
+        {
+            WindowLayout.Children.Remove(viewer);
+            ThemeButton.SelectedItem = theme;
+            LanguageButton.SelectedItem = english ? EnglishLanguageItem : ChineseLanguageItem;
+            ApplyAppLanguage(english);
+            AppWindow.SetPresenter(presenter);
+            if (presenter == AppWindowPresenterKind.Overlapped) AppWindow.MoveAndResize(new(position.X, position.Y, size.Width, size.Height));
+            if (navigation is NavigationViewItem item && page is not null) await UiNavigateAsync(item, page);
         }
     }
 
@@ -887,6 +1085,31 @@ public sealed partial class MainWindow
             }
             await UiWaitUntil(() => _receiverReady || ReceiverInfoBar.IsOpen, "receiver startup", 30000);
             UiCheck(_receiverReady, "receiver starts successfully");
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LANGUAGE_ONLY") == "1")
+            {
+                UiCheck(await StopReceiverAsync(), "receiver stops before isolated live language checks");
+                receiverStopped = true;
+                await UiTestFrameworkErrorLanguageAsync();
+                await UiTestFrameworkScrollBarLanguageAsync();
+                return;
+            }
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_BACKPRESSURE_ONLY") == "1")
+            {
+                UiCheck(await StopReceiverAsync(), "receiver stops before isolated backpressure checks");
+                receiverStopped = true;
+                await UiTestRenderingBackpressureAsync();
+                await UiTestMusicArtworkBackpressureAsync();
+                await UiTestReceiverNetworkChangesAsync();
+                await UiTestPairingReadRecoveryAsync();
+                return;
+            }
+            if (Environment.GetEnvironmentVariable("CLEARCAST_UI_DIAGNOSTICS_ONLY") == "1")
+            {
+                UiCheck(await StopReceiverAsync(), "receiver stops before isolated diagnostics UI checks");
+                receiverStopped = true;
+                await UiTestMediaDiagnosticsAsync(output);
+                return;
+            }
             if (Environment.GetEnvironmentVariable("CLEARCAST_UI_STORE_ONLY") == "1")
             {
                 await UiTestStoreMusicScreenshotsAsync(output);
@@ -901,6 +1124,12 @@ public sealed partial class MainWindow
             receiverStopped = true;
 
             await UiTestLandingAnimationAsync(output);
+            await UiTestRenderingBackpressureAsync();
+            await UiTestMusicArtworkBackpressureAsync();
+            await UiTestReceiverNetworkChangesAsync();
+            await UiTestPairingReadRecoveryAsync();
+            await UiTestFrameworkErrorLanguageAsync();
+            await UiTestFrameworkScrollBarLanguageAsync();
             // Keep artwork decode and intentional landing-view pauses outside
             // the independently measured first-three-second SVG startup window.
             receiverStopped = false;
@@ -972,7 +1201,13 @@ public sealed partial class MainWindow
                         var close = UiDescendants<Button>(ReceiverInfoBar).Single(element => element.Name == "CloseButton");
                         await UiWaitForStableLayout(ReceiverInfoBar, icon, close, CopyErrorButton);
                         if (english)
+                        {
                             UiCheckEnglishVisibleText(MirrorPage, "mirroring error " + prefix);
+                            string[] header = BuildReceiveErrorDetails().Split("\r\n", 4);
+                            UiCheck(header.Length == 4 && header[0] == "ClearCast" && header[2].StartsWith("Error code 0x") &&
+                                !Regex.IsMatch(string.Join(' ', header.Take(3)), "[\\p{IsCJKUnifiedIdeographs}]"),
+                                "copied error details header and message are English " + prefix);
+                        }
                         UiBounds iconBounds = UiMeasure(icon), closeBounds = UiMeasure(close), copyBefore = UiMeasure(CopyErrorButton);
                         double Pixel(double value) => Math.Round(value * scale, MidpointRounding.AwayFromZero);
                         _uiTestLayouts.Add(new
@@ -1037,6 +1272,7 @@ public sealed partial class MainWindow
             TogglePlayerFullScreen();
             UiCheck(!_playerFullScreen && !_hasVideo, "player controls ignore inactive playback");
             await UiTestPlayerWindowPathsAsync(output);
+            await UiTestMediaDiagnosticsAsync(output);
             await UiTestMediaFeaturesAsync(output);
             await UiNavigateAsync(MirrorNavigationItem, MirrorPage);
             await UiCaptureAsync(output, "completed-mirror-page");

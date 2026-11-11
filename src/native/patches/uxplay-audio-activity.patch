@@ -154,17 +154,18 @@
          }
          switch (i) {
          case 0:
-@@ -249,6 +264,9 @@
+@@ -249,6 +264,10 @@
  }
  
  void audio_renderer_stop() {
 +#ifdef CLEARCAST_IN_PROCESS
 +    clearcast_media_audio_activity_boundary();
++    clearcast_media_audio_pipeline(NULL, 0);
 +#endif
      if (renderer) {
          gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
          gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
-@@ -293,6 +311,9 @@
+@@ -293,6 +312,9 @@
  }
  
  void  audio_renderer_start(unsigned char *ct) {
@@ -183,12 +184,13 @@
      if (!render_audio || !renderer || !data || !data_len || *data_len <= 0 || !ntp_time) return;
  
      GstClockTime pts = (GstClockTime) *ntp_time ;    /* now in nsecs */
-@@ -369,6 +390,9 @@
+@@ -369,6 +391,10 @@
              GST_BUFFER_PTS(buffer) = pts;
          }
          gst_buffer_fill(buffer, 0, data, *data_len);
 +#ifdef CLEARCAST_IN_PROCESS
 +        clearcast_audio_epoch_add(buffer, activity_epoch);
++        clearcast_media_audio_pipeline(renderer->pipeline, activity_epoch);
 +#endif
  
          gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);

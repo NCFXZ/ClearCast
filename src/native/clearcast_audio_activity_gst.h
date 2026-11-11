@@ -12,6 +12,7 @@
 extern "C" {
 #endif
 uint64_t clearcast_media_audio_activity_epoch(void);
+void clearcast_media_audio_pipeline(GstElement *pipeline, uint64_t epoch);
 uint64_t clearcast_media_audio_activity_epoch_for_source(uint64_t source_id);
 void clearcast_media_audio_activity_publish(uint64_t epoch, double energy, double density);
 void clearcast_media_audio_activity_beat(uint64_t epoch, double strength, uint64_t sample_age_ms);

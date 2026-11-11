@@ -17,7 +17,9 @@ public sealed partial class MainWindow
         PairingResetFeedback.Text = Texts.Translate(_pairingResetFeedback);
         ReceiverInfoBar.Message = Texts.Translate(_receiveErrorMessage);
         CopyErrorButton.Content = Texts.Translate(_copyErrorLabel);
+        RefreshReceiverErrorCloseText();
         RefreshFullScreenLabel();
         RefreshMusicText();
+        UpdateMediaDiagnostics();
     }
 }

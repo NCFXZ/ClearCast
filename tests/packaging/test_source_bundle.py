@@ -190,6 +190,34 @@ class SourceBundleTests(unittest.TestCase):
         self.assertIn("Unsafe archive path", result.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_adds_http_source_with_exact_patch_and_manifest_notices(self):
+        self.make_base()
+        source = self.work / "gst-plugins-good-1.28.9.tar.xz"
+        source.write_bytes(b"fixture official HTTP source archive")
+        notices = self.work / "http-notices"
+        component = notices / "licenses/gst-plugins-good-1.28.9"
+        component.mkdir(parents=True)
+        (notices / "THIRD-PARTY-COMPONENTS.md").write_text("fixture controlled HTTP inventory")
+        (component / "COPYING").write_bytes(b"fixture original LGPL notice")
+        patch = b"fixture controlled HTTP destination patch\n"
+        (component / "gstreamer-soup-destination.patch").write_bytes(patch)
+        manifest = {"schemaVersion": 1, "version": "1.28.9", "sourcePatch": {
+            "relativePath": "src/native/patches/gstreamer-soup-destination.patch",
+            "sha256": hashlib.sha256(patch).hexdigest()}}
+        (component / "source-build.json").write_text(json.dumps(manifest))
+        member = "gstreamer/gst-plugins-good-1.28.9.tar.xz"
+        result = self.run_tool(["--additional-source", member + "=" + str(source),
+                                "--notice-directory", str(notices)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.read(member), source.read_bytes())
+            prefix = "distribution-notices/licenses/gst-plugins-good-1.28.9/"
+            self.assertEqual(archive.read(prefix + "gstreamer-soup-destination.patch"), patch)
+            self.assertEqual(json.loads(archive.read(prefix + "source-build.json")), manifest)
+            for row in archive.read("SHA256SUMS").decode().splitlines():
+                expected, name = row.split(None, 1)
+                self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), expected)
+
     def test_rejects_replacing_existing_dependency_as_extra_source(self):
         self.make_base()
         result = self.run_tool(["--additional-source", "dependency.tar.zst=" + str(self.app)])

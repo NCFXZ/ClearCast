@@ -4,15 +4,15 @@ Run commands from the repository root. Application sources live in `src/ClearCas
 
 ## Version and publish layouts
 
-The release, application/file version, WiX Bundle and Store identity use `1.2.1.0`. MSI ProductVersion uses `1.2.1`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
+The release, application/file version, WiX Bundle and Store identity use `1.2.2.0`. MSI ProductVersion uses `1.2.2`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
 
 Build the tested native receiver first, then publish separate WinUI layouts:
 
 ```powershell
 $repository = (Get-Location).Path
-$release = '.runtime/release-1.2.1.0'
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.2.1.0
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.2.1.0 `
+$release = '.runtime/release-1.2.2.0'
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.2.2.0
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.2.2.0 `
   -p:BaseIntermediateOutputPath="$repository/$release/store-obj/" -p:BaseOutputPath="$repository/$release/store-bin/" `
   -p:ProjectPriFileName=resources.pri -p:ProjectPriIndexName=NCFX.ClearCast
 ```
@@ -27,12 +27,16 @@ Authenticate the previous corresponding-source bundle against its published SHA-
 python scripts/packaging/Prepare-RuntimeNotices.py --base $previousSourceBundle `
   --base-sha256 $previousSourceSha256 --msys-root .runtime/msys64 `
   --runtime-directory .runtime/receiver --additional-source-directory $officialMsysSourceDirectory `
-  --output-directory $notices --version 1.2.1.0
+  --output-directory $notices --version 1.2.2.0
 ```
 
-The output must be a new directory. An optional `--package-audit` supplies an independent owner audit; otherwise the tool audits the installed database. Each native PE and CA file must match its package owner or controlled manifest. New sources must match the package/version and the signed binary package's BUILDINFO recipe digest. Fetch exact archives from the official MSYS2 source repository while preserving TLS and package signature checks. Separately check embedded upstream archives/patches against recipe checksums; `SKIP` signature items require their stated provenance treatment.
+The output must be a new directory. If the candidate runtime is under a QA subdirectory, pass `--security-component-directory .runtime` to identify the existing controlled build manifests explicitly. An optional `--package-audit` supplies an independent owner audit; otherwise the tool audits the installed database. Each native PE and CA file must match its package owner or controlled manifest. New sources must match the package/version and the signed binary package's BUILDINFO recipe digest. Fetch exact archives from the official MSYS2 source repository while preserving TLS and package signature checks. Separately check embedded upstream archives/patches against recipe checksums; `SKIP` signature items require their stated provenance treatment.
 
-The output includes `THIRD-PARTY-COMPONENTS.md`, `runtime-components.json`, `source-coverage.json`, and per-package licenses/source-build records. It covers HTTP/HLS/TLS and CA sources as well as controlled libplist, OpenSSL and parser builds. Replacing only three controlled notices is insufficient when other MSYS2 packages changed. `Prepare-DependencyNotices.py` remains available for a parser-only baseline refresh; a release must still pass the complete runtime gate.
+The output includes `THIRD-PARTY-COMPONENTS.md`, `runtime-components.json`, `source-coverage.json`, and per-package licenses/source-build records. It covers HTTP/HLS/TLS and CA sources as well as controlled libplist, OpenSSL, parser and HTTP-source builds. Replacing selected controlled notices is insufficient when other MSYS2 packages changed. `Prepare-DependencyNotices.py` remains for historical two-parser baseline migrations; current releases use the complete runtime gate and three-file parser/adaptive component manifest.
+
+Build both `scripts/native/Build-GStreamerSecurity.ps1` and `scripts/native/Build-GStreamerHttpSecurity.ps1` before the receiver. The parser/adaptive manifest binds three shipped files: `libgstcodecparsers-1.0-0.dll`, `lib/gstreamer-1.0/libgstvideoparsersbad.dll` and `libgstadaptivedemux-1.0-0.dll`. Its official gst-plugins-bad 1.28.9 source SHA-256 is `4A4E0B7BF84F868378C48F143A7AC3A98923B488A5B74F1A35BA46BC3C43F6B1`; `sourcePatch={relativePath,sha256}` binds `src/native/patches/gstreamer-adaptive-demux-time.patch`, and `buildRecipeSha256` identifies the build script used. Runtime notices include the original COPYING, exact patch and source-build record; `source-coverage.json` binds the exact source archive through `parserSource` and any corresponding additional source.
+
+Both publish layouts must also carry `receiver/gstreamer-http-security-manifest.json`, `receiver/LICENSE-GStreamerHttpSecurity.txt` and its exact `lib/gstreamer-1.0/libgstsoup.dll`. The HTTP manifest binds official gst-plugins-good 1.28.9 source SHA-256 `E518CD97483706A252E95E60312A22D23DEC6F5E7673AF6F5BDE719C3A9CA7F4` and `sourcePatch={relativePath,sha256}` for `src/native/patches/gstreamer-soup-destination.patch`. Notices include its source-build record, original COPYING and exact patch. Put each official archive in the additional-source directory (or the controlled component parent); coverage records `gstreamer/gst-plugins-good-1.28.9.tar.xz` and `gstreamer/gst-plugins-bad-1.28.9.tar.xz`, either from the authenticated baseline or as an additional source. All three parser/adaptive binary checks and the separate HTTP-source check remain mandatory.
 
 License reads require canonical members, exact regular files under the expected package root, and literal tar arguments after `--`; content bytes are preserved. Generated/private pairing state is excluded. `TEST-ONLY` compliance fixtures cannot produce release packages.
 
@@ -43,7 +47,7 @@ Use WiX 5.0.2, its matching `WixToolset.Bal.wixext` extension, and Windows SDK x
 ```powershell
 ./scripts/packaging/Build-Packages.ps1 -PublishDirectory "$release/desktop" `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices `
-  -OutputDirectory "$release/packages" -Version 1.2.1.0 `
+  -OutputDirectory "$release/packages" -Version 1.2.2.0 `
   -WixPath $wix -WixBalExtensionPath $bal -MakeAppxPath $makeappx `
   -ValidatedReceiverSha256 $testedReceiverSha256 -AlsoBuildMsix
 ```
@@ -68,7 +72,7 @@ foreach ($entry in $coverage.additionalSources.PSObject.Properties) {
   $additional += "$($entry.Name)=$($entry.Value.path)"
 }
 python scripts/packaging/Update-CorrespondingSource.py --base $previousSourceBundle `
-  --app-source $applicationSourceZip --commit $commitSha --version 1.2.1.0 `
+  --app-source $applicationSourceZip --commit $commitSha --version 1.2.2.0 `
   --output $updatedSourceBundle --notice-directory $notices @additional
 ```
 

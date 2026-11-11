@@ -3,8 +3,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Windows.Graphics;
 using WinRT.Interop;
 
 namespace ClearCast;
@@ -40,6 +40,7 @@ public sealed partial class MainWindow
         nint window = WindowNative.GetWindowHandle(this);
         var previousPlacement = new PlayerWindowPlacement { Length = Marshal.SizeOf<PlayerWindowPlacement>() };
         bool havePlacement = GetWindowPlacement(window, ref previousPlacement);
+        AppWindowPresenterKind previousPresenter = AppWindow.Presenter.Kind;
         try
         {
             // Keep the native host alive for its normal control/connection UI,
@@ -48,19 +49,22 @@ public sealed partial class MainWindow
             ReceiverInfoBar.IsOpen = false;
             _preferences = _preferences with { AutoFullScreen = false };
             Texts.SetReceiverName("ClearCast PC");
+            // Store screenshots fill the display without capturing any desktop
+            // or changing the production player's normal fullscreen controls.
+            AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+            await Task.Delay(150);
+            var displayBounds = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
             async Task CapturePage(string locale, string theme, string page)
             {
-                int width = page == "settings" ? 2560 : 1920;
-                int height = page == "settings" ? 1440 : 1080;
-                AppWindow.Resize(new SizeInt32(width, height));
                 await UiWaitForStableLayout(page == "settings" ? SettingsPage : MirrorPage);
                 await Task.Delay(150);
                 var frame = await Task.Run(() => UiCaptureOwnedWindow(window));
-                UiCheck(frame.Width == width && frame.Height == height, "store page uses the actual owned window at its capture size " + page);
+                UiCheck(frame.Width == displayBounds.Width && frame.Height == displayBounds.Height,
+                    "store page captures the owned fullscreen display at native dimensions " + page);
                 string name = locale + "-" + page + "-" + theme;
                 await UiSaveCompositorFrameAsync(storeOutput, name, frame);
                 string file = Path.Combine(storeOutput, name + ".png");
-                captures.Add(new { locale, theme, page, file, width = frame.Width, height = frame.Height,
+                captures.Add(new { locale, theme, page, file, width = frame.Width, height = frame.Height, fullscreen = true,
                     sha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(file))) });
             }
             foreach (bool english in new[] { false, true })
@@ -74,7 +78,6 @@ public sealed partial class MainWindow
                 await Task.Delay(150);
                 UiCheck(Texts.IsEnglish == english && WindowLayout.ActualTheme == (dark ? ElementTheme.Dark : ElementTheme.Light),
                     "store capture applies its explicit locale and theme " + english + " " + dark);
-                AppWindow.Resize(new SizeInt32(1920, 1080));
                 await UiNavigateAsync(MirrorNavigationItem, MirrorPage);
                 string locale = english ? "en-US" : "zh-CN";
                 string theme = dark ? "dark" : "light";
@@ -102,8 +105,9 @@ public sealed partial class MainWindow
                     "store captures contain only the fictional controlled music metadata " + prefix);
                 UiCheckMusicGeometry(prefix);
                 if (english) UiCheckEnglishVisibleText(MirrorPage, "store music " + prefix);
-                UiCheck(UiGetWindowRect(window, out var bounds) && bounds.Width == 1920 && bounds.Height == 1080,
-                    "store owned window has the requested full-HD capture size " + prefix);
+                var bounds = UiCompositorVisibleBounds(window, out _);
+                UiCheck(bounds.Width == displayBounds.Width && bounds.Height == displayBounds.Height,
+                    "store owned visible frame fills the native display " + prefix);
                 await UiTestOwnedCompositorCaptureAsync(output, prefix);
                 string captured = Path.Combine(output, prefix + "-music-window-1.png");
                 UiCheck(File.Exists(captured), "store screenshot includes the actual owned-window compositor " + prefix);
@@ -111,7 +115,7 @@ public sealed partial class MainWindow
                 File.Copy(captured, destination, overwrite: true);
                 captures.Add(new
                 {
-                    locale, theme, file = destination, width = bounds.Width, height = bounds.Height,
+                    locale, theme, file = destination, width = bounds.Width, height = bounds.Height, fullscreen = true,
                     sha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(destination))),
                     title = music.Title, artist = music.Artist, album = music.Album,
                     controls = "none", sourceFrame = captured
@@ -124,7 +128,7 @@ public sealed partial class MainWindow
             {
                 artwork = artworkPath, artworkSha256 = artworkHash,
                 source = "Original geometric artwork supplied by release QA; fictional demonstration track and album names. No third-party album art or recording.",
-                captureMethod = "PrintWindow(PW_RENDERFULLCONTENT=2), restricted to the test process's own HWND; exact unedited application frame.",
+                captureMethod = "PrintWindow(PW_RENDERFULLCONTENT=2), restricted to the test process's fullscreen HWND filling the native display; exact DWM visible-frame pixels without desktop capture, resampling or painting.",
                 assemblyVersion = typeof(MainWindow).Assembly.GetName().Version?.ToString(),
                 syntheticMedia = true, remoteCommandsSent = false,
                 locales = "zh-CN for Chinese; en-US artwork and screenshots for other Store languages.",
@@ -160,6 +164,7 @@ public sealed partial class MainWindow
             ReceiverInfoBar.IsOpen = previousErrorOpen;
             _receiverReady = previousReady;
             _preferences.Save(_root);
+            AppWindow.SetPresenter(previousPresenter);
             if (havePlacement) SetWindowPlacement(window, in previousPlacement);
             if (previousNavigationItem is Microsoft.UI.Xaml.Controls.NavigationViewItem item && previousPage is not null)
                 await UiNavigateAsync(item, previousPage);

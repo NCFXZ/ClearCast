@@ -1,0 +1,176 @@
+--- a/lib/netutils.c
++++ b/lib/netutils.c
+@@ -21,6 +21,10 @@
+ #include <stdio.h>
+ 
+ #include "compat.h"
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++#define CLEARCAST_NETWORK_SCOPE_IMPLEMENTATION
++#include "clearcast_network_scope.h"
++#endif
+ 
+ #if defined(__APPLE__) && defined(UXPLAY_HAVE_APPLE_P2P)
+ #ifndef SO_RECV_ANYIF
+@@ -173,14 +177,24 @@
+ 
+         /* Initialize sockaddr for bind */
+         sin6ptr->sin6_family = family;
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++        unsigned int selected_index = 0;
++        if (!clearcast_network_scope_ipv6(sin6ptr->sin6_addr.s6_addr, &selected_index)) {
++            SOCKET_SET_ERROR(WSAEAFNOSUPPORT);
++            goto cleanup;
++        }
++        sin6ptr->sin6_scope_id = IN6_IS_ADDR_LINKLOCAL(&sin6ptr->sin6_addr) ? selected_index : 0;
++#else
+         sin6ptr->sin6_addr = in6addr_any;
++#endif
+         sin6ptr->sin6_port = htons(*port);
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) || defined(CLEARCAST_IN_PROCESS)
+         int v6only = 1;
+-        /* Make sure we only listen to IPv6 addresses */
+-        setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY,
+-                   (char *) &v6only, sizeof(v6only));
++        /* Make sure we only listen to IPv6 addresses. */
++        ret = setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY,
++                         (char *) &v6only, sizeof(v6only));
++        if (ret == -1) goto cleanup;
+ #endif
+ 
+         socklen = sizeof(*sin6ptr);
+@@ -199,7 +213,15 @@
+ 
+         /* Initialize sockaddr for bind */
+         sinptr->sin_family = family;
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++        sinptr->sin_addr.s_addr = clearcast_network_scope_ipv4();
++        if (!sinptr->sin_addr.s_addr) {
++            SOCKET_SET_ERROR(WSAEADDRNOTAVAIL);
++            goto cleanup;
++        }
++#else
+         sinptr->sin_addr.s_addr = INADDR_ANY;
++#endif
+         sinptr->sin_port = htons(*port);
+ 
+         socklen = sizeof(*sinptr);
+--- a/lib/mdnsd/mdnsd.c
++++ b/lib/mdnsd/mdnsd.c
+@@ -24,6 +24,9 @@
+ 
+ #include "../compat.h"
+ #include "mdnsd.h"
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++#include "clearcast_network_scope.h"
++#endif
+ 
+ #define MDNS_ADDR4 "224.0.0.251"
+ #define MDNS_ADDR6 "ff02::fb"
+@@ -450,7 +453,9 @@
+ 
+ static int mdns_get_default_ipv6(unsigned char addr[16], unsigned int *scope_id)
+ {
+-#ifdef WIN32
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++    return clearcast_network_scope_ipv6(addr, scope_id);
++#elif defined(WIN32)
+     (void) addr;
+     (void) scope_id;
+     return 0;
+@@ -526,6 +531,15 @@
+         return -SOCKET_GET_ERROR();
+     }
+ 
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++    /* mDNS must share wildcard port 5353 to receive multicast. Kernel packet
++     * metadata limits queries to the same adapter as all receiver listeners. */
++    if (clearcast_network_scope_prepare_datagram(fd, 0) == -1) {
++        int error = SOCKET_GET_ERROR();
++        CLOSESOCKET(fd);
++        return -error;
++    }
++#endif
+     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &one, sizeof(one));
+ #ifdef SO_REUSEPORT
+     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const char *) &one, sizeof(one));
+@@ -598,6 +612,15 @@
+         return -SOCKET_GET_ERROR();
+     }
+ 
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++    /* mDNS must share wildcard port 5353 to receive multicast. Kernel packet
++     * metadata limits queries to the same adapter as all receiver listeners. */
++    if (clearcast_network_scope_prepare_datagram(fd, 1) == -1) {
++        int error = SOCKET_GET_ERROR();
++        CLOSESOCKET(fd);
++        return -error;
++    }
++#endif
+     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *) &one, sizeof(one));
+ #ifdef SO_REUSEPORT
+     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const char *) &one, sizeof(one));
+@@ -605,7 +628,11 @@
+     setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *) &one, sizeof(one));
+     setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (const char *) &hops, sizeof(hops));
+     setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, (const char *) &loop, sizeof(loop));
+-    setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, (const char *) &scope_id, sizeof(scope_id));
++    if (setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, (const char *) &scope_id, sizeof(scope_id)) == -1) {
++        int error = SOCKET_GET_ERROR();
++        CLOSESOCKET(fd);
++        return -error;
++    }
+ 
+     memset(&addr, 0, sizeof(addr));
+     addr.sin6_family = AF_INET6;
+@@ -1001,8 +1028,13 @@
+             unsigned char buffer[MDNS_MAX_PACKET];
+             struct sockaddr_in from;
+             socklen_t from_len = sizeof(from);
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++            int received = clearcast_network_scope_recvfrom(fd4, (char *) buffer, sizeof(buffer),
++                                                            (struct sockaddr *) &from, &from_len, 0);
++#else
+             int received = (int) recvfrom(fd4, (char *) buffer, sizeof(buffer), 0,
+                                           (struct sockaddr *) &from, &from_len);
++#endif
+             if (received > 0) {
+                 mdns_handle_query(mdnsd, buffer, (size_t) received,
+                                   MDNS_FAMILY_IPV4, &from, from.sin_port);
+@@ -1012,8 +1044,13 @@
+             unsigned char buffer[MDNS_MAX_PACKET];
+             struct sockaddr_in6 from;
+             socklen_t from_len = sizeof(from);
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++            int received = clearcast_network_scope_recvfrom(fd6, (char *) buffer, sizeof(buffer),
++                                                            (struct sockaddr *) &from, &from_len, 1);
++#else
+             int received = (int) recvfrom(fd6, (char *) buffer, sizeof(buffer), 0,
+                                           (struct sockaddr *) &from, &from_len);
++#endif
+             if (received > 0) {
+                 mdns_handle_query(mdnsd, buffer, (size_t) received,
+                                   MDNS_FAMILY_IPV6, &from, from.sin6_port);
+@@ -1082,10 +1119,20 @@
+     int error6 = 0;
+ 
+     active_ipv4 = 0;
++#if defined(_WIN32) && defined(CLEARCAST_IN_PROCESS)
++    mdnsd->ipv4_addr = clearcast_network_scope_ipv4();
++    if (!mdnsd->ipv4_addr) {
++        MUTEX_UNLOCK(mdnsd->mutex);
++        return -WSAEADDRNOTAVAIL;
++    }
++    const int strict_interface = 1;
++#else
+     mdnsd->ipv4_addr = ipv4_override ? ipv4_override : mdns_get_default_ipv4();
++    const int strict_interface = ipv4_override != 0;
++#endif
+     mdns_get_default_ipv6(mdnsd->ipv6_addr, &mdnsd->ipv6_scope_id);
+ 
+-    mdnsd->sock_fd4 = mdns_open_socket4(&mdnsd->ipv4_addr, ipv4_override != 0);
++    mdnsd->sock_fd4 = mdns_open_socket4(&mdnsd->ipv4_addr, strict_interface);
+     if (mdnsd->sock_fd4 < 0) {
+         error4 = mdnsd->sock_fd4;
+         mdnsd->sock_fd4 = -1;
