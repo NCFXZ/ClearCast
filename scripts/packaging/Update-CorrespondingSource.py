@@ -140,6 +140,7 @@ def main():
         )
         if substitutions != 1:
             raise ValueError("Base README does not identify exactly one application commit")
+        readme = readme.replace('ClearCast/native/', 'ClearCast/src/native/ and ClearCast/scripts/native/')
         if args.version:
             readme, titles = re.subn(r"^ClearCast \d+\.\d+\.\d+(?:\.\d+)? corresponding source", f"ClearCast {args.version} corresponding source", readme, flags=re.MULTILINE)
             readme, links = re.subn(r"https://github\.com/NCFXZ/ClearCast/releases/tag/v\d+\.\d+\.\d+(?:\.\d+)?", f"https://github.com/NCFXZ/ClearCast/releases/tag/v{args.version}", readme)

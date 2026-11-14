@@ -47,7 +47,7 @@ class SourceBundleTests(unittest.TestCase):
         with zipfile.ZipFile(self.base, "w") as archive:
             for name, value in members.items():
                 archive.writestr(name, value)
-            archive.writestr("README.txt", f"ClearCast {version} corresponding source\n\nThe ClearCast source archive contains the released Git commit " + "1" * 40 + f".\n\nhttps://github.com/NCFXZ/ClearCast/releases/tag/v{version}\n")
+            archive.writestr("README.txt", f"ClearCast {version} corresponding source\n\nThe ClearCast source archive contains the released Git commit " + "1" * 40 + f".\nSee ClearCast/native/ for build instructions.\n\nhttps://github.com/NCFXZ/ClearCast/releases/tag/v{version}\n")
             archive.writestr("SHA256SUMS", "\n".join(sha + "  " + name for name, sha in hashes.items()) + "\n")
             archive.writestr("distribution-notices/THIRD-PARTY-COMPONENTS.md", "fixture inventory")
             archive.writestr("distribution-notices/licenses/dependency/LICENSE", "fixture terms")
@@ -68,6 +68,8 @@ class SourceBundleTests(unittest.TestCase):
             self.assertIn("ClearCast 1.1.0 corresponding source", readme)
             self.assertIn("https://github.com/NCFXZ/ClearCast/releases/tag/v1.1.0", readme)
             self.assertNotIn("1.0.0", readme)
+            self.assertIn('ClearCast/src/native/ and ClearCast/scripts/native/', readme)
+            self.assertNotIn('ClearCast/native/', readme)
 
     def test_rejects_invalid_release_version(self):
         self.make_base()
