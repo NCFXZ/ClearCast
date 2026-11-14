@@ -327,6 +327,6 @@ internal sealed partial class LyricsClient : IDisposable
 
     private static string Escape(string value) => Uri.EscapeDataString(value);
 
-    [GeneratedRegex(@"\s*[\(\[（【][^\)\]）】]*[\)\]）】]")]
+    [GeneratedRegex(@"\s*[\(\[（【][^\)\]）】]*[\)\]）】]", RegexOptions.NonBacktracking)]
     private static partial Regex BracketedSuffix();
 }

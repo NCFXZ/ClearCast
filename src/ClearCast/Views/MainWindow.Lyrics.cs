@@ -45,6 +45,7 @@ public sealed partial class MainWindow
     private void MusicLyricsClicked(object sender, RoutedEventArgs args)
     {
         _preferences = _preferences with { ShowLyrics = MusicLyricsButton.IsChecked == true };
+        AutoShowLyricsToggle.IsOn = _preferences.ShowLyrics;
         SavePreferences();
         UpdateLyricsPresentation(true);
     }

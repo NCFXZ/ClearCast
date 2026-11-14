@@ -42,6 +42,12 @@ internal static class LyricsTests
             "synced lyrics retain bounded allocations when timestamped lines exceed the limit");
         check(boundedSynced!.Lines.All(line => line.TimeMs == 500),
             "an offset after the line limit still applies to retained synced lyrics");
+        string repeatedTimestamp = string.Concat(Enumerable.Repeat("[00:01.00]", 100_000)) + "Repeated timestamp";
+        allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        var boundedTimestamps = Lyrics.ParseSynced(repeatedTimestamp);
+        long timestampAllocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        check(boundedTimestamps?.Lines.Count == Lyrics.MaximumLines && timestampAllocated < 1_000_000,
+            "a single network-sized lyric line cannot allocate an unbounded timestamp list");
 
         var plain = Lyrics.ParsePlain("One\n\nTwo");
         check(plain is { Kind: LyricsKind.Plain } && plain.Lines.Count == 3 && plain.ActiveIndex(10_000) == -1 &&
@@ -130,6 +136,10 @@ internal static class LyricsTests
             "instrumental records map to the instrumental state");
         check(LyricsClient.CleanTitle("Song (Remastered 2011) [Live]") == "Song" && LyricsClient.CleanTitle("光年之外（电影版）") == "光年之外",
             "bracketed title suffixes are removed for the fallback search");
+        string unclosedTitle = new('(', 900_000);
+        var titleClock = System.Diagnostics.Stopwatch.StartNew();
+        check(LyricsClient.CleanTitle(unclosedTitle) == unclosedTitle && titleClock.Elapsed < TimeSpan.FromSeconds(5),
+            "network-sized unclosed title brackets retain their text without a quadratic fallback-search stall");
 
         var json = System.Text.Json.JsonSerializer.Deserialize<LrclibRecord>(
             """{"id":1,"trackName":"T","artistName":"A","albumName":"B","duration":233.0,"instrumental":false,"plainLyrics":"p","syncedLyrics":"[00:01.00]s"}""",
@@ -137,7 +147,7 @@ internal static class LyricsTests
         check(json is { TrackName: "T", Duration: 233.0 } && LyricsClient.ToLyrics(json)!.Kind == LyricsKind.Synced,
             "LRCLIB JSON field names bind");
 
-        check(new ReceiverPreferences().ShowLyrics == false, "lyrics are off until the user turns them on");
+        check(new ReceiverPreferences().ShowLyrics, "automatic lyrics display defaults on");
         CheckRequestsAsync(check).GetAwaiter().GetResult();
     }
 

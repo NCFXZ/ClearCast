@@ -32,7 +32,10 @@ internal sealed record Lyrics(LyricsKind Kind, IReadOnlyList<LyricLine> Lines)
                 int close = line.IndexOf(']');
                 if (close < 0) break;
                 ReadOnlySpan<char> tag = line[1..close];
-                if (TryParseTime(tag, out long time)) times.Add(time);
+                if (TryParseTime(tag, out long time))
+                {
+                    if (times.Count < MaximumLines) times.Add(time);
+                }
                 else if (times.Count == 0 && tag.StartsWith("offset:", StringComparison.OrdinalIgnoreCase) &&
                     long.TryParse(tag[7..].Trim(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long value))
                     offset = Math.Clamp(value, -MaximumTimeMs, MaximumTimeMs);

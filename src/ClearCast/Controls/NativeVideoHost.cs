@@ -26,7 +26,7 @@ internal sealed class NativeVideoHost : IDisposable
 
     private (int X, int Y, int Width, int Height, bool Visible)? _lastLayout;
     private (uint Time, int X, int Y)? _lastClick;
-    private (RectInt32? Bounds, RectInt32? Exclusion, int Radius) _windowRegion;
+    private (RectInt32? Bounds, RectInt32? Exclusion, int Radius, int ExclusionRadius) _windowRegion;
     private readonly NativeMediaInfoOverlay _diagnosticsOverlay;
     private RectInt32 _diagnosticsBounds;
     private bool _diagnosticsVisible;
@@ -60,7 +60,8 @@ internal sealed class NativeVideoHost : IDisposable
         _diagnosticsOverlay = new NativeMediaInfoOverlay(_parent);
     }
 
-    public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null, int cornerRadius = 0)
+    public bool Update(RectInt32 bounds, bool visible, RectInt32? clip = null, RectInt32? exclusion = null,
+        int cornerRadius = 0, int exclusionCornerRadius = 0)
     {
         if (Handle == 0)
             return false;
@@ -75,7 +76,7 @@ internal sealed class NativeVideoHost : IDisposable
             localExclusion = new RectInt32(area.X - layout.X, area.Y - layout.Y, area.Width, area.Height);
             clip ??= new RectInt32(0, 0, layout.Width, layout.Height);
         }
-        if (!ApplyRegion(clip, localExclusion, cornerRadius))
+        if (!ApplyRegion(clip, localExclusion, cornerRadius, exclusionCornerRadius))
             return false;
         if (_lastLayout == layout)
         {
@@ -166,9 +167,9 @@ internal sealed class NativeVideoHost : IDisposable
     private static bool HasClientSize(nint window, int width, int height) =>
         GetClientRect(window, out var bounds) && bounds.Width == width && bounds.Height == height;
 
-    private bool ApplyRegion(RectInt32? bounds, RectInt32? exclusion, int radius)
+    private bool ApplyRegion(RectInt32? bounds, RectInt32? exclusion, int radius, int exclusionRadius)
     {
-        if (_windowRegion.Equals((bounds, exclusion, radius)))
+        if (_windowRegion.Equals((bounds, exclusion, radius, exclusionRadius)))
             return true;
 
         nint region = 0;
@@ -183,7 +184,8 @@ internal sealed class NativeVideoHost : IDisposable
         // The transport remains XAML; video information is alpha-composited by its owned child.
         if (exclusion is { } button)
         {
-            nint cutout = CreateRegion(button);
+            nint cutout = exclusionRadius > 0 ? CreateRoundRectRgn(button.X, button.Y, button.X + button.Width,
+                button.Y + button.Height, exclusionRadius * 2, exclusionRadius * 2) : CreateRegion(button);
             int combined = cutout == 0 ? 0 : CombineRgn(region, region, cutout, RegionDifference);
             if (cutout != 0)
                 DeleteObject(cutout);
@@ -200,7 +202,7 @@ internal sealed class NativeVideoHost : IDisposable
             return false;
         }
         // A successful SetWindowRgn transfers ownership of the region to the system.
-        _windowRegion = (bounds, exclusion, radius);
+        _windowRegion = (bounds, exclusion, radius, exclusionRadius);
         return true;
     }
 

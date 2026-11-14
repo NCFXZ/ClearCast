@@ -134,6 +134,7 @@ public sealed partial class MainWindow
                 !(ReferenceEquals(text, MusicAlbum) && _mediaState.Album.Length > 0 && text.Text == _mediaState.Album))
                 CheckText(text.Text, "visible text");
             CheckText(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(control), "accessible name");
+            CheckText(Microsoft.UI.Xaml.Automation.AutomationProperties.GetHelpText(control), "accessible help text");
             object? tooltip = ToolTipService.GetToolTip(control);
             CheckText(tooltip is string value ? value : (tooltip as ToolTip)?.Content as string, "tooltip");
         }
@@ -853,6 +854,7 @@ public sealed partial class MainWindow
         try
         {
             UiCheck(_receiver is null && _videoHost is not null, "player window test uses stopped receiver");
+            _preferences = _preferences with { AutoFullScreen = false };
             SetPlayerFrameSize(320, 180);
             SetVideoAvailable(true);
             UiCheck(!LandingAnimation.IsAnimating, "active video pauses the landing SVG animation");
@@ -1075,6 +1077,11 @@ public sealed partial class MainWindow
                 receiverStopped = true;
                 if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_STRESS") is { Length: > 0 } lyricsStress)
                 {
+                    if (lyricsStress == "preferences")
+                    {
+                        await UiTestPlaybackPreferencesAsync(output);
+                        return;
+                    }
                     if (lyricsStress == "input")
                     {
                         await UiTestLyricsInputAsync(output);
@@ -1110,6 +1117,7 @@ public sealed partial class MainWindow
                     await UiTestLyricsFixtureAsync(output, lyricsFixture);
                     return;
                 }
+                await UiTestPlaybackPreferencesAsync(output);
                 await UiTestLyricsLookupAsync(output);
                 return;
             }

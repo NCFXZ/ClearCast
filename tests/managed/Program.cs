@@ -136,20 +136,24 @@ static object RunTests(string root)
     Check(!File.Exists(clients) && AirPlayReceiver.GetSavedPairings(root).Count == 0, "clear pairings and missing file");
 
     string preferences = Path.Combine(state, "preferences.json");
-    Check(!new ReceiverPreferences().AutoFullScreen, "automatic full screen defaults off");
+    Check(new ReceiverPreferences().AutoFullScreen && new ReceiverPreferences().ShowLyrics,
+        "automatic full screen and automatic lyrics display default on");
     File.WriteAllText(preferences, "{\"Decoder\":1,\"Theme\":2,\"Language\":1,\"OriginalSize\":true}");
     var settings = ReceiverPreferences.Load(root);
     Check(settings == new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English),
-        "legacy preferences preserve existing values and leave automatic full screen off");
+        "legacy preferences preserve existing values and enable missing automatic full screen and lyrics settings");
+    File.WriteAllText(preferences, "{\"AutoFullScreen\":false,\"ShowLyrics\":false}");
+    settings = ReceiverPreferences.Load(root);
+    Check(!settings.AutoFullScreen && !settings.ShowLyrics, "saved full-screen-off and lyrics-off choices survive the new defaults");
     File.WriteAllText(preferences, "{\"Decoder\":999,\"Theme\":999,\"Language\":999,\"OriginalSize\":true,\"AutoFullScreen\":true}");
     settings = ReceiverPreferences.Load(root);
     Check(settings.Decoder == DecoderMode.Automatic && settings.Theme == AppTheme.System && settings.Language == AppLanguage.SimplifiedChinese && settings.OriginalSize && settings.AutoFullScreen, "invalid saved enums replaced with defaults while boolean preferences survive");
     File.WriteAllText(preferences, "{broken json");
     Check(ReceiverPreferences.Load(root) == new ReceiverPreferences(), "malformed settings recover");
-    settings = new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English, AutoFullScreen: true);
+    settings = new ReceiverPreferences(DecoderMode.Software, true, AppTheme.Dark, AppLanguage.English, AutoFullScreen: true, ShowLyrics: false);
     settings.Save(root);
     Check(ReceiverPreferences.Load(root) == settings, "settings round trip");
-    settings = settings with { Theme = AppTheme.Light, AutoFullScreen = false };
+    settings = settings with { Theme = AppTheme.Light, AutoFullScreen = false, ShowLyrics = true };
     settings.Save(root);
     Check(ReceiverPreferences.Load(root) == settings && Directory.GetFiles(state, "*.tmp").Length == 0, "settings atomic overwrite and cleanup");
 
@@ -279,6 +283,7 @@ static object RunTests(string root)
     MediaDiagnosticsTests.Run(Check);
     BackpressureTests.Run(Check, root);
     ArtworkFlowTests.Run(Check);
+    VideoFrostTests.Run(Check);
     LyricsTests.Run(Check);
     Check(ReceiverMediaState.TryParse(Encoding.UTF8.GetBytes(validMediaJson[..^1] + ",\"session\":18446744073709551615}"), out var sessionMedia) &&
         sessionMedia.Session == ulong.MaxValue && sessionMedia.Title == media.Title,

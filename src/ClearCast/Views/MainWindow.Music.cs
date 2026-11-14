@@ -79,7 +79,7 @@ public sealed partial class MainWindow
         MusicLyrics.EffectsEnabled = _captionThemeSettings?.HighContrast != true;
         if (_videoBackdropTimer is { } videoTimer)
         {
-            bool fastVideo = active && _hasVideo && _receiver is not null && _stopTask is null;
+            bool fastVideo = (active || PlayerControlsFrostWanted) && _hasVideo && _receiver is not null && _stopTask is null;
             if (fastVideo && !videoTimer.IsRunning) videoTimer.Start();
             else if (!fastVideo) videoTimer.Stop();
         }
@@ -89,6 +89,7 @@ public sealed partial class MainWindow
             if (fast && !timer.IsRunning) timer.Start();
             else if (!fast) timer.Stop();
         }
+        UpdatePlayerControlsFrost();
     }
 
     private void UpdateMusicAudioActivity()
@@ -225,6 +226,8 @@ public sealed partial class MainWindow
         RefreshIdleConnectionStatus();
         UpdatePlaybackControls();
         UpdateMediaDiagnostics();
+        if (_hasMusic && !wasMusic && !_hasVideo)
+            ApplyAutoFullScreenAtPlaybackStart();
     }
 
     private void RefreshMusicText()

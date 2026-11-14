@@ -89,7 +89,9 @@ internal sealed partial class UiText : INotifyPropertyChanged
         "Fit to window keeps the aspect ratio. Actual size shows the original pixels and crops the picture if needed.");
     public string FitWindow => Get("适应窗口", "Fit to window");
     public string AutoFullScreenLabel => Get("投屏时自动全屏", "Automatically enter full screen");
-    public string AutoFullScreenDescription => Get("新的视频投屏开始时自动全屏显示。", "Show new video sessions in full screen.");
+    public string AutoFullScreenDescription => Get("新的音乐和视频投屏开始时自动全屏显示。", "Show new music and video sessions in full screen.");
+    public string AutoShowLyricsLabel => Get("自动显示音乐歌词", "Automatically show music lyrics");
+    public string AutoShowLyricsDescription => Get("找到音乐歌词后自动显示。", "Show lyrics automatically when they are found.");
     public string MusicUnknownTitle => Get("正在接收音乐", "Receiving music");
     public string MusicUnknownArtist => Get("来自 AirPlay 设备", "From your AirPlay device");
     public string MusicPlaying => Get("正在播放音乐", "Playing music");

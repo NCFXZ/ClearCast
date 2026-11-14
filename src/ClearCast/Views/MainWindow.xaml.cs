@@ -79,7 +79,8 @@ public sealed partial class MainWindow : Window
         {
             UpdateCaptionColors();
             RefreshMusicBackgroundTheme();
-            AlignAutoFullScreenSwitch();
+            AlignSettingsToggle(AutoFullScreenToggle);
+            AlignSettingsToggle(AutoShowLyricsToggle);
         };
         VideoHostSlot.Loaded += OnVideoSlotLoaded;
         VideoHostSlot.LayoutUpdated += (_, _) => UpdateVideoHost();
@@ -87,6 +88,7 @@ public sealed partial class MainWindow : Window
         UpdateNavigationInsets(MainNavigation.DisplayMode);
         InitializeNavigation();
         _motionSettings.AnimationsEnabledChanged += MusicMotionChanged;
+        _motionSettings.AdvancedEffectsEnabledChanged += MusicMotionChanged;
         UpdateDecoderSelection();
         DisplaySizeButton.SelectedItem = _preferences.OriginalSize ? OriginalDisplayItem : FitDisplayItem;
         ThemeButton.SelectedItem = _preferences.Theme switch
@@ -97,6 +99,7 @@ public sealed partial class MainWindow : Window
         };
         LanguageButton.SelectedItem = Texts.IsEnglish ? EnglishLanguageItem : ChineseLanguageItem;
         AutoFullScreenToggle.IsOn = _preferences.AutoFullScreen;
+        AutoShowLyricsToggle.IsOn = _preferences.ShowLyrics;
         _settingsReady = true;
 
         _receiverTimer = DispatcherQueue.CreateTimer();
@@ -136,6 +139,7 @@ public sealed partial class MainWindow : Window
             LandingAnimation.Dispose();
             MusicBackground.Dispose();
             _motionSettings.AnimationsEnabledChanged -= MusicMotionChanged;
+            _motionSettings.AdvancedEffectsEnabledChanged -= MusicMotionChanged;
             _videoHost?.Dispose();
         };
     }
@@ -313,15 +317,24 @@ public sealed partial class MainWindow : Window
         SavePreferences();
     }
 
-    private void AutoFullScreenLoaded(object sender, RoutedEventArgs args) => AlignAutoFullScreenSwitch();
+    private void AutoShowLyricsToggled(object sender, RoutedEventArgs args)
+    {
+        if (!_settingsReady || _preferences.ShowLyrics == AutoShowLyricsToggle.IsOn)
+            return;
+        _preferences = _preferences with { ShowLyrics = AutoShowLyricsToggle.IsOn };
+        SavePreferences();
+        UpdateLyricsPresentation(true);
+    }
 
-    private void AlignAutoFullScreenSwitch()
+    private void SettingsToggleLoaded(object sender, RoutedEventArgs args) => AlignSettingsToggle((ToggleSwitch)sender);
+
+    private void AlignSettingsToggle(ToggleSwitch toggle)
     {
         if (_closed)
             return;
-        AutoFullScreenToggle.ApplyTemplate();
+        toggle.ApplyTemplate();
         var pending = new Stack<DependencyObject>();
-        pending.Push(AutoFullScreenToggle);
+        pending.Push(toggle);
         while (pending.TryPop(out var element))
         {
             if (element is FrameworkElement { Name: "OuterBorder", Parent: Grid layout } &&
@@ -469,6 +482,7 @@ public sealed partial class MainWindow : Window
         if (_hasVideo == available)
             return;
 
+        double? windowedControlsWidth = _playerFullScreen ? _windowedPlayerControlsWidth : null;
         // Music full screen does not carry over to the video presenter layout.
         if (available && _playerFullScreen)
             SetPlayerFullScreen(false);
@@ -488,7 +502,7 @@ public sealed partial class MainWindow : Window
         {
             ShowPlayerOverlay();
             QueueVideoHostUpdate();
-            ApplyAutoFullScreenAtVideoStart();
+            ApplyAutoFullScreenAtPlaybackStart(windowedControlsWidth);
         }
         else
         {
@@ -502,11 +516,13 @@ public sealed partial class MainWindow : Window
         }
         UpdateMusicBackgroundState();
         UpdateMediaDiagnostics();
+        if (!available && _hasMusic)
+            ApplyAutoFullScreenAtPlaybackStart(windowedControlsWidth);
     }
 
     private void UpdateVideoHost()
     {
-        if (_videoHost is null || VideoHostSlot.XamlRoot is not { } root)
+        if (_closed || _videoHost is null || VideoHostSlot.XamlRoot is not { } root)
             return;
 
         double scale = root.RasterizationScale;

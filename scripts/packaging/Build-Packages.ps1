@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)] [string] $WixPath,
     [Parameter(Mandatory)] [string] $WixBalExtensionPath,
     [Parameter(Mandatory)] [ValidatePattern('^[A-Fa-f0-9]{64}$')] [string] $ValidatedReceiverSha256,
-    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.3.0.0',
+    [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')] [string] $Version = '1.3.1.0',
     [ValidateSet('appx', 'msix')] [string] $StoreFormat = 'appx',
     [switch] $AlsoBuildMsix,
     [switch] $ValidateOnly,

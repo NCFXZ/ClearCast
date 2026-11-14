@@ -68,6 +68,10 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
             notices.source_licenses(source, 'pkg')
 
     def run_controlled_metadata(self, components):
+        config = self.work / 'app.runtimeconfig.json'
+        config.write_text(json.dumps({'runtimeOptions': {'includedFrameworks': [
+            {'name': 'Microsoft.NETCore.App', 'version': '10.0.15'}]}}))
+        package = self.runtime_package()
         baseline = self.work / 'base.zip'
         with zipfile.ZipFile(baseline, 'w') as archive:
             archive.writestr('SHA256SUMS', '')
@@ -103,6 +107,7 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         (runtime / 'security-dependencies-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'components': components}))
         return subprocess.run([sys.executable, str(TOOL), '--base', str(baseline), '--base-sha256', hashlib.sha256(baseline.read_bytes()).hexdigest(),
             '--package-audit', str(audit), '--msys-root', str(self.work / 'msys'), '--runtime-directory', str(runtime),
+            '--app-runtimeconfig', str(config), '--dotnet-runtime-package', str(package),
             '--additional-source-directory', str(self.work), '--output-directory', str(self.work / 'notices'), '--version', '1.2.0.0'], capture_output=True, text=True)
 
     def test_controlled_component_cannot_escape_output(self):
@@ -147,6 +152,58 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
             for newline in ('\r\r\n', '\r\r\r\n'):
                 with self.subTest(version=version, newline=repr(newline)):
                     self.check_release_intro(version, newline)
+
+    def runtime_package(self, version='10.0.15', duplicate=False, oversize=False):
+        path = self.work / 'runtime.nupkg'
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('Microsoft.NETCore.App.Runtime.win-x64.nuspec',
+                '<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata>'
+                '<id>Microsoft.NETCore.App.Runtime.win-x64</id><version>' + version + '</version></metadata></package>')
+            archive.writestr('LICENSE.TXT', b'Exact license\r\n')
+            archive.writestr('THIRD-PARTY-NOTICES.TXT', b'x' * (2 * 1024 * 1024 + 1) if oversize else b'Exact third party\n')
+            if duplicate:
+                archive.writestr('license.txt', b'alias')
+        return path
+
+    def test_runtime_package_preserves_bytes_and_replaces_old_notices(self):
+        legal = notices.dotnet_package_notices(self.runtime_package(), '10.0.15')
+        previous = self.work / 'notices/licenses/dotnet-runtime-10.0.14'
+        previous.mkdir(parents=True)
+        (previous / 'LICENSE.TXT').write_bytes(b'old')
+        notices.write_dotnet_notices(self.work / 'notices', '10.0.15', legal)
+        self.assertFalse(previous.exists())
+        self.assertEqual((self.work / 'notices/licenses/dotnet-runtime-10.0.15/LICENSE.TXT').read_bytes(), b'Exact license\r\n')
+
+    def test_runtime_package_rejects_version_alias_and_excess_size(self):
+        for options in ({'version': '10.0.14'}, {'duplicate': True}, {'oversize': True}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                notices.dotnet_package_notices(self.runtime_package(**options), '10.0.15')
+
+    def test_runtimeconfig_requires_unique_canonical_self_contained_core(self):
+        path = self.work / 'runtimeconfig.json'
+        core = {'name': 'Microsoft.NETCore.App', 'version': '10.0.15'}
+        path.write_text(json.dumps({'runtimeOptions': {'includedFrameworks': [core]}}))
+        self.assertEqual(notices.app_runtime_version(path), '10.0.15')
+        invalid = [None, {}, {'framework': core}, {'includedFrameworks': []},
+            {'includedFrameworks': [core, core]}, {'includedFrameworks': [{**core, 'version': '10.00.15'}]}]
+        for options in invalid:
+            path.write_text(json.dumps({'runtimeOptions': options}))
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                notices.app_runtime_version(path)
+        path.write_text('{"runtimeOptions":{},"runtimeOptions":{}}')
+        with self.assertRaises(ValueError):
+            notices.app_runtime_version(path)
+
+    def test_runtime_intro_updates_exact_runtime_and_source_only(self):
+        baseline = ('Microsoft .NET Runtime 10.0.14\n'
+            '[Runtime source](https://github.com/dotnet/runtime/tree/v10.0.14)\n'
+            'Other dependency 10.0.14\n## Native runtime inventory\n')
+        updated = notices.release_intro(baseline, '1.3.1.0', '10.0.15')
+        self.assertIn('Microsoft .NET Runtime 10.0.15', updated)
+        self.assertIn('/v10.0.15)', updated)
+        self.assertIn('Other dependency 10.0.14', updated)
+        with self.assertRaises(ValueError):
+            notices.release_intro('no runtime notice', '1.3.1.0', '10.0.15')
 
 
 if __name__ == '__main__':

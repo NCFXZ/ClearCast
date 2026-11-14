@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
+import xml.etree.ElementTree as ET
 
 HTTP_SOURCE_HASH = 'e518cd97483706a252e95e60312a22d23dec6f5e7673af6f5bde719c3a9ca7f4'
 HTTP_SOURCE_NAME = 'gst-plugins-good-1.28.9.tar.xz'
@@ -26,6 +27,7 @@ PARSER_SOURCE_MEMBER = 'gstreamer/' + PARSER_SOURCE_NAME
 PARSER_SOURCE_URL = 'https://gstreamer.freedesktop.org/src/gst-plugins-bad/' + PARSER_SOURCE_NAME
 PARSER_PATCH = 'src/native/patches/gstreamer-adaptive-demux-time.patch'
 PARSER_FILES = {'libgstcodecparsers-1.0-0.dll', 'lib/gstreamer-1.0/libgstvideoparsersbad.dll', 'libgstadaptivedemux-1.0-0.dll'}
+RUNTIME_VERSION = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
 
 
 def sha(data):
@@ -188,7 +190,32 @@ def source_licenses(path, base):
     return result
 
 
-def release_intro(baseline, version):
+def app_runtime_version(runtimeconfig):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate app runtimeconfig member: ' + key)
+            result[key] = value
+        return result
+
+    config = json.loads(runtimeconfig.read_text(encoding='utf-8-sig'), object_pairs_hook=unique_object)
+    options = config.get('runtimeOptions') if isinstance(config, dict) else None
+    if not isinstance(options, dict) or 'framework' in options or 'frameworks' in options:
+        raise ValueError('App runtimeconfig must describe a self-contained publish with includedFrameworks.')
+    frameworks = options.get('includedFrameworks')
+    if not isinstance(frameworks, list) or not all(isinstance(item, dict) for item in frameworks):
+        raise ValueError('App runtimeconfig includedFrameworks must be an array of framework records.')
+    core = [item for item in frameworks if item.get('name') == 'Microsoft.NETCore.App']
+    if len(core) != 1:
+        raise ValueError('App runtimeconfig must include Microsoft.NETCore.App exactly once.')
+    version = core[0].get('version')
+    if not isinstance(version, str) or not re.fullmatch(RUNTIME_VERSION, version):
+        raise ValueError('App runtimeconfig requires a canonical three-part Microsoft.NETCore.App version.')
+    return version
+
+
+def release_intro(baseline, version, runtime_version=None):
     # Older Windows-generated baselines accumulated CR bytes on each rewrite.
     # Normalize this generated introduction only; license files remain exact.
     intro = re.sub(r'\r+\n', '\n', baseline.split('## Native runtime inventory')[0])
@@ -198,8 +225,50 @@ def release_intro(baseline, version):
     intro = re.sub(r'(?m)^(\[ClearCast )' + release_version +
         r'( downloads and source\]\(https://github\.com/NCFXZ/ClearCast/releases/tag/v)' + release_version + r'(\)[ \t]*\r?)$',
         lambda match: match[1] + version + match[2] + version + match[3], intro)
+    if runtime_version is not None:
+        if not isinstance(runtime_version, str) or not re.fullmatch(RUNTIME_VERSION, runtime_version):
+            raise ValueError('A canonical three-part app runtime version is required.')
+        intro, runtime_count = re.subn(r'(Microsoft \.NET Runtime )' + RUNTIME_VERSION + r'(?![\w.-])',
+            lambda match: match[1] + runtime_version, intro)
+        intro, source_count = re.subn(r'(https://github\.com/dotnet/runtime/tree/v)' + RUNTIME_VERSION + r'(?=\))',
+            lambda match: match[1] + runtime_version, intro)
+        if runtime_count != 1 or source_count != 1:
+            raise ValueError('The baseline must contain exactly one .NET Runtime version and one dotnet/runtime source link.')
     return intro.replace('under native/', 'under src/native/ and scripts/native/').replace(
         '`native/Build-GStreamerSecurity.ps1`', '`scripts/native/Build-GStreamerSecurity.ps1`')
+
+
+def dotnet_package_notices(package, version):
+    """Bind legal bytes to the exact restored self-contained runtime package."""
+    with zipfile.ZipFile(package) as archive:
+        def read_member(name):
+            entries = [entry for entry in archive.infolist() if entry.filename.casefold() == name.casefold()]
+            if (len(entries) != 1 or entries[0].filename != name or entries[0].is_dir() or
+                    (entries[0].external_attr >> 16) & 0o170000 == 0o120000 or
+                    not 0 < entries[0].file_size <= 2 * 1024 * 1024):
+                raise ValueError('Runtime package requires one bounded regular member: ' + name)
+            return archive.read(entries[0])
+        metadata = ET.fromstring(read_member('Microsoft.NETCore.App.Runtime.win-x64.nuspec'))
+        namespace = metadata.tag.partition('}')[0] + '}' if metadata.tag.startswith('{') else ''
+        identity = metadata.findall(namespace + 'metadata/' + namespace + 'id')
+        versions = metadata.findall(namespace + 'metadata/' + namespace + 'version')
+        if (len(identity) != 1 or identity[0].text != 'Microsoft.NETCore.App.Runtime.win-x64' or
+                len(versions) != 1 or versions[0].text != version):
+            raise ValueError('Runtime package identity/version does not match the app runtimeconfig.')
+        return {name: read_member(name) for name in ('LICENSE.TXT', 'THIRD-PARTY-NOTICES.TXT')}
+
+
+def write_dotnet_notices(output, version, legal):
+    licenses = output / 'licenses'
+    for previous in licenses.glob('dotnet-runtime-*'):
+        if re.fullmatch('dotnet-runtime-' + RUNTIME_VERSION, previous.name):
+            if previous.is_symlink() or not previous.is_dir():
+                raise ValueError('Runtime notice directory must be a regular directory.')
+            shutil.rmtree(previous)
+    target = licenses / ('dotnet-runtime-' + version)
+    target.mkdir(parents=True)
+    for name, content in legal.items():
+        (target / name).write_bytes(content)
 
 
 def main():
@@ -209,6 +278,10 @@ def main():
     parser.add_argument('--package-audit', type=Path, help='Optional independently prepared owner audit; otherwise audit the installed MSYS2 database directly.')
     parser.add_argument('--msys-root', type=Path, required=True)
     parser.add_argument('--runtime-directory', type=Path, required=True)
+    parser.add_argument('--app-runtimeconfig', type=Path, required=True,
+        help='ClearCast.runtimeconfig.json from the actual self-contained app publish; binds the .NET runtime notice and source link.')
+    parser.add_argument('--dotnet-runtime-package', type=Path, required=True,
+        help='Official restored Microsoft.NETCore.App.Runtime.win-x64 nupkg matching the app runtimeconfig.')
     parser.add_argument('--security-component-directory', type=Path,
         help='Parent directory of controlled build components; defaults to the runtime parent.')
     parser.add_argument('--additional-source-directory', type=Path, required=True)
@@ -219,6 +292,8 @@ def main():
     component_directory = args.security_component_directory or args.runtime_directory.parent
     if not re.fullmatch(r'\d+\.\d+\.\d+\.0', args.version):
         parser.error('A four-part release version with zero Store revision is required.')
+    runtime_version = app_runtime_version(args.app_runtimeconfig)
+    runtime_legal = dotnet_package_notices(args.dotnet_runtime_package, runtime_version)
     if not re.fullmatch(r'[0-9a-fA-F]{64}', args.base_sha256) or file_sha(args.base) != args.base_sha256.lower():
         raise ValueError('Public source baseline digest mismatch.')
     http_manifest = http_security_manifest(args.runtime_directory, repository)
@@ -407,7 +482,8 @@ def main():
     (http_notice / 'source-build.json').write_text(json.dumps(http_manifest, indent=2) + '\n', encoding='utf-8')
     shutil.copyfile(repository / HTTP_PATCH, http_notice / 'gstreamer-soup-destination.patch')
 
-    intro = release_intro(baseline, args.version)
+    write_dotnet_notices(output, runtime_version, runtime_legal)
+    intro = release_intro(baseline, args.version, runtime_version)
     inventory = intro + '## Native runtime inventory\n\nThe table describes the exact currently shipped MSYS2 package files, individually matched by SHA-256 to installed package files. Changed/new source recipes are matched to the signed binary packages\' BUILDINFO hashes. Controlled components use their exact source-build manifests.\n\n| MSYS2 package | Version | License metadata | Bundled files | Exact source archive |\n| --- | --- | --- | --- | --- |\n' + '\n'.join(rows) + '\n\n'
     inventory += '## Controlled components\n\n'
     for component in controlled:
@@ -422,6 +498,9 @@ def main():
               'baselineSha256': args.base_sha256.lower(), 'additionalSources': additions,
               'httpSource': http_source,
               'parserSource': parser_source,
+              'dotnetRuntime': {'version': runtime_version, 'runtimeconfigSha256': file_sha(args.app_runtimeconfig),
+                  'packageSha256': file_sha(args.dotnet_runtime_package),
+                  'notices': {name: sha(content) for name, content in runtime_legal.items()}},
               'inventorySha256': file_sha(output / 'THIRD-PARTY-COMPONENTS.md')}
     (output / 'source-coverage.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(result, indent=2))

@@ -1,0 +1,73 @@
+{
+  "applicationVersion": "1.3.1.0",
+  "source": "Original eight-line Chinese and English demonstration verses generated offline in the Store UI harness; no third-party lyrics, remote lookup or recording.",
+  "syntheticMedia": true,
+  "remoteLookup": false,
+  "captureMethod": "PrintWindow(PW_RENDERFULLCONTENT=2), restricted to the test process's fullscreen HWND filling the native display; exact DWM visible-frame pixels without desktop capture, resampling or painting.",
+  "captures": [
+    {
+      "file": "en-US-lyrics-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "e4ec54b84b1bd84d575c41ce4444d75a982db0ec39c1f39649fd06b43191cec3",
+      "rgbSha256": "3442b9f88cdc5acd7e231c8dcf7a7f0d4594cb4c9f0cecc6ba99574380c676c9",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-lyrics-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "d8845af4719a6a7dfabc8cf12f2b2eec5af670e1f234fc58e6fd8663a58049b7",
+      "rgbSha256": "fafd5deb87a47b30edaee34fb410b4fc3ff1279dc5e1861840caab97c6c5a450",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-lyrics-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "e284303e0c1d9836f67869b025889387c0bcf59dc90003c40041118c2c66d1b9",
+      "rgbSha256": "7d67611b5d3e5295d04df2d1edb04fba3d778b6696f64c46834da0b71f810a91",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-lyrics-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "58e291e558d5947bff81fbc3f616cf39f78c14319b0b719fa8a382242dfabfbf",
+      "rgbSha256": "66f62872eb3d5e6a11bfc2caae6605048ffa769daa2ac7936d82121c3605a0db",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    }
+  ]
+}

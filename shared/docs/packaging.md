@@ -4,15 +4,15 @@ Run commands from the repository root. Application sources live in `src/ClearCas
 
 ## Version and publish layouts
 
-The release, application/file version, WiX Bundle and Store identity use `1.2.2.0`. MSI ProductVersion uses `1.2.2`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
+The release, application/file version, WiX Bundle and Store identity use `1.3.1.0`. MSI ProductVersion uses `1.3.1`: [Windows Installer compares three version fields](https://learn.microsoft.com/en-us/windows/win32/msi/productversion), and [Store packages reserve the fourth field as zero](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering). `Build-Packages.ps1` accepts either spelling, normalizes it to those forms, and rejects a nonzero fourth field or MSI field overflow. Increment an MSI field for an upgrade. Preserve the existing MSI/Bundle UpgradeCodes and Store Name/Publisher.
 
 Build the tested native receiver first, then publish separate WinUI layouts:
 
 ```powershell
 $repository = (Get-Location).Path
-$release = '.runtime/release-1.2.2.0'
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.2.2.0
-dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.2.2.0 `
+$release = '.runtime/release-1.3.1.0'
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/desktop" -p:Version=1.3.1.0
+dotnet publish src/ClearCast/ClearCast.csproj -c Release -r win-x64 -o "$release/store" -p:Version=1.3.1.0 `
   -p:BaseIntermediateOutputPath="$repository/$release/store-obj/" -p:BaseOutputPath="$repository/$release/store-bin/" `
   -p:ProjectPriFileName=resources.pri -p:ProjectPriIndexName=NCFX.ClearCast
 ```
@@ -27,10 +27,12 @@ Authenticate the previous corresponding-source bundle against its published SHA-
 python scripts/packaging/Prepare-RuntimeNotices.py --base $previousSourceBundle `
   --base-sha256 $previousSourceSha256 --msys-root .runtime/msys64 `
   --runtime-directory .runtime/receiver --additional-source-directory $officialMsysSourceDirectory `
-  --output-directory $notices --version 1.2.2.0
+  --app-runtimeconfig "$release/desktop/ClearCast.runtimeconfig.json" `
+  --dotnet-runtime-package $restoredDotnetRuntimePackage `
+  --output-directory $notices --version 1.3.1.0
 ```
 
-The output must be a new directory. If the candidate runtime is under a QA subdirectory, pass `--security-component-directory .runtime` to identify the existing controlled build manifests explicitly. An optional `--package-audit` supplies an independent owner audit; otherwise the tool audits the installed database. Each native PE and CA file must match its package owner or controlled manifest. New sources must match the package/version and the signed binary package's BUILDINFO recipe digest. Fetch exact archives from the official MSYS2 source repository while preserving TLS and package signature checks. Separately check embedded upstream archives/patches against recipe checksums; `SKIP` signature items require their stated provenance treatment.
+The output must be a new directory. `--dotnet-runtime-package` must identify the official restored Microsoft.NETCore.App.Runtime.win-x64 nupkg for that exact runtime version. Its package identity and bounded legal files are checked; the original license bytes replace the old runtime notices, and coverage binds package, runtimeconfig and notice hashes. `--app-runtimeconfig` is required and must come from the actual self-contained application publish, rather than the previous source baseline. Its `includedFrameworks` must identify `Microsoft.NETCore.App` exactly once with a canonical three-part version; framework-dependent, missing, duplicate or malformed declarations are rejected. The generated introduction and `dotnet/runtime` source URL use this version before the inventory SHA-256 and source coverage are calculated. If the candidate runtime is under a QA subdirectory, pass `--security-component-directory .runtime` to identify the existing controlled build manifests explicitly. An optional `--package-audit` supplies an independent owner audit; otherwise the tool audits the installed database. Each native PE and CA file must match its package owner or controlled manifest. New sources must match the package/version and the signed binary package's BUILDINFO recipe digest. Fetch exact archives from the official MSYS2 source repository while preserving TLS and package signature checks. Separately check embedded upstream archives/patches against recipe checksums; `SKIP` signature items require their stated provenance treatment.
 
 The output includes `THIRD-PARTY-COMPONENTS.md`, `runtime-components.json`, `source-coverage.json`, and per-package licenses/source-build records. It covers HTTP/HLS/TLS and CA sources as well as controlled libplist, OpenSSL, parser and HTTP-source builds. Replacing selected controlled notices is insufficient when other MSYS2 packages changed. `Prepare-DependencyNotices.py` remains for historical two-parser baseline migrations; current releases use the complete runtime gate and three-file parser/adaptive component manifest.
 
@@ -47,7 +49,7 @@ Use WiX 5.0.2, its matching `WixToolset.Bal.wixext` extension, and Windows SDK x
 ```powershell
 ./scripts/packaging/Build-Packages.ps1 -PublishDirectory "$release/desktop" `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices `
-  -OutputDirectory "$release/packages" -Version 1.2.2.0 `
+  -OutputDirectory "$release/packages" -Version 1.3.1.0 `
   -WixPath $wix -WixBalExtensionPath $bal -MakeAppxPath $makeappx `
   -ValidatedReceiverSha256 $testedReceiverSha256 -AlsoBuildMsix
 ```
@@ -72,7 +74,7 @@ foreach ($entry in $coverage.additionalSources.PSObject.Properties) {
   $additional += "$($entry.Name)=$($entry.Value.path)"
 }
 python scripts/packaging/Update-CorrespondingSource.py --base $previousSourceBundle `
-  --app-source $applicationSourceZip --commit $commitSha --version 1.2.2.0 `
+  --app-source $applicationSourceZip --commit $commitSha --version 1.3.1.0 `
   --output $updatedSourceBundle --notice-directory $notices @additional
 ```
 
@@ -80,7 +82,7 @@ The updater verifies base checksums, replaces app source/commit/hash metadata an
 
 ## Disposable installation checks
 
-On a host with Windows Sandbox available, use the SHA-verified public 1.2.0.0 EXE, replacement EXE, actual APPX, final layouts, complete notices and SDK x64 tools:
+On a host with Windows Sandbox available, use the SHA-verified public 1.3.0.0 EXE, replacement EXE, actual APPX, final layouts, complete notices and SDK x64 tools:
 
 ```powershell
 tests/packaging/New-SandboxValidation.ps1 -PreviousSetupPath $previousSetup `
@@ -88,7 +90,7 @@ tests/packaging/New-SandboxValidation.ps1 -PreviousSetupPath $previousSetup `
   -StorePublishDirectory "$release/store" -ComplianceDirectory $notices -SdkToolsDirectory $sdkTools
 ```
 
-Pass `-PreviousVersion 1.2.0.0` and its independently verified `-PreviousSetupSha256` for this release. The helper also retains its pinned 1.1.0.0 default for older upgrade checks; both host and guest verify the selected baseline. Schema 3 binds new EXE/Store outer hashes and every expected shipped file, including notices/runtime/PRI/Store-generated assets. MakeAppx member names are URI-decoded once to compare installed filenames.
+Pass `-PreviousVersion 1.3.0.0` and its independently verified `-PreviousSetupSha256` for this release. The helper also retains its pinned 1.1.0.0 default for older upgrade checks; both host and guest verify the selected baseline. Schema 3 binds new EXE/Store outer hashes and every expected shipped file, including notices/runtime/PRI/Store-generated assets. MakeAppx member names are URI-decoded once to compare installed filenames.
 
 Launch the returned `.wsb` and wait for its result. Inputs/scripts/tools are mapped read-only; a new result directory is writable. Networking, clipboard, microphone, camera and printer access are disabled. The guest checks old installation/version, upgrade, one per-user MSI registration, downgrade rejection, repair, launch/close/uninstall and clean current install. It signs only a guest APPX copy using a temporary guest-trusted certificate, checks Store installation/hashes/launch/removal, removes certificate/private key and shuts down. Registration snapshots remain available on failure.
 

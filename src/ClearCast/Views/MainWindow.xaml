@@ -503,10 +503,16 @@
                             </Border>
                         </Grid>
                         <Border x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" Padding="16,8,16,12"
-                            CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" Visibility="Collapsed"
+                            CornerRadius="8" Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}" Visibility="Collapsed"
                             SizeChanged="PlayerControlsSizeChanged" GotFocus="PlayerControlsGotFocus"
                             PointerEntered="PlayerControlsPointerEntered" PointerExited="PlayerControlsPointerExited">
                             <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
+                                <Border x:Name="PlayerControlsFrost" Grid.RowSpan="3" Margin="-16,-8,-16,-12"
+                                    CornerRadius="8" Visibility="Collapsed" IsHitTestVisible="False">
+                                    <Border.Background>
+                                        <ImageBrush x:Name="PlayerControlsFrostBrush" Stretch="Fill" />
+                                    </Border.Background>
+                                </Border>
                                 <Grid x:Name="VideoTransport" Visibility="Collapsed" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                                     <TextBlock x:Name="VideoElapsedText" FontSize="12" VerticalAlignment="Center" />
                                     <local:PlaybackSeekBar x:Name="VideoSeekSlider" Grid.Column="1" Minimum="0" Maximum="1000" Value="0"
@@ -685,9 +691,27 @@
                                                     Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             </StackPanel>
                                             <ToggleSwitch x:Name="AutoFullScreenToggle" Grid.Column="2" VerticalAlignment="Center"
-                                                MinWidth="0" HorizontalAlignment="Right" Loaded="AutoFullScreenLoaded"
+                                                MinWidth="0" HorizontalAlignment="Right" Loaded="SettingsToggleLoaded"
                                                 OnContent="" OffContent="" Toggled="AutoFullScreenToggled"
-                                                AutomationProperties.Name="{x:Bind Texts.AutoFullScreenLabel, Mode=OneWay}" />
+                                                AutomationProperties.Name="{x:Bind Texts.AutoFullScreenLabel, Mode=OneWay}"
+                                                AutomationProperties.HelpText="{x:Bind Texts.AutoFullScreenDescription, Mode=OneWay}" />
+                                        </Grid>
+                                    </Border>
+                                    <Border Padding="16,12" MinHeight="68" CornerRadius="4"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                        <Grid ColumnDefinitions="24,*,Auto" ColumnSpacing="16">
+                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE90B;" FontSize="20" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind Texts.AutoShowLyricsLabel, Mode=OneWay}" TextWrapping="Wrap" />
+                                                <TextBlock Text="{x:Bind Texts.AutoShowLyricsDescription, Mode=OneWay}" TextWrapping="Wrap"
+                                                    Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </StackPanel>
+                                            <ToggleSwitch x:Name="AutoShowLyricsToggle" Grid.Column="2" VerticalAlignment="Center"
+                                                MinWidth="0" HorizontalAlignment="Right" Loaded="SettingsToggleLoaded"
+                                                OnContent="" OffContent="" Toggled="AutoShowLyricsToggled"
+                                                AutomationProperties.Name="{x:Bind Texts.AutoShowLyricsLabel, Mode=OneWay}"
+                                                AutomationProperties.HelpText="{x:Bind Texts.AutoShowLyricsDescription, Mode=OneWay}" />
                                         </Grid>
                                     </Border>
                                     <TextBlock x:Name="SettingsSaveHint" Visibility="Collapsed"
@@ -750,10 +774,10 @@
                         HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
                         <Grid x:Name="AboutLayout" Margin="24,16,24,24">
                             <StackPanel MaxWidth="1000" Spacing="28">
-                                <TextBlock x:Name="AboutHeading" AutomationProperties.HeadingLevel="Level1"
+                                <TextBlock AutomationProperties.HeadingLevel="Level1"
                                     Style="{StaticResource TitleTextBlockStyle}" Text="{x:Bind Texts.About, Mode=OneWay}" />
                                 <StackPanel Spacing="12">
-                                    <local:SettingsExpander x:Name="AboutExpander" MinHeight="68" Padding="0" HorizontalAlignment="Stretch"
+                                    <local:SettingsExpander MinHeight="68" Padding="0" HorizontalAlignment="Stretch"
                                         HorizontalContentAlignment="Stretch" AutomationProperties.Name="ClearCast"
                                         HeaderBackground="{ThemeResource ExpanderHeaderBackground}"
                                         HeaderPointerOverBackground="{ThemeResource ControlFillColorSecondaryBrush}">
@@ -766,8 +790,8 @@
                                             <Grid Margin="0,12,0,12" ColumnDefinitions="28,*,Auto" ColumnSpacing="16">
                                                 <Image Width="28" Height="28" VerticalAlignment="Center" Source="ms-appx:///Assets/ClearCast.png" />
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                                                    <TextBlock x:Name="AboutAppName" Text="ClearCast" TextWrapping="Wrap" />
-                                                    <TextBlock x:Name="AboutLicenseText" Text="{x:Bind Texts.AboutLicense, Mode=OneWay}"
+                                                    <TextBlock Text="ClearCast" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{x:Bind Texts.AboutLicense, Mode=OneWay}"
                                                         Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                         TextWrapping="Wrap" />
                                                 </StackPanel>
@@ -775,11 +799,11 @@
                                                     VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             </Grid>
                                         </local:SettingsExpander.Header>
-                                        <HyperlinkButton x:Name="AboutRepositoryLink" Margin="48,8,44,8" Padding="12,6"
+                                        <HyperlinkButton Margin="48,8,44,8" Padding="12,6"
                                             HorizontalAlignment="Left" Content="{x:Bind Texts.AboutRepositoryLinkText, Mode=OneWay}"
                                             NavigateUri="https://github.com/NCFXZ/ClearCast" />
                                     </local:SettingsExpander>
-                                    <HyperlinkButton x:Name="AboutIssueLink" Padding="0" HorizontalAlignment="Right"
+                                    <HyperlinkButton Padding="0" HorizontalAlignment="Right"
                                         AutomationProperties.Name="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" NavigateUri="https://github.com/NCFXZ/ClearCast/issues/new">
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <PathIcon Width="16" Height="16" VerticalAlignment="Center"

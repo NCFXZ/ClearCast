@@ -18,6 +18,7 @@ public sealed partial class MainWindow
 {
     private const string PlayerRotationError = "无法旋转屏幕镜像画面，请重试。";
     private bool _playerFullScreen;
+    private double _windowedPlayerControlsWidth;
     private bool _restoreNavigationPane;
     private Visibility _restoreTitleBar;
     private PlayerWindowPlacement _restoreWindowPlacement;
@@ -83,7 +84,9 @@ public sealed partial class MainWindow
         }
 
         host.Update(layout.Host, true, layout.Clip, GetPlayerOverlayBounds(scale),
-            _playerFullScreen ? 0 : (int)Math.Round(MusicArtworkFrame.CornerRadius.TopLeft * scale));
+            _playerFullScreen ? 0 : (int)Math.Round(MusicArtworkFrame.CornerRadius.TopLeft * scale),
+            (int)Math.Round(PlayerControls.CornerRadius.TopLeft * scale));
+        UpdatePlayerControlsFrost();
         if (GetMediaDiagnosticsBounds(scale) is { } info)
         {
             QueueMediaDiagnosticsRaster(info);
@@ -208,6 +211,7 @@ public sealed partial class MainWindow
         if (PlayerControls.IsHitTestVisible == visible) return;
         PlayerControls.IsHitTestVisible = visible;
         UpdateVideoHost();
+        UpdateMusicBackgroundState();
     }
 
     private void RotateLeftClicked(object sender, RoutedEventArgs args) => RotatePlayer(-1);
@@ -261,19 +265,19 @@ public sealed partial class MainWindow
             SetPlayerFullScreen(!_playerFullScreen);
     }
 
-    private void ApplyAutoFullScreenAtVideoStart()
+    private void ApplyAutoFullScreenAtPlaybackStart(double? windowedControlsWidth = null)
     {
-        // Call only when video becomes available. Later frames and preference
+        // Call only when music or video becomes available. Later updates and preference
         // changes must respect a user's choice to leave full screen mid-session.
-        if (!_preferences.AutoFullScreen || !_hasVideo || _closing || _closed ||
+        if (!_preferences.AutoFullScreen || (!_hasVideo && !_hasMusic) || _closing || _closed ||
             _stopTask is not null || _resettingPairings)
             return;
 
         MainNavigation.SelectedItem = MirrorNavigationItem;
-        SetPlayerFullScreen(true);
+        SetPlayerFullScreen(true, windowedControlsWidth);
     }
 
-    private void SetPlayerFullScreen(bool enabled)
+    private void SetPlayerFullScreen(bool enabled, double? windowedControlsWidth = null)
     {
         if (_playerFullScreen == enabled)
             return;
@@ -281,6 +285,8 @@ public sealed partial class MainWindow
         nint window = WindowNative.GetWindowHandle(this);
         if (enabled)
         {
+            double pageWidth = NavigationFrame.ActualWidth;
+            _windowedPlayerControlsWidth = windowedControlsWidth ?? Math.Max(1, pageWidth - 2 * (pageWidth >= 640 ? 40 : 24));
             _restoreNavigationPane = MainNavigation.IsPaneVisible;
             _restoreTitleBar = AppTitleBar.Visibility;
             _restoreWindowPlacement.Length = Marshal.SizeOf<PlayerWindowPlacement>();
@@ -306,9 +312,8 @@ public sealed partial class MainWindow
             PlayerControls.Visibility = _hasVideo ? Visibility.Visible : Visibility.Collapsed;
             Grid.SetRow(PlayerControls, enabled ? 1 : 2);
             PlayerControls.VerticalAlignment = enabled ? VerticalAlignment.Bottom : VerticalAlignment.Stretch;
-            PlayerControls.Margin = enabled ? new Thickness(0) : new Thickness(0, 12, 0, 0);
-            PlayerControls.Padding = enabled ? new Thickness(24, 8, 24, 16) : new Thickness(16, 8, 16, 12);
-            PlayerControls.CornerRadius = new CornerRadius(enabled ? 0 : 8);
+            PlayerControls.Margin = enabled ? new Thickness(24, 0, 24, 24) : new Thickness(0, 12, 0, 0);
+            PlayerControls.MaxWidth = enabled ? _windowedPlayerControlsWidth : double.PositiveInfinity;
             PlayerControls.RequestedTheme = enabled ? ElementTheme.Dark : ElementTheme.Default;
             FullScreenIcon.Symbol = MusicFullScreenIcon.Symbol = enabled ? Symbol.BackToWindow : Symbol.FullScreen;
             RefreshFullScreenLabel();

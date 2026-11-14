@@ -133,35 +133,7 @@ $archiveHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash
 if ($archiveHash -ne $expectedArchiveHash) {
     throw "The UxPlay archive hash does not match the pinned download ($commit). Re-download it using the command in README.md."
 }
-$patches = @(
-    (Join-Path $patchDirectory 'uxplay-winui.patch'),
-    (Join-Path $patchDirectory 'uxplay-receiver.patch'),
-    (Join-Path $patchDirectory 'uxplay-renderer-stats.patch'),
-    (Join-Path $patchDirectory 'uxplay-live-decoder.patch'),
-    (Join-Path $patchDirectory 'uxplay-mdns.patch'),
-    (Join-Path $patchDirectory 'uxplay-network-guards.patch'),
-    (Join-Path $patchDirectory 'uxplay-http-headers.patch'),
-    (Join-Path $patchDirectory 'uxplay-diagnostics.patch'),
-    (Join-Path $patchDirectory 'uxplay-pairing-recovery.patch'),
-    (Join-Path $patchDirectory 'uxplay-release-hardening.patch'),
-    (Join-Path $patchDirectory 'uxplay-pairing-feedback.patch'),
-    (Join-Path $patchDirectory 'uxplay-srp-salt.patch'),
-    (Join-Path $patchDirectory 'uxplay-media-video.patch'),
-    (Join-Path $patchDirectory 'uxplay-media-audio.patch'),
-    (Join-Path $patchDirectory 'uxplay-first-pin-retry.patch'),
-    (Join-Path $patchDirectory 'uxplay-pairing-dual-stack.patch'),
-    (Join-Path $patchDirectory 'uxplay-pairing-cooldown-feedback.patch'),
-    (Join-Path $patchDirectory 'uxplay-audio-activity.patch'),
-    (Join-Path $patchDirectory 'uxplay-playback-controls.patch'),
-    (Join-Path $patchDirectory 'uxplay-device-name.patch'),
-    (Join-Path $patchDirectory 'uxplay-backpressure.patch'),
-    (Join-Path $patchDirectory 'uxplay-socket-security.patch'),
-    (Join-Path $patchDirectory 'uxplay-auth-security.patch'),
-    (Join-Path $patchDirectory 'uxplay-input-safety.patch'),
-    (Join-Path $patchDirectory 'uxplay-session-authorization.patch'),
-    (Join-Path $patchDirectory 'uxplay-interface-scope.patch'),
-    (Join-Path $patchDirectory 'uxplay-media-cleanup.patch')
-)
+$patches = @(Get-Content -LiteralPath (Join-Path $patchDirectory 'uxplay-series.txt') | ForEach-Object { Join-Path $patchDirectory $_ })
 # Use a fresh source tree when a patch changes.
 $hashes = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash +
     $archiveHash + ((Get-FileHash -LiteralPath $patches).Hash -join '') +

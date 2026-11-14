@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
 using Windows.Graphics.Imaging;
@@ -739,6 +740,299 @@ public sealed partial class MainWindow
         }
     }
 
+    private async Task UiTestFloatingPlayerControlsAsync(string output)
+    {
+        // Synthetic dimensions exercise only our own HWND; no receiver or decoder starts.
+        static byte[] Frame(bool alternate)
+        {
+            var bytes = new byte[ReceiverVideoFrame.ByteCount];
+            for (int y = 0; y < ReceiverVideoFrame.Side; y++)
+                for (int x = 0; x < ReceiverVideoFrame.Side; x++)
+                {
+                    int pixel = (y * ReceiverVideoFrame.Side + x) * 4;
+                    bytes[pixel] = (byte)(alternate ? 230 - x * 6 : x * 7);
+                    bytes[pixel + 1] = (byte)(alternate ? x * 5 : y * 5);
+                    bytes[pixel + 2] = (byte)(alternate ? y * 3 : 230 - x * 6);
+                    bytes[pixel + 3] = 255;
+                }
+            return bytes;
+        }
+        static byte[] BitmapPixels(WriteableBitmap bitmap)
+        {
+            var bytes = new byte[bitmap.PixelBuffer.Length];
+            using var reader = DataReader.FromBuffer(bitmap.PixelBuffer);
+            reader.ReadBytes(bytes);
+            return bytes;
+        }
+        var preferences = _preferences;
+        _videoHost ??= CreatePlayerVideoHost();
+        try
+        {
+            UiCheck(_receiver is null && !_hasMusic && !_hasVideo && !_playerFullScreen,
+                "floating player controls use an idle window without receiver ports");
+            _preferences = _preferences with { AutoFullScreen = false, OriginalSize = false };
+            await UiNavigateAsync(MirrorNavigationItem, MirrorPage);
+            SetPlayerFrameSize(1920, 1080);
+            SetVideoAvailable(true);
+            await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
+            Thickness windowedMargin = PlayerControls.Margin, windowedPadding = PlayerControls.Padding;
+            CornerRadius windowedCorners = PlayerControls.CornerRadius;
+            double windowedMaxWidth = PlayerControls.MaxWidth;
+            double windowedWidth = PlayerControls.ActualWidth;
+            UiCheck(_captionThemeSettings?.HighContrast == true || PlayerControls.Background is AcrylicBrush,
+                "player controls use the system acrylic material with its high-contrast fallback");
+            await UiCaptureAsync(output, "floating-player-controls-windowed");
+
+            SetPlayerFullScreen(true);
+            await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
+            await UiWaitUntil(() => UiIsWindowVisible(_videoHost.Handle), "floating full-screen video host becomes visible");
+            ShowPlayerOverlay();
+            UpdateVideoHost();
+            UiBounds video = UiMeasure(VideoHostSlot), bar = UiMeasure(PlayerControls);
+            _uiTestLayouts.Add(new { phase = "floating full-screen controls", video, bar });
+            UiCheck(Math.Abs(bar.Width - Math.Min(windowedWidth, video.Width - 48)) <= 1 &&
+                Math.Abs(bar.X + bar.Width / 2 - video.X - video.Width / 2) <= 1 &&
+                Math.Abs(video.Y + video.Height - bar.Y - bar.Height - 24) <= 1,
+                "full-screen controls retain their windowed width, stay centered and leave 24 DIP at the bottom");
+            UiCheck(PlayerControls.CornerRadius == windowedCorners && PlayerControls.Padding == windowedPadding,
+                "full-screen controls retain the windowed rounded corners and inner spacing");
+            _videoBackdropPixels = Frame(false);
+            UpdatePlayerControlsFrost();
+            WriteableBitmap? frostBitmap = _playerControlsFrostBitmap;
+            bool frostEnabled = PlayerControlsFrostWanted;
+            if (frostEnabled)
+            {
+                UiCheck(frostBitmap is not null && PlayerControlsFrost.Visibility == Visibility.Visible &&
+                    ReferenceEquals(PlayerControlsFrostBrush.ImageSource, frostBitmap),
+                    "full-screen frost displays the sampled video bitmap beneath the controls");
+                byte[] first = BitmapPixels(frostBitmap!);
+                int firstBlue = first[0], firstRed = first[2];
+                UiCheck(Enumerable.Range(0, first.Length / 4).Any(index =>
+                    Math.Abs(first[index * 4] - firstBlue) + Math.Abs(first[index * 4 + 2] - firstRed) > 12),
+                    "sampled frost preserves visible spatial color variation instead of a flat tint");
+                var raster = new RenderTargetBitmap();
+                await raster.RenderAsync(PlayerControls);
+                var renderedBuffer = await raster.GetPixelsAsync();
+                var rendered = new byte[renderedBuffer.Length];
+                using (var reader = DataReader.FromBuffer(renderedBuffer)) reader.ReadBytes(rendered);
+                int row = Math.Clamp((int)Math.Round(3 * VideoHostSlot.XamlRoot.RasterizationScale), 1, raster.PixelHeight - 2);
+                int left = (row * raster.PixelWidth + raster.PixelWidth / 4) * 4;
+                int right = (row * raster.PixelWidth + raster.PixelWidth * 3 / 4) * 4;
+                int renderedColorDifference = Enumerable.Range(0, 3).Sum(channel => Math.Abs(rendered[left + channel] - rendered[right + channel]));
+                _uiTestLayouts.Add(new { phase = "rendered video frost", renderedColorDifference,
+                    bitmapWidth = frostBitmap!.PixelWidth, bitmapHeight = frostBitmap.PixelHeight });
+                UiCheck(renderedColorDifference > 12,
+                    "the rendered control background contains the sampled video colors");
+                _videoBackdropPixels = Frame(true);
+                UpdatePlayerControlsFrost();
+                byte[] second = BitmapPixels(frostBitmap);
+                UiCheck(ReferenceEquals(frostBitmap, _playerControlsFrostBitmap) &&
+                    first.Where((value, index) => value != second[index]).Count() > first.Length / 8,
+                    "new video samples visibly update the existing frost bitmap without reallocating it");
+            }
+            else
+            {
+                UiCheck(PlayerControlsFrost.Visibility == Visibility.Collapsed && PlayerControlsFrostBrush.ImageSource is null,
+                    "system effects policy retains the normal material fallback without a frost image");
+                _uiTestLayouts.Add(new { phase = "rendered video frost", supported = false, reason = "system effects policy" });
+            }
+
+            double scale = VideoHostSlot.XamlRoot.RasterizationScale;
+            RectInt32 slot = GetVideoSlotBounds(scale) ?? throw new InvalidOperationException("Missing floating video slot.");
+            RectInt32 controls = GetPlayerOverlayBounds(scale) ?? throw new InvalidOperationException("Missing floating controls.");
+            int x = controls.X - slot.X, y = controls.Y - slot.Y;
+            int centerX = x + controls.Width / 2, centerY = y + controls.Height / 2;
+            nint region = UiCreateRectRgn(0, 0, 0, 0);
+            try
+            {
+                UiCheck(region != 0 && UiGetWindowRgn(_videoHost.Handle, region) > 0 &&
+                    !UiPointInRegion(region, centerX, centerY) &&
+                    UiPointInRegion(region, x, y) && UiPointInRegion(region, x + controls.Width - 1, y) &&
+                    UiPointInRegion(region, x, y + controls.Height - 1) &&
+                    UiPointInRegion(region, x + controls.Width - 1, y + controls.Height - 1),
+                    "native video avoids the floating controls while remaining visible at all four rounded corners");
+                UiCheck(UiPointInRegion(region, x - 1, centerY) &&
+                    UiPointInRegion(region, x + controls.Width, centerY) &&
+                    UiPointInRegion(region, centerX, y + controls.Height),
+                    "native video remains intact in the floating controls' side and bottom gaps");
+                SetPlayerOverlayVisible(false);
+                UpdateVideoHost();
+                UiCheck(!PlayerControls.IsHitTestVisible && GetPlayerOverlayBounds(scale) is null &&
+                    (UiGetWindowRgn(_videoHost.Handle, region) == 0 || UiPointInRegion(region, centerX, centerY)),
+                    "hidden floating controls restore native video and release their pointer hit area");
+                UiCheck(!PlayerControlsFrostWanted && PlayerControlsFrost.Visibility == Visibility.Collapsed &&
+                    PlayerControlsFrostBrush.ImageSource is null,
+                    "hidden controls stop consuming video frost and detach its image");
+                ShowPlayerOverlay();
+                UpdatePlayerControlsFrost();
+                UpdateVideoHost();
+                UiCheck(PlayerControls.IsHitTestVisible && UiGetWindowRgn(_videoHost.Handle, region) > 0 &&
+                    !UiPointInRegion(region, centerX, centerY) && UiPointInRegion(region, x, y),
+                    "showing floating controls restores the rounded exclusion and pointer hit area");
+                if (frostEnabled)
+                    UiCheck(ReferenceEquals(frostBitmap, _playerControlsFrostBitmap) &&
+                        ReferenceEquals(PlayerControlsFrostBrush.ImageSource, frostBitmap),
+                        "showing controls reuses the cached frost bitmap");
+            }
+            finally { if (region != 0) UiDeleteObject(region); }
+            await UiCaptureAsync(output, "floating-player-controls-fullscreen");
+            var direct = new ReceiverMediaState(1, ReceiverMediaKind.Video, false, "", "", "",
+                30_000, 180_000, 0, 0, MediaControls.PlayPause | MediaControls.Seek)
+                { Source = "direct", ControlSession = 1, ContentRevision = 1, SeekEndMs = 180_000 };
+            ApplyMediaState(direct);
+            UiCheck(_playerControlsFrostBitmap is null && PlayerControlsFrostBrush.ImageSource is null,
+                "a media source change clears the previous session's frost bitmap");
+            await UiWaitForStableLayout(PlayerControls, VideoPlaybackActions, VideoSeekSlider);
+            UiBounds disconnect = UiMeasure(PlayerStopButton), transport = UiMeasure(VideoPlaybackActions), actions = UiMeasure(PlayerActions);
+            UiCheck(disconnect.X + disconnect.Width <= transport.X &&
+                transport.X + transport.Width <= actions.X && VideoSeekSlider.ActualWidth > 0,
+                "full-screen video controls keep transport actions separate and the timeline usable");
+            ShowPlayerOverlay();
+            _videoBackdropPixels = Frame(false);
+            UpdatePlayerControlsFrost();
+            await UiCaptureAsync(output, "floating-player-controls-fullscreen-video");
+            ResetVideoBackdrop();
+            UiCheck(_videoBackdropPixels is null && _playerControlsFrostBitmap is null &&
+                PlayerControlsFrost.Visibility == Visibility.Collapsed && PlayerControlsFrostBrush.ImageSource is null,
+                "video reset discards sampled pixels and frost resources before another session");
+            _videoBackdropPixels = Frame(true);
+            UpdatePlayerControlsFrost();
+            ApplyMediaState(ReceiverMediaState.Empty);
+            SetPlayerFullScreen(false);
+            await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
+            UiCheck(Grid.GetRow(PlayerControls) == 2 && PlayerControls.Margin == windowedMargin &&
+                PlayerControls.Padding == windowedPadding && PlayerControls.CornerRadius == windowedCorners &&
+                PlayerControls.MaxWidth == windowedMaxWidth,
+                "leaving full screen restores the original windowed controls layout");
+            UiCheck(!PlayerControlsFrostWanted && PlayerControlsFrost.Visibility == Visibility.Collapsed &&
+                PlayerControlsFrostBrush.ImageSource is null,
+                "leaving full screen detaches the frost image and restores the existing windowed material");
+        }
+        finally
+        {
+            SetPlayerFullScreen(false);
+            SetVideoAvailable(false);
+            _preferences = preferences;
+        }
+    }
+
+    private async Task UiTestPlaybackPreferencesAsync(string output)
+    {
+        var previousPreferences = _preferences;
+        string previousStatus = _receiverStatus;
+        nint window = WindowNative.GetWindowHandle(this);
+        var placement = new PlayerWindowPlacement { Length = Marshal.SizeOf<PlayerWindowPlacement>() };
+        bool havePlacement = GetWindowPlacement(window, ref placement);
+        try
+        {
+            UiCheck(_receiver is null && !_hasMusic && !_hasVideo && !_playerFullScreen,
+                "playback preference checks use an idle window without receiver ports");
+            await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
+            AutoFullScreenToggle.IsOn = true;
+            AutoFullScreenToggle.IsOn = false;
+            AutoShowLyricsToggle.IsOn = false;
+            AutoShowLyricsToggle.IsOn = true;
+            UiCheck(_preferences.ShowLyrics && ReceiverPreferences.Load(_root).ShowLyrics,
+                "automatic lyrics settings switch persists its enabled value");
+            var settingsScroll = UiDescendants<ScrollViewer>(SettingsPage).First();
+            settingsScroll.ChangeView(null, double.MaxValue, null, true);
+            await UiWaitForStableLayout(SettingsPage, AutoFullScreenToggle, AutoShowLyricsToggle);
+            UiCheckAutoFullScreenCardGeometry(Texts.IsEnglish ? "en-preferences" : "zh-preferences");
+            await UiCaptureAsync(output, "playback-settings");
+
+            // Empty metadata keeps this transition fixture independent of lyric requests.
+            var audio = new ReceiverMediaState(1, ReceiverMediaKind.Audio, true, "", "", "",
+                30_000, 180_000, 0, 0, MediaControls.None);
+            ApplyMediaState(audio);
+            UiCheck(_hasMusic && !_playerFullScreen, "music remains windowed when automatic full screen is off");
+            AutoFullScreenToggle.IsOn = true;
+            UiCheck(!_playerFullScreen && ReceiverPreferences.Load(_root).AutoFullScreen,
+                "enabling automatic full screen during music saves without changing the current presenter");
+            ApplyMediaState(ReceiverMediaState.Empty);
+            UiCheck(UiGetWindowRect(window, out var before), "record window bounds before automatic music full screen");
+            ApplyMediaState(audio);
+            await UiWaitUntil(() => _playerFullScreen && IsMirrorPageSelected,
+                "new music automatically enters full screen from settings");
+            UiCheck(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen && !MainNavigation.IsPaneVisible,
+                "automatic music full screen uses the shared presenter and hides navigation");
+            SetPlayerFullScreen(false);
+            ApplyMediaState(audio with { Revision = 2, Artist = "Changed metadata", PositionMs = 31_000 });
+            ApplyMediaState(audio with { Revision = 3, Session = 2, ContentRevision = 2, Playing = false });
+            AutoFullScreenToggle.IsOn = false;
+            AutoFullScreenToggle.IsOn = true;
+            UiCheck(!_playerFullScreen,
+                "music metadata, track replacement, pause and preference changes respect a manual full-screen exit");
+            ApplyMediaState(ReceiverMediaState.Empty);
+            await UiWaitForStableLayout(MirrorPage);
+            UiCheck(!_playerFullScreen && UiGetWindowRect(window, out var after) &&
+                before.Width == after.Width && before.Height == after.Height,
+                "ending music restores the window dimensions after automatic full screen");
+            ApplyMediaState(audio with { Session = 3 });
+            UiCheck(_playerFullScreen, "the next music session re-arms automatic full screen");
+            double musicWindowedWidth = PlayerControls.MaxWidth;
+            SetPlayerFrameSize(320, 180);
+            SetVideoAvailable(true);
+            UiCheck(_playerFullScreen, "video after music follows automatic full-screen playback rules");
+            UiCheck(PlayerControls.MaxWidth == musicWindowedWidth,
+                "switching from music full screen to video preserves the recorded windowed control width");
+            ApplyMediaState(new ReceiverMediaState(4, ReceiverMediaKind.Video, true, "", "", "",
+                0, 0, 0, 0, MediaControls.None));
+            SetPlayerFullScreen(false);
+            ApplyMediaState(audio with { Session = 4 });
+            UiCheck(_hasVideo && _hasMusic && !_playerFullScreen && MusicPanel.Visibility == Visibility.Collapsed,
+                "audio metadata underneath active video does not force music full screen");
+            SetVideoAvailable(false);
+            UiCheck(_playerFullScreen && MusicPanel.Visibility == Visibility.Visible,
+                "music revealed when video ends automatically enters full screen");
+            ApplyMediaState(ReceiverMediaState.Empty);
+            UiCheck(!_playerFullScreen, "ending automatically full-screen music exits full screen");
+
+            AutoFullScreenToggle.IsOn = false;
+            ApplyMediaState(audio);
+            _lyrics = Lyrics.ParseSynced("[00:00.00]Synthetic settings lyric");
+            UpdateLyricsPresentation(false);
+            UiCheck(_lyricsOpen && MusicLyricsButton.IsChecked == true && AutoShowLyricsToggle.IsOn,
+                "enabled automatic lyrics displays available lyrics and checks the player button");
+            AutoShowLyricsToggle.IsOn = false;
+            UiCheck(!_preferences.ShowLyrics && !ReceiverPreferences.Load(_root).ShowLyrics &&
+                MusicLyricsButton.IsChecked == false && !_lyricsOpen,
+                "turning automatic lyrics off saves and closes the current lyrics panel");
+            AutoShowLyricsToggle.IsOn = true;
+            UiCheck(_preferences.ShowLyrics && _lyricsOpen && MusicLyricsButton.IsChecked == true,
+                "turning automatic lyrics on displays the current available lyrics");
+            MusicLyricsButton.IsChecked = false;
+            MusicLyricsClicked(MusicLyricsButton, new RoutedEventArgs());
+            UiCheck(!AutoShowLyricsToggle.IsOn && !ReceiverPreferences.Load(_root).ShowLyrics && !_lyricsOpen,
+                "the player lyrics button synchronizes and persists the settings switch off");
+            MusicLyricsButton.IsChecked = true;
+            MusicLyricsClicked(MusicLyricsButton, new RoutedEventArgs());
+            UiCheck(AutoShowLyricsToggle.IsOn && ReceiverPreferences.Load(_root).ShowLyrics && _lyricsOpen,
+                "the player lyrics button synchronizes and persists the settings switch on");
+            ApplyMediaState(ReceiverMediaState.Empty);
+            await UiTestFloatingPlayerControlsAsync(output);
+        }
+        finally
+        {
+            _preferences = _preferences with { AutoFullScreen = false };
+            SetVideoAvailable(false);
+            SetPlayerFullScreen(false);
+            ApplyMediaState(ReceiverMediaState.Empty);
+            bool ready = _settingsReady;
+            _settingsReady = false;
+            try
+            {
+                _preferences = previousPreferences;
+                AutoFullScreenToggle.IsOn = previousPreferences.AutoFullScreen;
+                AutoShowLyricsToggle.IsOn = previousPreferences.ShowLyrics;
+            }
+            finally { _settingsReady = ready; }
+            UpdateLyricsPresentation(false);
+            SetReceiverStatus(previousStatus);
+            _preferences.Save(_root);
+            if (havePlacement) SetWindowPlacement(window, in placement);
+        }
+    }
+
     private async Task UiTestMediaFeaturesAsync(string output)
     {
         // Real XAML/WinRT image decoding and owned-window presenter paths, with
@@ -750,6 +1044,7 @@ public sealed partial class MainWindow
         bool havePlacement = GetWindowPlacement(window, ref previousPlacement);
         try
         {
+            await UiTestPlaybackPreferencesAsync(output);
             UiCheck(_receiver is null && !_hasVideo && !_hasMusic && !_playerFullScreen,
                 "media feature UI tests begin with a stopped receiver and idle player");
             await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
@@ -763,8 +1058,10 @@ public sealed partial class MainWindow
                 30_000, 180_000, 0, 0, MediaControls.None);
             ApplyMediaState(audio);
             UiCheck(_hasMusic && !_hasVideo && MusicPanel.Visibility == Visibility.Visible &&
-                VideoPlaceholder.Visibility == Visibility.Collapsed && PlayerFrame.Visibility == Visibility.Collapsed && !_playerFullScreen,
-                "audio-only media shows music without a video player or automatic full screen");
+                VideoPlaceholder.Visibility == Visibility.Collapsed && PlayerFrame.Visibility == Visibility.Collapsed && _playerFullScreen,
+                "audio-only media shows the music player in automatic full screen");
+            SetPlayerFullScreen(false);
+            AutoFullScreenToggle.IsOn = false;
             UiCheck(MusicTitle.Text == audio.Title && MusicArtist.Text == audio.Artist && MusicAlbum.Text == audio.Album &&
                 MusicAlbum.Visibility == Visibility.Visible, "music metadata reaches its title artist and album fields");
             UiCheck(!MusicProgress.IsIndeterminate && MusicProgress.Maximum == 180_000 &&
@@ -998,6 +1295,7 @@ public sealed partial class MainWindow
                 LanguageButton.SelectedItem = previousPreferences.Language == AppLanguage.English ? EnglishLanguageItem : ChineseLanguageItem;
                 DisplaySizeButton.SelectedItem = previousPreferences.OriginalSize ? OriginalDisplayItem : FitDisplayItem;
                 AutoFullScreenToggle.IsOn = previousPreferences.AutoFullScreen;
+                AutoShowLyricsToggle.IsOn = previousPreferences.ShowLyrics;
             }
             finally { _settingsReady = settingsReady; }
             bool english = previousPreferences.Language == AppLanguage.English;
@@ -1310,19 +1608,27 @@ public sealed partial class MainWindow
 
     private void UiCheckAutoFullScreenCardGeometry(string prefix)
     {
-        var grid = (Grid)AutoFullScreenToggle.Parent;
-        var text = grid.Children.OfType<StackPanel>().Single();
-        UiBounds textBounds = UiMeasure(text), toggleBounds = UiMeasure(AutoFullScreenToggle), cardBounds = UiMeasure((FrameworkElement)grid.Parent);
-        var track = UiDescendants<FrameworkElement>(AutoFullScreenToggle).Single(element => element.Name == "OuterBorder");
-        UiBounds trackBounds = UiMeasure(track);
-        var card = (Border)grid.Parent;
-        _uiTestLayouts.Add(new { phase = "automatic full-screen settings card", prefix, textBounds, toggleBounds, trackBounds, cardBounds });
-        UiCheck(textBounds.X + textBounds.Width <= toggleBounds.X + 1 &&
-            toggleBounds.X + toggleBounds.Width <= cardBounds.X + cardBounds.Width + 1,
-            "automatic full-screen settings text and switch do not overlap " + prefix);
-        UiCheck(Math.Abs(trackBounds.X + trackBounds.Width - (cardBounds.X + cardBounds.Width - card.Padding.Right - card.BorderThickness.Right)) <= 1 &&
-            Math.Abs(trackBounds.CenterY - cardBounds.CenterY) <= 1,
-            "native full-screen switch track aligns to the card right inset and vertical center " + prefix);
+        foreach (ToggleSwitch toggle in new[] { AutoFullScreenToggle, AutoShowLyricsToggle })
+        {
+            bool fullScreen = ReferenceEquals(toggle, AutoFullScreenToggle);
+            var peer = Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(toggle);
+            UiCheck(peer is not null && peer.GetName() == (fullScreen ? Texts.AutoFullScreenLabel : Texts.AutoShowLyricsLabel) &&
+                peer.GetHelpText() == (fullScreen ? Texts.AutoFullScreenDescription : Texts.AutoShowLyricsDescription),
+                toggle.Name + " accessible label and description follow the selected language " + prefix);
+            var grid = (Grid)toggle.Parent;
+            var text = grid.Children.OfType<StackPanel>().Single();
+            UiBounds textBounds = UiMeasure(text), toggleBounds = UiMeasure(toggle), cardBounds = UiMeasure((FrameworkElement)grid.Parent);
+            var track = UiDescendants<FrameworkElement>(toggle).Single(element => element.Name == "OuterBorder");
+            UiBounds trackBounds = UiMeasure(track);
+            var card = (Border)grid.Parent;
+            _uiTestLayouts.Add(new { phase = "playback settings card", toggle = toggle.Name, prefix, textBounds, toggleBounds, trackBounds, cardBounds });
+            UiCheck(textBounds.X + textBounds.Width <= toggleBounds.X + 1 &&
+                toggleBounds.X + toggleBounds.Width <= cardBounds.X + cardBounds.Width + 1,
+                toggle.Name + " settings text and switch do not overlap " + prefix);
+            UiCheck(Math.Abs(trackBounds.X + trackBounds.Width - (cardBounds.X + cardBounds.Width - card.Padding.Right - card.BorderThickness.Right)) <= 1 &&
+                Math.Abs(trackBounds.CenterY - cardBounds.CenterY) <= 1,
+                toggle.Name + " native switch track aligns to the card right inset and vertical center " + prefix);
+        }
     }
 
     private UiOfflineLyricsHandler? _uiLyricsHandler;
