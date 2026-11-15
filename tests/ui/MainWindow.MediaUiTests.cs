@@ -1789,9 +1789,13 @@ public sealed partial class MainWindow
             foreach (bool useEnglish in new[] { false, true })
             {
                 Texts.SetEnglish(useEnglish);
+                RefreshComboBoxLabels();
                 RefreshDynamicText();
                 RefreshSavedPairings();
                 await UiWaitForStableLayout(PairingDeviceList);
+                UiCheck(new[] { ThemeButton, DecoderButton, DisplaySizeButton }.All(box =>
+                    box.SelectedItem is ComboBoxItem item && Equals(box.SelectionBoxItem, item.Content)),
+                    "saved-device screenshots refresh every selected settings label for their language " + useEnglish);
                 scroll.ChangeView(null, double.MaxValue, null, true);
                 await Task.Delay(150);
                 var rows = PairingDeviceList.Items.Cast<PairingDeviceRow>().ToArray();
@@ -1834,6 +1838,7 @@ public sealed partial class MainWindow
             if (original is not null) await File.WriteAllBytesAsync(path, original);
             else File.Delete(path);
             Texts.SetEnglish(english);
+            RefreshComboBoxLabels();
             RefreshDynamicText();
             RefreshSavedPairings();
             PairingExpander.IsExpanded = expanded;

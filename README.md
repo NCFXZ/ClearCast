@@ -10,11 +10,13 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 
 运行时资源限额、过载处理和安全边界见[稳定性与安全说明](shared/docs/RELIABILITY_SECURITY.md)。
 
-![ClearCast 中文音乐界面](shared/docs/screenshots/1.3.2.0/zh-CN-music-dark.png)
+![ClearCast 中文等待连接界面](shared/docs/screenshots/1.3.3.0/zh-CN-waiting-dark.png)
 
-![ClearCast 中文歌词界面](shared/docs/screenshots/1.3.2.0/zh-CN-lyrics-dark.png)
+![ClearCast 中文音乐界面](shared/docs/screenshots/1.3.3.0/zh-CN-music-dark.png)
 
-[查看 1.3.2.0 全部截图：浅色、深色、歌词及视频](shared/docs/screenshots/1.3.2.0/README.md)
+![ClearCast 中文歌词界面](shared/docs/screenshots/1.3.3.0/zh-CN-lyrics-dark.png)
+
+[查看 1.3.3.0 全部截图：浅色、深色、歌词及视频](shared/docs/screenshots/1.3.3.0/README.md)
 
 将设备与电脑连接到同一局域网，在设备的「屏幕镜像」或播放器的 AirPlay 选项中选择 ClearCast。两台设备所在的局域网需要允许设备相互访问。
 
@@ -22,7 +24,7 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 - 音乐投放时显示发送端提供的封面、曲名、歌手、专辑和播放进度；发送端支持控制时可播放、暂停及切换歌曲。由封面纹理生成的流动背景覆盖整个应用，随音乐节奏疏密平滑调速，并随强低频鼓点收放、自然回弹；浅色主题保留更鲜明的封面颜色，切换到「设置」或「关于」后仍继续流动，前景封面、文字和按钮保持稳定。
 - 自动从 LRCLIB 查找歌词，支持音乐全屏、逐行高亮和手动浏览；歌词内容及时间轴可能不准确，纯文本歌词会说明不支持滚动。
 - 支持全屏显示、向左或向右旋转 90°，以及等比缩放。
-- 可在设置中开启视频投放时自动全屏；默认关闭，纯音乐不会自动全屏。
+- 新的音乐和视频投放默认自动全屏，可在设置中关闭；找到歌词后默认自动显示。
 - 使用四位验证码配对，并管理已保存的设备。
 - 提供简体中文和英文界面、浅色和深色主题，以及跟随系统的主题选项。
 
@@ -32,7 +34,7 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 2. 确保设备与此电脑连接到同一网络。Windows 可通过网线接入同一路由器；Windows 防火墙询问时，可为可信的专用网络允许 `ClearCast.exe`。
 3. 在设备上打开「屏幕镜像」，或在兼容播放器中打开 AirPlay，选择电脑「AirPlay」页显示的名称，例如 `ClearCast DESKTOP-1234`。新设备请求配对时，在设备上输入电脑显示的四位验证码。
 4. 视频画面上的控件可旋转画面或切换全屏；双击画面可切换全屏，按 Esc 可退出全屏。音乐界面显示发送端提供的曲目信息；只有发送端支持时才显示播放控件，否则可继续在发送设备上操作。点击「断开投放」后，应用会继续等待下一次连接。
-5. 在「设置 → 播放显示」中选择默认显示大小，或开启「投屏时自动全屏」。自动全屏从下一次视频投放开始生效；当前播放中切换设置不会立即改变窗口。在「设置 → 接收」中选择解码方式；连接期间切换解码方式会保留 AirPlay 连接，画面可能短暂停顿。
+5. 在「设置 → 播放显示」中选择默认显示大小，或开启「投屏时自动全屏」。自动全屏从下一次音乐或视频投放开始生效；当前播放中切换设置不会立即改变窗口。在「设置 → 接收」中选择解码方式；连接期间切换解码方式会保留 AirPlay 连接，画面可能短暂停顿。
 
 可定位的直接视频支持播放/暂停、进度拖动及前后跳转 10 秒。音乐进度在发送端支持并确认定位时可拖动，否则保持只读；空格键切换当前可用的播放/暂停。封面、曲目信息和控制能力取决于发送设备、播放器及内容。音乐与视频的使用方法、协议范围和验证边界见 [AirPlay 媒体说明](shared/docs/AIRPLAY_MEDIA.md)。
 
@@ -40,7 +42,7 @@ ClearCast 让你的 Windows 电脑成为 AirPlay 接收端，方便展示屏幕�
 
 新设备的验证码有效期为一分钟。验证多次失败后，新配对会短暂暂停，已配对设备仍可连接。验证码请求与后续验证可使用来自同一设备的不同连接。验证码验证通过后，接收端会保存配对记录，以便设备重新连接验证。
 
-「设置」包含常规、接收、播放显示和设备配对。在「设备配对」中展开「已保存的配对」，即可逐台删除设备的配对记录，也可一次删除全部。删除后，该设备下次连接需要重新验证；接收端还会更新配对身份，因此其他已保存设备也可能需要重新验证。当本地没有任何已保存配对时，接收端会更新配对身份，让仍记住旧身份的设备重新显示验证码。
+「设置」包含常规、接收、播放显示和设备配对。在「设备配对」中展开「已保存的配对」，即可逐台删除设备的配对记录，也可一次删除全部。配对按设备名称和凭据分别保存；删除一台设备后，该设备下次连接需要重新验证，其他设备的记录和接收端身份保持不变。当本地没有任何已保存配对时，接收端会更新配对身份，让仍记住旧身份的设备重新显示验证码。
 
 接收器密钥、配对记录、连接日志和显示偏好保存在本地的 `.clearcast-state` 中。仓库启动器将其保存在仓库目录，安装版通常使用 `%LOCALAPPDATA%\ClearCast` 作为数据根目录。发生接收错误时，可点击「复制详情」查看连接记录。数据处理范围见 [隐私政策](shared/docs/legal/PRIVACY.md)。
 
@@ -144,11 +146,13 @@ Mirror your screen, or play AirPlay music and video on a Windows PC.
 
 ClearCast turns your Windows PC into an AirPlay receiver for screen sharing and media from compatible players.
 
-![ClearCast music view in English](shared/docs/screenshots/1.3.2.0/en-US-music-dark.png)
+![ClearCast waiting for connection in English](shared/docs/screenshots/1.3.3.0/en-US-waiting-dark.png)
 
-![ClearCast lyrics view in English](shared/docs/screenshots/1.3.2.0/en-US-lyrics-dark.png)
+![ClearCast music view in English](shared/docs/screenshots/1.3.3.0/en-US-music-dark.png)
 
-[View all 1.3.2.0 screenshots: light, dark, lyrics, and video](shared/docs/screenshots/1.3.2.0/README.md)
+![ClearCast lyrics view in English](shared/docs/screenshots/1.3.3.0/en-US-lyrics-dark.png)
+
+[View all 1.3.3.0 screenshots: light, dark, lyrics, and video](shared/docs/screenshots/1.3.3.0/README.md)
 
 Music supports full screen and automatic lyrics from LRCLIB. Timed lyrics highlight line by line; plain lyrics can be browsed manually and show an unsupported-scrolling notice. Lyrics and timing may be inaccurate.
 
@@ -157,7 +161,7 @@ Connect your device and PC to the same local network, then select ClearCast in S
 - Receive screen video and audio.
 - Show the artwork, title, artist, album, and playback progress supplied with music; play, pause, and change tracks when the sending device supports those controls. An artwork-textured background spans the whole app, adjusts its pace smoothly to rhythmic density, adds a damped rebound for strong low-frequency beats, and keeps flowing on Settings and About. The light theme retains richer artwork colors, while foreground artwork, text, and controls stay still.
 - Use full-screen display, rotate the picture 90° in either direction, and scale it while preserving its aspect ratio.
-- Optionally enter full screen when a new video session starts. This is off by default and does not apply to audio-only sessions.
+- New music and video sessions enter full screen by default; turn this off in Settings if preferred. Available lyrics are shown automatically by default.
 - Pair using a four-digit code and manage saved devices.
 - Choose a Simplified Chinese or English interface and a light, dark, or system-controlled theme.
 
@@ -167,7 +171,7 @@ Connect your device and PC to the same local network, then select ClearCast in S
 2. Make sure your device and this PC are connected to the same network. The PC can use Ethernet to the same router. If Windows Firewall asks, allow `ClearCast.exe` on a trusted private network.
 3. Open Screen Mirroring or AirPlay in a compatible player and select the name shown on the PC’s **AirPlay** page, such as `ClearCast DESKTOP-1234`. For a new pairing, enter the four-digit code shown on the PC.
 4. Use the video controls to rotate the picture or enter full screen. Double-click the picture to toggle full screen, or press Esc to leave it. The music view shows the details supplied by the sender; playback controls appear only when the sender provides them; otherwise, use the sending device. Select **Disconnect** to end the session and wait for another connection.
-5. Choose a default picture size or enable **Automatically enter full screen** in **Settings → Playback**. The option applies to the next video session; changing it during playback does not immediately change the window. Choose a decoder in **Settings → Receiving**. Changing the decoder during a session keeps the AirPlay connection; the picture may pause briefly.
+5. Choose a default picture size or enable **Automatically enter full screen** in **Settings → Playback**. The option applies to the next music or video session; changing it during playback does not immediately change the window. Choose a decoder in **Settings → Receiving**. Changing the decoder during a session keeps the AirPlay connection; the picture may pause briefly.
 
 Seekable direct video supports play/pause, progress dragging, and 10-second skips. Music seeking is available when the sender supports and confirms it; otherwise progress remains read-only. Space toggles available playback controls. Artwork, metadata, and controls depend on the sending device, player, and content. See the [AirPlay media guide](shared/docs/AIRPLAY_MEDIA.md) for usage, protocol scope, and validation limits.
 
@@ -175,7 +179,7 @@ The AirPlay page shows **AirPlay connected** when a device is connected without 
 
 A new device's code is valid for one minute. After repeated failures, new pairing attempts pause briefly; saved devices can still connect. The request for a code and its subsequent verification can use different connections from the same device. Successful code verification saves the pairing so that the device can verify again on a new connection.
 
-Settings contains General, Receiving, Playback, and Device pairing. Expand **Saved pairings** under **Device pairing** to remove one device or all saved devices. A removed device must verify again on its next connection. Removing pairings also renews the receiver identity, so other saved devices may need to verify again. If no saved pairings remain, the receiver renews its identity so a device that remembers an older identity can request a new code.
+Settings contains General, Receiving, Playback, and Device pairing. Expand **Saved pairings** under **Device pairing** to remove one device or all saved devices. Pairings are saved separately by device name and credential. A removed device must verify again on its next connection; other devices' records and the receiver identity are preserved. If no saved pairings remain, the receiver renews its identity so a device that remembers an older identity can request a new code.
 
 The receiver key, saved pairings, connection log, and preferences are stored locally in `.clearcast-state`. The repository launcher uses the repository as the data root; an installed app normally uses `%LOCALAPPDATA%\ClearCast`. For a reception error, choose **Copy details** to inspect recent connection records. See the [privacy policy](shared/docs/legal/PRIVACY.md) for how data is handled.
 

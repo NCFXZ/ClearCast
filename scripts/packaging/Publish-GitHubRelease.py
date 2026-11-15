@@ -102,8 +102,9 @@ def main():
         if release and not release['draft']:
             raise RuntimeError('A published release already exists; refusing to replace it.')
         notes = (ROOT / ('shared/docs/releases/release-notes-' + VERSION + '.md')).read_text(encoding='utf-8-sig')
-        notes += '\n## 音乐界面 / Music view\n\n'
+        notes += '\n## 界面预览 / App preview\n\n'
         for locale, label in (('zh-CN', '中文'), ('en-US', 'English')):
+            notes += f'![{label} waiting](https://raw.githubusercontent.com/{REPO}/{TAG}/shared/docs/screenshots/{VERSION}/{locale}-waiting-dark.png)\n\n'
             notes += f'![{label}](https://raw.githubusercontent.com/{REPO}/{TAG}/shared/docs/screenshots/{VERSION}/{locale}-music-dark.png)\n\n'
             notes += f'![{label} lyrics](https://raw.githubusercontent.com/{REPO}/{TAG}/shared/docs/screenshots/{VERSION}/{locale}-lyrics-dark.png)\n\n'
         if release is None:

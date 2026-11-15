@@ -1,0 +1,329 @@
+{
+  "applicationVersion": "1.3.3.0",
+  "capture": "Native-display fullscreen captures of the actual WinUI application's owned HWND only; exact DWM visible-frame pixels without desktop capture, resampling or painting.",
+  "content": "Original geometric music artwork, native vector illustration, fictional track/device names, and an original mathematical-gradient video with synthetic silence. Original locally generated Chinese and English demonstration verses; no third-party lyrics or remote lookup.",
+  "containsPrivateMedia": false,
+  "captures": [
+    {
+      "file": "en-US-music-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "097cf923c198b7666ac4e9a7e730b544037ba55b8db1501077f14b9a17d0a66c",
+      "rgbSha256": "6d7bacd70b666c290634b7127bc7f790012679f604c07ec84e5b34ae2f1f8fa7",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-music-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "a18cb4a44a6c64f7f8d0060761a54e7393379d96c9277de476db0d0f232db849",
+      "rgbSha256": "51a10d3417d0b27797dd9c8016db4a582f344bc99098394380eb65a4b6b34026",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-settings-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "b75f49b6bf28668ca322e76e3c7ce68c8ca9121bfbb021fc0881326ed759a009",
+      "rgbSha256": "f17985e4f531b431b38abd536ec539eb208b175b0de05d1ad53d514d9919feb6",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-settings-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "ffc7085959fcadd6a18b6f8764bb0537386a53cdfca1bf1c53e59e634a0efa58",
+      "rgbSha256": "29a63d167a38aee4f4249e98b2528d2fe7113a7af7206f703b7e486791984ea0",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-video-controls.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "90a145164073c1e72bdf1fa93bbf1f5658b2a2b15a04b0e42182f0b4c16a840b",
+      "rgbSha256": "575d3f6c3095487f49fe6af0526c5b8db117c72744f6e4036f7a860c51a95aeb",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 1,
+        "top": 32,
+        "bottom": 32
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "en-US-video-fullscreen.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "ecea69bb162ef4a3f5e5401cdc34417e5c4c2fe0aa31b3bfdd82135ed9d611d3",
+      "rgbSha256": "c00857f14feccc163f50fdddc2baff215dfb8b7e2c12d22f1c3e742f620e239b",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 1,
+        "top": 32,
+        "bottom": 32
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "en-US-waiting-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "5cf9096fd7ccf83087131375674a1fe057e3f9f385c78bf5ef506f75fb9e4c70",
+      "rgbSha256": "51ae7e5e9396085fe1eb976d1ca26019d7b7efabaa02f38e0dd2492e9ea40e44",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-waiting-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "de0befc304b20847b5d4aaa33d5a9d2a2352e62507b3b5f923aad100108512fa",
+      "rgbSha256": "2cc72995ad931775e8e1ccc82b6e49389ee6443d89370ff248a8ea803065230b",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-music-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "a06ac2cc79556f4b90b7942d791c1a8ec52f74410fd24e34d108718b682eb211",
+      "rgbSha256": "22c8dd7fa66949abd1782fff09a2c8b39e8239b2c69f63a1453fc7c5c67c6fa8",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-music-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "36bc985a9a03954451dadc39df692cebf2955f35795edfb2e5423f4a6cf4f22b",
+      "rgbSha256": "d55c54779efb7be4d94fedf99f95ca93d0318061880bdb430edbffdb3a5720b1",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-settings-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "0487bbe233535d7fc3fccdcc92747264e6db65fa297c186678c487318b71e60b",
+      "rgbSha256": "38be829e257d800d65cf190be057499560b9bb313456a5e91abeb70010524717",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-settings-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "35d264c1fc4e0bbfe73a97ae3002be2db37d2edd393963d5ef460dc852fcb567",
+      "rgbSha256": "b0115b6da0a440db4cac010d232cd47c89928a3ac6361475013de97c791a96ce",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-video-controls.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "c7ccd44fc1333f66366046bf93aaa4569a67914234bdfa61d19066ea0656743d",
+      "rgbSha256": "6ada87f6aed5d1965ec3333a92c4db35b67a932671f41ffe6d844cb74bb8b402",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 1,
+        "top": 32,
+        "bottom": 32
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "zh-CN-video-fullscreen.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "38556356c704c0166d15bc0901f37e67f91dfea3faa3746dc9832a25292be51a",
+      "rgbSha256": "fbc45c8610d619c6cdc268b08f0a3e469b433ad8f160f3b2aebc48dc11602f58",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 1,
+        "top": 32,
+        "bottom": 32
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": true
+    },
+    {
+      "file": "zh-CN-waiting-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "22739d66f989f5f5bd623a94bfef142800a284abb4734de3e6d14ddbad6f1817",
+      "rgbSha256": "4cd6d3a1242683f38de7ecf2a362e71af16ef95aff632b27180625019a90fa1f",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-waiting-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "ede1a2d2f87d07bd10d01cffd001a8af698bb3d2d29c430b17b0973ac8c36394",
+      "rgbSha256": "21f450529315b3ad40c0a8d6776c3b4c2c02c66a12e880428952c8faa89cce88",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-lyrics-dark.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "0c5be0aad5339ad7aa17b171477e456a5493445a6afe0ae19d0d491825b56f8c",
+      "rgbSha256": "b144125dcd00a90094c9391ca48e9698cbfdb48edd8bfbc7ad4bfe8d8deac83b",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "en-US-lyrics-light.png",
+      "locale": "en-US",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "43ed541c0462644900da9fbdf87f5d8efdc57702e44b8a3ee367f58e6591daa5",
+      "rgbSha256": "81a17a96d605c8742ba433010ed0e0c45931be951dc3f469cb5791e4e8379ec7",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-lyrics-dark.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "38e4c5afdc040ab74999494da3339537a1c22c367a62d086c7feb63dda5929ff",
+      "rgbSha256": "0cc92865afeff47ae0e06596a4d8a785fd36e917990f34a2b52ec750e6aa98a7",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    },
+    {
+      "file": "zh-CN-lyrics-light.png",
+      "locale": "zh-CN",
+      "width": 2880,
+      "height": 1800,
+      "sha256": "97ca9287f763e110a02060b13f99b93ac4e8e1d418c5197955bfe648a7f3d7cf",
+      "rgbSha256": "a0c2e11b0b6fc4cf1c3a6e198c465291f5c3c58313190a3c58839af1cf2e3180",
+      "blackEdgePixels": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 0
+      },
+      "fullscreen": true,
+      "fullscreenLetterboxingAllowed": false
+    }
+  ],
+  "lyricsSource": "Original eight-line Chinese and English demonstration verses generated offline in the Store UI harness; no third-party lyrics, remote lookup or recording."
+}

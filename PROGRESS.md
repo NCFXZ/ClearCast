@@ -5,14 +5,14 @@
 - 用户已确认 Claude 修复验证码循环及删除配对后无法重新进入配对的问题。本轮保留最终密码质询与未登记密钥握手回退，按“公钥＋名称”独立保存、准入和删除，并保留其他记录的接收端身份。具体行为与共享私钥的身份边界见 [AirPlay 媒体](shared/docs/AIRPLAY_MEDIA.md)。
 - 视频模糊背景复用两张可写位图，采样和后台处理不等待淡入或逐帧 GPU 资源退役；保留音乐背景、颜色与视觉处理。
 - 用户授权清理无用文件、代码和未使用的 UI 组件/样式；Android TV 已迁至独立 [ClearCast-TV](../ClearCast-TV/README.md)，本仓库不保留其构建范围。清理须核对引用与路径，保留工具链、固定来源及许可证、当前证据、升级基线和真实状态。
-- 当前分支为 `codex/release-1.3.3.0`，版本调整为应用/Bundle/Store `1.3.3.0`、MSI `1.3.3`。正在重新构建与执行安全、稳定性、畸形输入、配对、音视频、托管、中英文、视觉和安装测试；发现问题后修复并重测。详细结果仅记录于 `.runtime/qa-release-1.3.3.0/`。
+- 当前分支为 `codex/release-1.3.3.0`，版本调整为应用/Bundle/Store `1.3.3.0`、MSI `1.3.3`。已从受控源码重新构建，软件回归与视觉复核已完成，正在执行 Windows 沙箱安装验收；发现问题后修复并重测。详细结果仅记录于 `.runtime/qa-release-1.3.3.0/`。
 - 验证完成后，按本次授权提交完整源码与安装包到 GitHub，并提交微软商店更新。当前尚未发布 `1.3.3.0`。沿用既有安装升级身份、商店 Name/Publisher 与 x64 范围；更新说明只描述用户可感知的变化。
 
 ## 当前已交付基线
 
 - GitHub [v1.3.2.0](https://github.com/NCFXZ/ClearCast/releases/tag/v1.3.2.0) 已发布，发行记录及资产身份见 [1.3.2.0 发行状态](shared/docs/releases/release-status-1.3.2.0.md)。
 - 本次已通过 Partner Center 确认 Submission 7 的产品更新已在商店提供，存在 Start update 入口。后续 `1.3.3.0` 提交成功与通过认证上架须分别记录。
-- 默认入口为 `scripts/Launch-ClearCast.cmd`，运行目录 `.runtime/app`，状态目录为仓库下 `.clearcast-state`。当前默认运行时包含 Claude 的配对修复；自动化使用独立临时状态，不改动真实配对或偏好。
+- 默认入口为 `scripts/Launch-ClearCast.cmd`，运行目录 `.runtime/app`，状态目录为仓库下 `.clearcast-state`。已按用户补充要求同步到本次 `1.3.3.0` 构建，保留真实配对与偏好。GitHub 首页/发行页和微软商店截图的首图统一为等待连接界面，中英文一致。自动化使用独立临时状态。
 
 ## 实现与验证边界
 

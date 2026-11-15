@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -106,7 +107,12 @@ class GitHubReleaseTests(unittest.TestCase):
         self.assertEqual(len(patches), 1)
         self.assertEqual((patches[0]['tag_name'], patches[0]['target_commitish']), (TAG, COMMIT))
         self.assertIn('Isolated release notes.', patches[0]['body'])
+        images = re.findall(r'!\[[^\]]*\]\(([^)]+)\)', patches[0]['body'])
+        self.assertEqual(len(images), 6)
+        self.assertTrue(images[0].endswith('/zh-CN-waiting-dark.png'))
         for locale in ('zh-CN', 'en-US'):
+            self.assertLess(patches[0]['body'].index(f'/{locale}-waiting-dark.png'),
+                            patches[0]['body'].index(f'/{locale}-music-dark.png'))
             self.assertIn(f'/shared/docs/screenshots/{VERSION}/{locale}-lyrics-dark.png', patches[0]['body'])
         self.assertFalse(any(method == 'POST' for method, _, _ in self.calls))
 
