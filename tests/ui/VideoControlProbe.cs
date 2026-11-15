@@ -129,6 +129,27 @@ public static class VideoControlProbe
             "F12 did not hide the video diagnostics.");
     }
 
+    private static AutomationElement WaitDiagnosticGeometry(Process target, AutomationElement root,
+        IntPtr overlay, out IntPtr video, out Rect bounds)
+    {
+        var elapsed = Stopwatch.StartNew();
+        video = IntPtr.Zero;
+        bounds = new Rect();
+        while (elapsed.ElapsedMilliseconds < 5000)
+        {
+            // XAML accessibility and the native overlay settle independently.
+            // Read them together instead of assuming an earlier ready check
+            // makes the next accessibility/layout sample immediately stable.
+            var text = VisibleDiagnostics(root);
+            video = VideoHost(target.MainWindowHandle);
+            if (text != null && video != IntPtr.Zero && IsWindowVisible(video) && IsWindowVisible(overlay) &&
+                GetWindowRect(video, out bounds) && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top)
+                return text;
+            Thread.Sleep(40);
+        }
+        throw new InvalidOperationException("Owned diagnostic text and video geometry did not settle together within five seconds.");
+    }
+
     private static void Diagnostics(Process target, bool exactTestRate, string screenshot, bool fullScreen)
     {
         var root = AutomationElement.FromHandle(target.MainWindowHandle);
@@ -139,10 +160,9 @@ public static class VideoControlProbe
             VideoF12(target);
             information = WaitDiagnostics(root, true, exactTestRate);
             IntPtr overlay = WaitNativeDiagnostics(target, true);
-            var text = VisibleDiagnostics(root);
+            IntPtr video;
             Rect host;
-            if (text == null || !GetWindowRect(VideoHost(target.MainWindowHandle), out host))
-                throw new InvalidOperationException("Cannot measure the owned diagnostic video.");
+            var text = WaitDiagnosticGeometry(target, root, overlay, out video, out host);
             double fit = Math.Min((host.Right - host.Left) / 1280.0, (host.Bottom - host.Top) / 720.0);
             double width = 1280 * fit, height = 720 * fit;
             double left = host.Left + (host.Right - host.Left - width) / 2;
@@ -173,7 +193,7 @@ public static class VideoControlProbe
             {
                 int x = (overlayBounds.Left + overlayBounds.Right) / 2 - host.Left;
                 int y = (overlayBounds.Top + overlayBounds.Bottom) / 2 - host.Top;
-                if (GetWindowRgn(VideoHost(target.MainWindowHandle), region) > 0 && !PtInRegion(region, x, y))
+                if (GetWindowRgn(video, region) > 0 && !PtInRegion(region, x, y))
                     throw new InvalidOperationException("The native video was cut away below alpha diagnostics.");
             }
             finally { DeleteObject(region); }
