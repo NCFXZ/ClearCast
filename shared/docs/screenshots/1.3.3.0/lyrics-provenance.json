@@ -10,8 +10,8 @@
       "locale": "en-US",
       "width": 2880,
       "height": 1800,
-      "sha256": "0c5be0aad5339ad7aa17b171477e456a5493445a6afe0ae19d0d491825b56f8c",
-      "rgbSha256": "b144125dcd00a90094c9391ca48e9698cbfdb48edd8bfbc7ad4bfe8d8deac83b",
+      "sha256": "e38e53e8979176e0635ceb8d64bc3932c7750327b5c10aff935d5338d4f8b713",
+      "rgbSha256": "0175e1439ade486e43b52301e112866a385a52505bfa09ac4d569bf290014a35",
       "blackEdgePixels": {
         "left": 0,
         "right": 0,
@@ -26,8 +26,8 @@
       "locale": "en-US",
       "width": 2880,
       "height": 1800,
-      "sha256": "43ed541c0462644900da9fbdf87f5d8efdc57702e44b8a3ee367f58e6591daa5",
-      "rgbSha256": "81a17a96d605c8742ba433010ed0e0c45931be951dc3f469cb5791e4e8379ec7",
+      "sha256": "42637bd822718a395e1ee49ffd6eaffac3bfa34660d5038a827ac80dee83ba93",
+      "rgbSha256": "346147d2823efd3262bf340dba67dfe62c9c49f232c57097d62e012dc44a423c",
       "blackEdgePixels": {
         "left": 0,
         "right": 0,
@@ -42,8 +42,8 @@
       "locale": "zh-CN",
       "width": 2880,
       "height": 1800,
-      "sha256": "38e4c5afdc040ab74999494da3339537a1c22c367a62d086c7feb63dda5929ff",
-      "rgbSha256": "0cc92865afeff47ae0e06596a4d8a785fd36e917990f34a2b52ec750e6aa98a7",
+      "sha256": "7ac49c6cb02a18b8c030f9b0605ab2dc6f3418d6ef53f7fd7124268f269b5d81",
+      "rgbSha256": "f8b7352a1d3e6f14b091570abcec0adb47fc83b71e090f2cbe813e4b7a89d27b",
       "blackEdgePixels": {
         "left": 0,
         "right": 0,
@@ -58,8 +58,8 @@
       "locale": "zh-CN",
       "width": 2880,
       "height": 1800,
-      "sha256": "97ca9287f763e110a02060b13f99b93ac4e8e1d418c5197955bfe648a7f3d7cf",
-      "rgbSha256": "a0c2e11b0b6fc4cf1c3a6e198c465291f5c3c58313190a3c58839af1cf2e3180",
+      "sha256": "bd73d2c5b4c934f1397963b8df8a33e62129871d4665831e259f55251bf4e83b",
+      "rgbSha256": "2b4e49c9b6152c2a6d5f1863e3b1823079d297ffd84a7b568668dcc2be4d595f",
       "blackEdgePixels": {
         "left": 0,
         "right": 0,
