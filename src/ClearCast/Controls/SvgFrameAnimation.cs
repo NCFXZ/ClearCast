@@ -11,7 +11,7 @@ namespace ClearCast;
 public sealed partial class SvgFrameAnimation : UserControl, IDisposable
 {
     internal const int FrameCount = 200;
-    internal const int FramesPerSecond = 25;
+    internal const int FramesPerSecond = 30;
     private const int DecodeConcurrency = 4;
     private const int StartupBufferFrames = 6;
     private const double PreferredWidth = 480;

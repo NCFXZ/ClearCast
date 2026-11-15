@@ -22,5 +22,6 @@
     <Compile Include="../../src/ClearCast/Controls/ArtworkFlow.cs" Link="ArtworkFlow.cs" />
     <Compile Include="../../src/ClearCast/Controls/BeatImpulse.cs" Link="BeatImpulse.cs" />
     <Compile Include="../../src/ClearCast/Controls/VideoFrost.cs" Link="VideoFrost.cs" />
+    <Compile Include="../../src/ClearCast/Controls/AdaptiveWorkCadence.cs" Link="AdaptiveWorkCadence.cs" />
   </ItemGroup>
 </Project>

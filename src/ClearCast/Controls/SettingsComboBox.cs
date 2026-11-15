@@ -10,7 +10,7 @@ public sealed partial class SettingsComboBox : ComboBox
 
     public SettingsComboBox()
     {
-        SizeChanged += (_, args) => MatchPopupWidth(args.NewSize.Width);
+        SizeChanged += (_, args) => EnsurePopupMinWidth(args.NewSize.Width);
     }
 
     protected override void OnApplyTemplate()
@@ -21,12 +21,12 @@ public sealed partial class SettingsComboBox : ComboBox
             popup.ShouldConstrainToRootBounds = true;
 
         _popupBorder = GetTemplateChild("PopupBorder") as FrameworkElement;
-        MatchPopupWidth(ActualWidth);
+        EnsurePopupMinWidth(ActualWidth);
     }
 
-    private void MatchPopupWidth(double width)
+    private void EnsurePopupMinWidth(double width)
     {
         if (_popupBorder is not null && width > 0)
-            _popupBorder.Width = width;
+            _popupBorder.MinWidth = width;
     }
 }

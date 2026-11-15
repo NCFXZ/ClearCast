@@ -1,4 +1,3 @@
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Animation;
@@ -11,10 +10,8 @@ public sealed partial class MainWindow
     private readonly UISettings _motionSettings = new();
     private readonly Dictionary<FrameworkElement, NavigationContentPage> _pageHosts = new();
     private FrameworkElement? _selectedPage;
-    private DispatcherQueueTimer? _pageEntranceTimer;
 
     private bool IsMirrorPageSelected => ReferenceEquals(_selectedPage, MirrorPage);
-    private bool IsMirrorPageEntering => _pageEntranceTimer?.IsRunning == true;
 
     private void InitializeNavigation()
     {
@@ -44,18 +41,11 @@ public sealed partial class MainWindow
         if (ReferenceEquals(page, _selectedPage))
             return;
 
-        StopPageEntrance();
         _selectedPage = page;
+        bool restoreVideo = IsMirrorPageSelected && _hasVideo;
         bool animate = _settingsReady && _motionSettings.AnimationsEnabled;
-        if (IsMirrorPageSelected && animate)
-        {
-            _pageEntranceTimer ??= CreatePageEntranceTimer();
-            _pageEntranceTimer.Start();
-        }
-        else if (!IsMirrorPageSelected)
-        {
+        if (!IsMirrorPageSelected)
             _videoHost?.Hide();
-        }
 
         if (ReferenceEquals(page, SettingsPage))
             RefreshSavedPairings();
@@ -71,24 +61,14 @@ public sealed partial class MainWindow
         host.Content = page;
         _pageHosts[page] = host;
         UpdateLandingAnimationState();
-        if (IsMirrorPageSelected && !animate)
+        if (restoreVideo)
+        {
+            // Reattach and arrange the slot before showing its retained surface.
+            // This also handles a resize while the AirPlay tab was off-screen.
+            NavigationFrame.UpdateLayout();
+            UpdateVideoHost();
+        }
+        else if (IsMirrorPageSelected && !animate)
             QueueVideoHostUpdate();
     }
-
-    private DispatcherQueueTimer CreatePageEntranceTimer()
-    {
-        // WinUI's page refresh is 150 ms out followed by a 300 ms entrance. The video HWND
-        // lives outside XAML composition, so only show it when the incoming slot has settled.
-        var timer = DispatcherQueue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(450);
-        timer.IsRepeating = false;
-        timer.Tick += (sender, _) =>
-        {
-            sender.Stop();
-            UpdateVideoHost();
-        };
-        return timer;
-    }
-
-    private void StopPageEntrance() => _pageEntranceTimer?.Stop();
 }

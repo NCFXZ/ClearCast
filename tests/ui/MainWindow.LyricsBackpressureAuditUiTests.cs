@@ -18,15 +18,19 @@ public sealed partial class MainWindow
         var originalClient = _lyricsClient;
         var originalHandler = _uiLyricsHandler;
         var originalPreferences = _preferences;
+        var originalStop = _stopTask;
         var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var stopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstHeaders = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stopHeaders = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryHeaders = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
         const string firstTitle = "Audit held first", latestTitle = "Audit latest 999";
         const string stopTitle = "Audit held shutdown", discardedTitle = "Audit discarded shutdown";
+        const string recoveryTitle = "Audit failed stop recovery";
         var titles = new List<string>();
         var gate = new object();
-        int active = 0, maximumActive = 0, cancellationSignals = 0;
+        int active = 0, maximumActive = 0, cancellationSignals = 0, recoveryRequests = 0;
         void Phase(string name)
         {
             string json;
@@ -76,6 +80,11 @@ public sealed partial class MainWindow
                         stopEntered.TrySetResult();
                         return await stopHeaders.Task;
                     }
+                    if (title == recoveryTitle && Interlocked.Increment(ref recoveryRequests) == 1)
+                    {
+                        recoveryEntered.TrySetResult();
+                        return await recoveryHeaders.Task;
+                    }
                     return Reply(title);
                 }
                 finally { lock (gate) --active; }
@@ -116,6 +125,50 @@ public sealed partial class MainWindow
             await UiWaitForStableLayout(MusicPanel, MusicContent, MusicLyrics);
             await UiCaptureAsync(output, "lyrics-lookup-backpressure-latest");
 
+            var unchanged = audio with { Revision = 2000, Title = recoveryTitle };
+            ApplyMediaState(unchanged);
+            await recoveryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            CancelPendingLyricsWork();
+            int canceledGeneration = _lyricsGeneration;
+            _stopTask = Task.FromResult(false);
+            ApplyMediaState(unchanged);
+            UiCheck(!_lyricsPending && _lyricsTrack is null && _lyricsGeneration == canceledGeneration,
+                "a pending native stop cannot restart the lyrics lookup it just canceled");
+            _stopTask = originalStop;
+            ApplyMediaState(unchanged);
+            UiCheck(_lyricsPending && _lyricsTrack?.Title == recoveryTitle && _pendingLyricsLookup is not null,
+                "a failed stop resumes the canceled lookup on an identical metadata snapshot");
+            await Task.Delay(LyricsLookupDelay + TimeSpan.FromMilliseconds(300));
+            UiCheck(recoveryRequests == 1 && maximumActive == 1,
+                "failed-stop recovery waits for the canceled HTTP request without opening another worker");
+            recoveryHeaders.SetResult(Reply(recoveryTitle));
+            await UiWaitUntil(() => !_lyricsPending && _lyricsTrack?.Title == recoveryTitle,
+                "failed-stop lyrics recovery completes after the stale response drains");
+            await _lyricsLookupTask;
+            UiCheck(recoveryRequests == 2 && LyricsAvailable && _lyrics!.Lines[0].Text == recoveryTitle && !_lyricsFailed,
+                "the recovered lookup applies current lyrics exactly once after cancellation");
+            int stableRequests = handler.Requests, stableGeneration = _lyricsGeneration;
+            for (int sample = 0; sample < 1000; sample++) ApplyMediaState(unchanged);
+            await Task.Delay(LyricsLookupDelay + TimeSpan.FromMilliseconds(100));
+            UiCheck(handler.Requests == stableRequests && _lyricsGeneration == stableGeneration && !_lyricsPending,
+                "identical metadata does not repeatedly restart a completed recovery lookup");
+
+            _lyricsFailed = true;
+            CancelPendingLyricsWork();
+            stableGeneration = _lyricsGeneration;
+            for (int sample = 0; sample < 1000; sample++) ApplyMediaState(unchanged);
+            UiCheck(handler.Requests == stableRequests && _lyricsGeneration == stableGeneration && !_lyricsPending,
+                "failed lyrics remain disabled without resetting or looking up each unchanged snapshot");
+            _lyricsFailed = false;
+            var unnamed = unchanged with { Title = "" };
+            ApplyMediaState(unnamed);
+            stableGeneration = _lyricsGeneration;
+            for (int sample = 0; sample < 1000; sample++) ApplyMediaState(unnamed);
+            await Task.Delay(LyricsLookupDelay + TimeSpan.FromMilliseconds(100));
+            UiCheck(handler.Requests == stableRequests && _lyricsGeneration == stableGeneration && !_lyricsPending && _lyricsTrack is null,
+                "unnamed music does not repeatedly reset lyrics or issue lookup requests");
+            Phase("failed-stop-recovery-settled");
+
             ApplyMediaState(audio with { Revision = 2001, Title = stopTitle });
             await stopEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             ApplyMediaState(audio with { Revision = 2002, Title = discardedTitle });
@@ -126,7 +179,7 @@ public sealed partial class MainWindow
             await _lyricsLookupTask.WaitAsync(TimeSpan.FromSeconds(5));
             Phase("shutdown-drained");
             lock (gate)
-                UiCheck(active == 0 && maximumActive == 1 && titles.SequenceEqual([firstTitle, latestTitle, stopTitle]),
+                UiCheck(active == 0 && maximumActive == 1 && titles.SequenceEqual([firstTitle, latestTitle, recoveryTitle, recoveryTitle, stopTitle]),
                     "stopping lyrics revokes the pending track and drains the canceled active request without another HTTP send");
             UiCheck(!_lyricsFailed, "stale lookup cancellation during shutdown does not disable lyrics");
         }
@@ -134,6 +187,9 @@ public sealed partial class MainWindow
         {
             if (!firstHeaders.Task.IsCompleted) firstHeaders.TrySetResult(Reply(firstTitle));
             if (!stopHeaders.Task.IsCompleted) stopHeaders.TrySetResult(Reply(stopTitle));
+            if (!recoveryHeaders.Task.IsCompleted) recoveryHeaders.TrySetResult(Reply(recoveryTitle));
+            _stopTask = originalStop;
+            _lyricsFailed = false;
             ResetLyrics();
             ApplyMediaState(ReceiverMediaState.Empty);
             await _lyricsLookupTask.WaitAsync(TimeSpan.FromSeconds(5));

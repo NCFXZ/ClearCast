@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
 
 namespace ClearCast;
@@ -16,7 +17,7 @@ public sealed partial class MainWindow
     private const double MusicLyricsSideBySideWidth = 680;
     private static readonly TimeSpan LyricsLookupDelay = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan LyricsLayoutDuration = TimeSpan.FromMilliseconds(600);
-    private static readonly TimeSpan LyricsHideDuration = TimeSpan.FromMilliseconds(240);
+    private static readonly TimeSpan LyricsHideDuration = TimeSpan.FromMilliseconds(160);
     private LyricsClient? _lyricsClient;
     private (string Title, string Artist, string Album)? _lyricsTrack;
     private Lyrics? _lyrics;
@@ -33,6 +34,7 @@ public sealed partial class MainWindow
     private DispatcherQueueTimer? _lyricsTimer;
     private CompositionEasingFunction? _lyricsLayoutEase;
     private CompositionEasingFunction? _lyricsHideEase;
+    private FrameworkElement[]? _musicLayoutElements;
     private bool _lyricsFailed;
 
     private bool LyricsShown => _lyricsOpen;
@@ -71,13 +73,18 @@ public sealed partial class MainWindow
 
     private void ResetLyrics()
     {
+        CancelPendingLyricsWork();
+        _lyrics = null;
+        _lyricsLookupDurationMs = -1;
+        _lyricsTimer?.Stop();
+    }
+
+    private void CancelPendingLyricsWork()
+    {
         CancelLyricsLookup();
         ++_lyricsGeneration;
         _lyricsTrack = null;
-        _lyrics = null;
         _lyricsPending = false;
-        _lyricsLookupDurationMs = -1;
-        _lyricsTimer?.Stop();
     }
 
     private void CancelLyricsLookup()
@@ -161,64 +168,78 @@ public sealed partial class MainWindow
         if (open) MusicLyrics.SetLyrics(_lyrics);
         if (open == _lyricsOpen)
         {
+            if (!animate)
+            {
+                ++_lyricsLayoutGeneration;
+                _lyricsClosing = false;
+                ResetMusicLayoutAnimation();
+                if (!open) MusicLyrics.SetLyrics(null);
+            }
             UpdateMusicLayout();
             UpdateLyricsPosition();
             return;
         }
         animate = animate && _motionSettings.AnimationsEnabled && MusicPanel.Visibility == Visibility.Visible &&
-            MusicPanel.ActualWidth > 0 && AppWindow.IsVisible;
+            MusicPanel.ActualWidth > 0 && AppWindow.IsVisible && IsMirrorPageSelected;
         int generation = ++_lyricsLayoutGeneration;
         Rect content = LayoutBounds(MusicContent), lyrics = LayoutBounds(MusicLyrics);
+        var elements = MusicLayoutElements;
+        var previous = elements.Select(LayoutBounds).ToArray();
+        bool wasVisible = MusicLyrics.Visibility == Visibility.Visible;
+        bool sideBySide = MusicPanel.ViewportWidth >= MusicLyricsSideBySideWidth;
         _lyricsOpen = open;
         _lyricsClosing = !open && animate && lyrics.Width > 0;
-        UpdateMusicLayout();
         var lyricsVisual = ElementCompositionPreview.GetElementVisual(MusicLyrics);
-        if (_lyricsClosing)
-        {
-            // Keep the closing lyrics where they were while they fade out.
-            Grid.SetRow(MusicLyrics, 0);
-            Grid.SetColumn(MusicLyrics, 0);
-            MusicLyrics.HorizontalAlignment = HorizontalAlignment.Left;
-            MusicLyrics.Margin = new Thickness(lyrics.X, lyrics.Y, 0, 0);
-            MusicLyrics.Width = lyrics.Width;
-            MusicLyrics.Height = lyrics.Height;
-        }
+        UpdateMusicLayout();
         if (!animate)
         {
-            lyricsVisual.StopAnimation("Opacity");
-            lyricsVisual.Opacity = 1;
+            ResetMusicLayoutAnimation();
             if (!open) MusicLyrics.SetLyrics(null);
             UpdateLyricsPosition();
             return;
         }
         MusicLayout.UpdateLayout();
-        AnimateMusicContent(content, LayoutBounds(MusicContent));
+        UpdateMusicLyricsBounds();
+        MusicLayout.UpdateLayout();
         _lyricsLayoutEase ??= lyricsVisual.Compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.9f), new Vector2(0.1f, 1f));
         _lyricsHideEase ??= lyricsVisual.Compositor.CreateCubicBezierEasingFunction(new Vector2(0.4f, 0f), new Vector2(1f, 1f));
-        bool sideBySide = Grid.GetColumn(MusicLyrics) == 1 || lyrics.X > content.X + content.Width - 1;
-        var offset = sideBySide ? new Vector3(56, 0, 0) : new Vector3(0, 32, 0);
         ElementCompositionPreview.SetIsTranslationEnabled(MusicLyrics, true);
         var compositor = lyricsVisual.Compositor;
+        var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
+        for (int index = 0; index < elements.Length; ++index)
+            AnimateMusicElement(elements[index], previous[index], LayoutBounds(elements[index]));
+        Rect targetContent = LayoutBounds(MusicContent), targetLyrics = LayoutBounds(MusicLyrics);
+        // Opening follows the player edge in either layout; closing holds its position.
+        var offset = sideBySide
+            ? new Vector3((float)(targetContent.Right - content.Right), 0, 0)
+            : new Vector3(0, (float)(targetContent.Bottom - content.Bottom), 0);
         var fade = compositor.CreateScalarKeyFrameAnimation();
         var slide = compositor.CreateVector3KeyFrameAnimation();
+        fade.Duration = slide.Duration = LyricsLayoutDuration;
         if (open)
         {
-            fade.InsertKeyFrame(0, 0);
+            if (wasVisible)
+            {
+                fade.InsertExpressionKeyFrame(0, "this.StartingValue");
+                slide.SetVector3Parameter("shift", new Vector3((float)(lyrics.X - targetLyrics.X), (float)(lyrics.Y - targetLyrics.Y), 0));
+                slide.InsertExpressionKeyFrame(0, "this.StartingValue + shift");
+            }
+            else
+            {
+                fade.InsertKeyFrame(0, 0);
+                slide.InsertKeyFrame(0, -offset);
+            }
             fade.InsertKeyFrame(1, 1, _lyricsLayoutEase);
-            slide.InsertKeyFrame(0, offset);
             slide.InsertKeyFrame(1, Vector3.Zero, _lyricsLayoutEase);
-            fade.Duration = slide.Duration = LyricsLayoutDuration;
-            fade.DelayTime = slide.DelayTime = TimeSpan.FromMilliseconds(80);
-            fade.DelayBehavior = slide.DelayBehavior = AnimationDelayBehavior.SetInitialValueBeforeDelay;
-            lyricsVisual.StartAnimation("Opacity", fade);
-            lyricsVisual.StartAnimation("Translation", slide);
-            UpdateLyricsPosition();
-            return;
         }
-        fade.InsertKeyFrame(1, 0, _lyricsHideEase);
-        slide.InsertKeyFrame(1, offset * 0.6f, _lyricsHideEase);
-        fade.Duration = slide.Duration = LyricsHideDuration;
-        var batch = compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
+        else
+        {
+            fade.Duration = LyricsHideDuration;
+            fade.InsertExpressionKeyFrame(0, "this.StartingValue");
+            fade.InsertKeyFrame(1, 0, _lyricsHideEase);
+            slide.InsertExpressionKeyFrame(0, "this.StartingValue");
+            slide.InsertExpressionKeyFrame(1, "this.StartingValue");
+        }
         lyricsVisual.StartAnimation("Opacity", fade);
         lyricsVisual.StartAnimation("Translation", slide);
         batch.End();
@@ -227,43 +248,104 @@ public sealed partial class MainWindow
             if (generation != _lyricsLayoutGeneration || _closed) return;
             try
             {
-                _lyricsClosing = false;
-                lyricsVisual.Opacity = 1;
-                lyricsVisual.Properties.InsertVector3("Translation", Vector3.Zero);
-                MusicLyrics.SetLyrics(null);
-                UpdateMusicLayout();
+                if (!open)
+                {
+                    MusicLyrics.Visibility = Visibility.Collapsed;
+                    _lyricsClosing = false;
+                    MusicLyrics.SetLyrics(null);
+                    UpdateMusicLayout();
+                }
+                ResetMusicLayoutAnimation();
             }
             catch (Exception error) { DisableLyrics(error); }
         };
+        UpdateLyricsPosition();
     }
 
-    /// <summary>Animates the player from its previous layout box into the current one.</summary>
-    private void AnimateMusicContent(Rect before, Rect after)
+    private FrameworkElement[] MusicLayoutElements => _musicLayoutElements ??=
+        [MusicArtworkFrame, MusicDiagnosticsPanel, MusicTitle, MusicArtist, MusicAlbum,
+            MusicProgress, MusicSeekSlider, MusicElapsed, MusicDuration, MusicPreviousButton,
+            MusicPlayPauseButton, MusicNextButton, MusicFullScreenButton, MusicDisconnectButton,
+            MusicLyricsButton, MusicControlHint];
+
+    private void MusicLyricsSlotLayoutUpdated(object? sender, object args) => UpdateMusicLyricsBounds();
+
+    private void UpdateMusicLyricsBounds()
+    {
+        if (_closed || _closing || !_lyricsOpen) return;
+        // Keep a stable visual parent: reparenting interrupts the lyric surfaces.
+        // The slot reserves space only while open; the Canvas never measures lyrics.
+        Rect bounds = LayoutBounds(MusicLyricsSlot);
+        if (bounds.Width <= 0) return;
+        if (MusicLyrics.Width != bounds.Width) MusicLyrics.Width = bounds.Width;
+        if (MusicLyrics.Height != bounds.Height) MusicLyrics.Height = bounds.Height;
+        if (Canvas.GetLeft(MusicLyrics) != bounds.X) Canvas.SetLeft(MusicLyrics, bounds.X);
+        if (Canvas.GetTop(MusicLyrics) != bounds.Y) Canvas.SetTop(MusicLyrics, bounds.Y);
+    }
+
+    private void ResetMusicLayoutAnimation()
+    {
+        foreach (var element in MusicLayoutElements.Append(MusicLyrics))
+        {
+            ElementCompositionPreview.SetIsTranslationEnabled(element, true);
+            var visual = ElementCompositionPreview.GetElementVisual(element);
+            visual.StopAnimation("Translation");
+            visual.StopAnimation("Scale");
+            visual.Properties.InsertVector3("Translation", Vector3.Zero);
+            visual.Scale = Vector3.One;
+        }
+        var lyricsVisual = ElementCompositionPreview.GetElementVisual(MusicLyrics);
+        lyricsVisual.StopAnimation("Opacity");
+        lyricsVisual.Opacity = 1;
+    }
+
+    /// <summary>Preserves the displayed position and artwork size across a layout change.</summary>
+    private void AnimateMusicElement(FrameworkElement element, Rect before, Rect after)
     {
         if (before.Width <= 0 || after.Width <= 0) return;
-        ElementCompositionPreview.SetIsTranslationEnabled(MusicContent, true);
-        var visual = ElementCompositionPreview.GetElementVisual(MusicContent);
+        ElementCompositionPreview.SetIsTranslationEnabled(element, true);
+        var visual = ElementCompositionPreview.GetElementVisual(element);
         var compositor = visual.Compositor;
-        _lyricsLayoutEase ??= compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.9f), new Vector2(0.1f, 1f));
-        float scale = (float)Math.Clamp(before.Width / after.Width, 0.5, 2);
-        visual.CenterPoint = new Vector3((float)after.Width / 2, (float)after.Height / 2, 0);
+        bool resizeElement = ReferenceEquals(element, MusicArtworkFrame) || ReferenceEquals(element, MusicProgress) ||
+            ReferenceEquals(element, MusicSeekSlider);
+        bool centeredText = element is TextBlock { TextAlignment: TextAlignment.Center };
+        visual.CenterPoint = Vector3.Zero;
         var move = compositor.CreateVector3KeyFrameAnimation();
-        move.InsertKeyFrame(0, new Vector3((float)(before.X + before.Width / 2 - after.X - after.Width / 2),
-            (float)(before.Y + before.Height / 2 - after.Y - after.Height / 2), 0));
+        move.SetVector3Parameter("shift", new Vector3((float)(before.X - after.X + (centeredText ? (before.Width - after.Width) / 2 : 0)),
+            (float)(before.Y - after.Y), 0));
+        // StartingValue is sampled by the compositor, including an interrupted transition.
+        move.InsertExpressionKeyFrame(0, "this.StartingValue + shift");
         move.InsertKeyFrame(1, Vector3.Zero, _lyricsLayoutEase);
         move.Duration = LyricsLayoutDuration;
-        var resize = compositor.CreateVector3KeyFrameAnimation();
-        resize.InsertKeyFrame(0, new Vector3(scale, scale, 1));
-        resize.InsertKeyFrame(1, Vector3.One, _lyricsLayoutEase);
-        resize.Duration = LyricsLayoutDuration;
         visual.StartAnimation("Translation", move);
-        visual.StartAnimation("Scale", resize);
+        if (resizeElement && before.Height > 0 && after.Height > 0)
+        {
+            var resize = compositor.CreateVector3KeyFrameAnimation();
+            resize.SetVector3Parameter("ratio", new Vector3((float)(before.Width / after.Width), (float)(before.Height / after.Height), 1));
+            resize.InsertExpressionKeyFrame(0, "this.StartingValue * ratio");
+            resize.InsertKeyFrame(1, Vector3.One, _lyricsLayoutEase);
+            resize.Duration = LyricsLayoutDuration;
+            visual.StartAnimation("Scale", resize);
+        }
     }
 
-    private Rect LayoutBounds(FrameworkElement element) =>
-        element.Visibility == Visibility.Visible && element.ActualWidth > 0
-            ? element.TransformToVisual(MusicLayout).TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight))
-            : default;
+    private Rect LayoutBounds(FrameworkElement element)
+    {
+        // TransformToVisual includes an in-flight Composition transform. Use only
+        // arranged offsets here; StartingValue already preserves that transform.
+        Vector3 offset = Vector3.Zero;
+        for (DependencyObject? parent = element; parent is not null && !ReferenceEquals(parent, MusicLayout); parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is not UIElement child) continue;
+            if (child.Visibility == Visibility.Collapsed) return default;
+            offset += child.ActualOffset;
+        }
+        return element.ActualWidth > 0
+            ? new Rect(offset.X, offset.Y,
+                element is TextBlock { TextAlignment: TextAlignment.Center }
+                    ? Microsoft.UI.Xaml.Controls.Primitives.LayoutInformation.GetLayoutSlot(element).Width : element.ActualWidth,
+                element.ActualHeight) : default;
+    }
 
     /// <summary>Highlights the current line and wakes exactly at the next line change while playing.</summary>
     private void UpdateLyricsPosition()
@@ -310,6 +392,7 @@ public sealed partial class MainWindow
         _lyricsTimer?.Stop();
         CancelLyricsLookup();
         ++_lyricsGeneration;
+        ++_lyricsLayoutGeneration;
         _lyricsClient?.Dispose();
         _lyricsClient = null;
     }

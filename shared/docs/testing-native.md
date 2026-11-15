@@ -180,3 +180,21 @@ python tests/native/media_metadata_protocol_test.py
 `tests/native/direct_video_protocol_test.py` 使用真实接收器 DLL 和隔离 HTTP MP4/HLS，覆盖超过镜像心跳时限的暂停保持、辅助 RTSP FLUSH/TEARDOWN/断开、电脑端暂停/定位/恢复、定位边界和旧会话拒绝。`media_audio_bounds` 将直接视频停止替身计数，检查辅助音频 SETUP 不触发停止；加 `--network` 使用随机回环 DACP 服务验证毫秒定位、实际位置确认、忽略命令回退及旧曲目拒绝。音频解码夹具和配对夹具维持各自的媒体替身，不引入发行测试入口。
 
 这些场景验证接收端确定的生命周期问题，不能替代真实播放器息屏、媒体源后台供给和音乐 App 定位能力的验收。
+
+## 网络停发与停止压力
+
+`tests/media/receiver_stop_stress.py` 使用真实接收 DLL、隔离配对状态与本地合成媒体，覆盖 HTTP 头前停发、MP4 正文停发、HLS 实际呈现后分片停发及服务端截断响应，分别执行媒体 `/stop` 和接收器停止。默认每种情形运行四轮，检查重复停止、原配对重连、停止延迟和进程资源趋势。停发连接在停止前须仍然活跃，并在停止后、服务器 gate 释放前逐个观测关闭。
+
+```powershell
+python tests/media/receiver_stop_stress.py --runtime .runtime/receiver `
+  --report-directory .runtime/qa-media/receiver-stop `
+  --pump-owner-messages --window-census --settle-seconds 0.25
+foreach ($case in @('playing-http', 'playing-receiver')) {
+  python tests/media/receiver_stop_stress.py --runtime .runtime/receiver `
+    --report-directory ".runtime/qa-media/receiver-stop-long-$case" `
+    --case $case --cycles 50 --timeout 600 `
+    --pump-owner-messages --window-census --settle-seconds 0.25
+}
+```
+
+须与所有应用、真实 DLL 和接收端口测试串行。报告只能写入专用 `.runtime/` 子目录，父进程硬期限只回收本次创建的子进程。窗口消息泵用于接近生产 WinUI 等待原生停止时仍持续调度的行为；窗口类计数及停止前后、重连后、关闭后的资源采样用于区分未处理消息、有限缓存和持续增长。短期预算通过不等同于证明零泄漏，静音合成媒体也不替代物理音画同步及驱动故障验收。

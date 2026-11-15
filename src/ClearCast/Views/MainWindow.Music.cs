@@ -10,6 +10,7 @@ using Microsoft.UI.Windowing;
 using Windows.Graphics.Imaging;
 using Windows.UI.ViewManagement;
 using Windows.Storage.Streams;
+using Windows.Foundation;
 
 namespace ClearCast;
 
@@ -28,6 +29,7 @@ public sealed partial class MainWindow
     private bool _musicThemeRefreshPending;
     private int _mediaCommandGeneration;
     private byte[]? _musicArtworkBytes;
+    private bool _musicLayoutUpdating;
 #if CLEARCAST_UI_TESTS
     private long _uiMusicActivityReads;
 #endif
@@ -39,32 +41,43 @@ public sealed partial class MainWindow
     {
         double width = MusicPanel.ViewportWidth;
         double height = MusicPanel.ViewportHeight;
-        if (width <= 0 || height <= 0)
+        if (width <= 0 || height <= 0 || _musicLayoutUpdating)
             return;
-        // Lyrics sit beside the player when there is room, otherwise below it.
-        bool lyrics = LyricsShown, sideBySide = lyrics && width >= MusicLyricsSideBySideWidth;
-        double stackedLyrics = lyrics && !sideBySide ? Math.Clamp(height * 0.4, 200, 320) : 0;
-        double columnWidth = sideBySide ? width / 2 : width;
-        MusicLyrics.Visibility = lyrics || _lyricsClosing ? Visibility.Visible : Visibility.Collapsed;
-        MusicLyricsColumn.Width = sideBySide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-        MusicLyricsRow.Height = new GridLength(stackedLyrics);
-        if (!_lyricsClosing)
+        _musicLayoutUpdating = true;
+        try
         {
-            // A closing panel keeps its previous box until its fade-out completes.
-            Grid.SetColumn(MusicLyrics, sideBySide ? 1 : 0);
-            Grid.SetRow(MusicLyrics, sideBySide ? 0 : 1);
-            MusicLyrics.HorizontalAlignment = HorizontalAlignment.Stretch;
-            MusicLyrics.Width = double.NaN;
-            MusicLyrics.Margin = sideBySide ? new Thickness(16, 48, 32, 48) : new Thickness(20, 0, 20, 24);
-            MusicLyrics.Height = Math.Max(0, (sideBySide ? height : stackedLyrics) - MusicLyrics.Margin.Top - MusicLyrics.Margin.Bottom);
+            // Lyrics sit beside the player when there is room, otherwise below it.
+            bool lyrics = LyricsShown, sideBySide = lyrics && width >= MusicLyricsSideBySideWidth;
+            double stackedLyrics = lyrics && !sideBySide ? Math.Clamp(height * 0.4, 200, 320) : 0;
+            double columnWidth = sideBySide ? width / 2 : width;
+            MusicLyrics.Visibility = lyrics || _lyricsClosing ? Visibility.Visible : Visibility.Collapsed;
+            MusicLyrics.IsHitTestVisible = lyrics;
+            MusicLyricsSlot.Visibility = lyrics ? Visibility.Visible : Visibility.Collapsed;
+            MusicLyricsColumn.Width = sideBySide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            MusicLyricsRow.Height = new GridLength(stackedLyrics);
+            Grid.SetColumn(MusicLyricsSlot, sideBySide ? 1 : 0);
+            Grid.SetRow(MusicLyricsSlot, sideBySide ? 0 : 1);
+            MusicLyricsSlot.Margin = sideBySide ? new Thickness(16, 48, 32, 48) : new Thickness(20, 0, 20, 24);
+            MusicLyricsSlot.Height = Math.Max(0, (sideBySide ? height : stackedLyrics) - MusicLyricsSlot.Margin.Top - MusicLyricsSlot.Margin.Bottom);
+            MusicLayout.MinHeight = height;
+            MusicContent.Width = Math.Max(0, Math.Min(560, columnWidth - 40));
+            // Measure at the target width. Subtracting the old artwork from ActualHeight
+            // feeds the previous layout back into sizing and causes a second size jump.
+            double otherHeight = MusicContent.Margin.Top + MusicContent.Margin.Bottom;
+            int visibleChildren = 0;
+            foreach (FrameworkElement child in MusicContent.Children)
+            {
+                if (child.Visibility != Visibility.Visible) continue;
+                ++visibleChildren;
+                if (ReferenceEquals(child, MusicArtworkFrame)) continue;
+                child.Measure(new Size(MusicContent.Width, double.PositiveInfinity));
+                otherHeight += child.DesiredSize.Height;
+            }
+            otherHeight += Math.Max(0, visibleChildren - 1) * MusicContent.Spacing;
+            double artworkSize = Math.Max(144, Math.Min(480, Math.Min(columnWidth - 64, height - stackedLyrics - Math.Max(240, otherHeight))));
+            MusicArtworkFrame.Width = MusicArtworkFrame.Height = artworkSize;
         }
-        MusicLayout.MinHeight = height;
-        MusicContent.Width = Math.Max(0, Math.Min(560, columnWidth - 40));
-        double otherHeight = MusicContent.ActualHeight > MusicArtworkFrame.ActualHeight && MusicArtworkFrame.ActualHeight > 0
-            ? MusicContent.ActualHeight - MusicArtworkFrame.ActualHeight + MusicContent.Margin.Top + MusicContent.Margin.Bottom
-            : 320;
-        double artworkSize = Math.Max(144, Math.Min(480, Math.Min(columnWidth - 64, height - stackedLyrics - Math.Max(240, otherHeight))));
-        MusicArtworkFrame.Width = MusicArtworkFrame.Height = artworkSize;
+        finally { _musicLayoutUpdating = false; }
     }
 
     private void UpdateMusicBackgroundState()
@@ -203,7 +216,8 @@ public sealed partial class MainWindow
         }
         if (changed)
             RefreshMusicText();
-        else if (lyricsDurationChanged)
+        else if (lyricsDurationChanged || _stopTask is null && _hasMusic && !_lyricsFailed &&
+            _lyricsTrack is null && state.Title.Length > 0)
             RefreshLyrics();
 
         ulong revision = _hasMusic && state.ArtworkBytes > 0 ? state.ArtworkRevision : 0;
@@ -296,7 +310,15 @@ public sealed partial class MainWindow
         QueueMusicArtworkAsync(() => receiver.ReadArtwork(revision, length), generation, receiver);
 
     private bool IsCurrentMusicArtwork(int generation, AirPlayReceiver? receiver) => generation == _artworkGeneration &&
-        !_closed && !_closing && _hasMusic && ReferenceEquals(receiver, _receiver);
+        !_closed && !_closing && _stopTask is null && _hasMusic && ReferenceEquals(receiver, _receiver);
+
+    private void CancelMusicArtworkWork()
+    {
+        ++_artworkGeneration;
+        _pendingMusicArtwork = null;
+        // A failed native stop may resume the same metadata revision.
+        _artworkRevision = 0;
+    }
 
     private async Task QueueMusicArtworkAsync(Func<byte[]?> read, int generation, AirPlayReceiver? receiver)
     {

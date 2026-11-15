@@ -15,16 +15,53 @@
                 <ResourceDictionary.ThemeDictionaries>
                     <ResourceDictionary x:Key="Default">
                         <Color x:Key="WindowBackdropTintColor">#BF202020</Color>
+                        <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="{ThemeResource CardBackgroundFillColorDefault}" />
+                        <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="{ThemeResource CardBackgroundFillColorDefault}" />
+                        <StaticResource x:Key="PlayerControlsBackgroundBrush" ResourceKey="AcrylicInAppFillColorDefaultBrush" />
+                        <SolidColorBrush x:Key="PlaybackSeekTrackBrush" Color="#E8E8E8" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBrush" Color="#F8FBFE" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBorderBrush" Color="White" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbShadowBrush" Color="#18000000" />
                     </ResourceDictionary>
                     <ResourceDictionary x:Key="Light">
                         <Color x:Key="WindowBackdropTintColor">Transparent</Color>
+                        <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#80FFFFFF" />
+                        <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#80FFFFFF" />
+                        <AcrylicBrush x:Key="PlayerControlsBackgroundBrush" TintColor="White" TintOpacity="0.65"
+                            TintLuminosityOpacity="0.85" FallbackColor="White" />
+                        <SolidColorBrush x:Key="PlaybackSeekTrackBrush" Color="#E8E8E8" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBrush" Color="#F8FBFE" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBorderBrush" Color="White" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbShadowBrush" Color="#18000000" />
                     </ResourceDictionary>
                     <ResourceDictionary x:Key="HighContrast">
                         <Color x:Key="WindowBackdropTintColor">Transparent</Color>
+                        <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                        <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="{ThemeResource SystemColorButtonFaceColor}" />
+                        <SolidColorBrush x:Key="PlayerControlsBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                        <SolidColorBrush x:Key="PlaybackSeekTrackBrush" Color="{ThemeResource SystemColorGrayTextColor}" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBrush" Color="{ThemeResource SystemColorButtonFaceColor}" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}" />
+                        <SolidColorBrush x:Key="PlaybackSeekThumbShadowBrush" Color="Transparent" />
                     </ResourceDictionary>
                 </ResourceDictionary.ThemeDictionaries>
                 <x:Double x:Key="ActionControlMinWidth">130</x:Double>
                 <x:Double x:Key="ActionControlMinHeight">32</x:Double>
+                <x:Double x:Key="ActionIconSize">20</x:Double>
+                <x:Double x:Key="FullScreenIconSize">18</x:Double>
+                <x:Double x:Key="PlayerActionSize">40</x:Double>
+                <x:Double x:Key="PlayerActionSpacing">12</x:Double>
+                <Thickness x:Key="FullScreenIconInset">1</Thickness>
+                <Style x:Key="ActionIconViewboxStyle" TargetType="Viewbox">
+                    <Setter Property="Width" Value="{StaticResource ActionIconSize}" />
+                    <Setter Property="Height" Value="{StaticResource ActionIconSize}" />
+                    <Setter Property="HorizontalAlignment" Value="Center" />
+                    <Setter Property="VerticalAlignment" Value="Center" />
+                </Style>
+                <Style x:Key="FullScreenIconViewboxStyle" TargetType="Viewbox" BasedOn="{StaticResource ActionIconViewboxStyle}">
+                    <Setter Property="Width" Value="{StaticResource FullScreenIconSize}" />
+                    <Setter Property="Height" Value="{StaticResource FullScreenIconSize}" />
+                </Style>
                 <Style x:Key="TextActionButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
                     <Setter Property="MinWidth" Value="{StaticResource ActionControlMinWidth}" />
                     <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
@@ -34,15 +71,20 @@
                     <Setter Property="MinHeight" Value="{StaticResource ActionControlMinHeight}" />
                 </Style>
                 <Style x:Key="PlayerActionButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
-                    <Setter Property="Width" Value="36" />
-                    <Setter Property="Height" Value="36" />
+                    <Setter Property="Width" Value="{StaticResource PlayerActionSize}" />
+                    <Setter Property="Height" Value="{StaticResource PlayerActionSize}" />
                     <Setter Property="Padding" Value="0" />
+                    <Setter Property="VerticalAlignment" Value="Center" />
+                </Style>
+                <Style x:Key="PlayerTextButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+                    <Setter Property="MinHeight" Value="{StaticResource PlayerActionSize}" />
+                    <Setter Property="VerticalAlignment" Value="Center" />
                 </Style>
                 <Style x:Key="PlaybackSeekBarStyle" TargetType="local:PlaybackSeekBar">
                     <Setter Property="UseSystemFocusVisuals" Value="True" />
                     <Setter Property="SmallChange" Value="1" />
                     <Setter Property="LargeChange" Value="10" />
-                    <Setter Property="Background" Value="{ThemeResource SliderTrackFill}" />
+                    <Setter Property="Background" Value="{ThemeResource PlaybackSeekTrackBrush}" />
                     <Setter Property="Foreground" Value="{ThemeResource SliderTrackValueFill}" />
                     <Setter Property="Template">
                         <Setter.Value>
@@ -55,21 +97,27 @@
                                             <VisualState x:Name="Pressed" />
                                             <VisualState x:Name="Disabled">
                                                 <Storyboard>
-                                                    <DoubleAnimation Storyboard.TargetName="Track" Storyboard.TargetProperty="Opacity" To="0.4" Duration="0" />
+                                                    <DoubleAnimation Storyboard.TargetName="Thumb" Storyboard.TargetProperty="Opacity" To="0" Duration="0" />
                                                 </Storyboard>
                                             </VisualState>
                                         </VisualStateGroup>
                                     </VisualStateManager.VisualStateGroups>
-                                    <Rectangle Height="4" Margin="10,0"
-                                        Fill="{TemplateBinding Background}" RadiusX="2" RadiusY="2" VerticalAlignment="Center" />
-                                    <Rectangle x:Name="ProgressFill" Width="0" Height="4" Fill="{TemplateBinding Foreground}"
-                                        RadiusX="2" RadiusY="2" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False">
-                                        <Rectangle.RenderTransform><TranslateTransform X="10" /></Rectangle.RenderTransform>
+                                    <Rectangle Height="6" Margin="14,0"
+                                        Fill="{TemplateBinding Background}" RadiusX="3" RadiusY="3" VerticalAlignment="Center" />
+                                    <Rectangle x:Name="ProgressFill" Width="0" Height="6" Fill="{TemplateBinding Foreground}"
+                                        RadiusX="3" RadiusY="3" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False">
+                                        <Rectangle.RenderTransform><TranslateTransform X="14" /></Rectangle.RenderTransform>
                                     </Rectangle>
-                                    <Border x:Name="Thumb" Width="20" Height="20" VerticalAlignment="Center" HorizontalAlignment="Left"
-                                        Background="{TemplateBinding Foreground}" CornerRadius="10" IsHitTestVisible="False"
-                                        BorderBrush="{ThemeResource SliderThumbBorderBrush}" BorderThickness="1">
+                                    <Border x:Name="Thumb" Width="28" Height="24" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False">
                                         <Border.RenderTransform><TranslateTransform /></Border.RenderTransform>
+                                        <Grid>
+                                            <Border Margin="-2,0,-2,-3" CornerRadius="14" Opacity="0.4"
+                                                Background="{ThemeResource PlaybackSeekThumbShadowBrush}" />
+                                            <Border Margin="-1,1,-1,-2" CornerRadius="13" Opacity="0.6"
+                                                Background="{ThemeResource PlaybackSeekThumbShadowBrush}" />
+                                            <Border CornerRadius="12" Background="{ThemeResource PlaybackSeekThumbBrush}"
+                                                BorderBrush="{ThemeResource PlaybackSeekThumbBorderBrush}" BorderThickness="1" />
+                                        </Grid>
                                     </Border>
                                 </Grid>
                             </ControlTemplate>
@@ -178,7 +226,7 @@
                             VerticalAlignment="Center" Style="{StaticResource SubtleButtonStyle}"
                             AutomationProperties.Name="{x:Bind Texts.DismissPairingCode, Mode=OneWay}"
                             ToolTipService.ToolTip="{x:Bind Texts.DismissPairingCode, Mode=OneWay}" Click="PairingCloseClicked">
-                            <Viewbox Width="16" Height="16">
+                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
                                 <SymbolIcon Symbol="Cancel" />
                             </Viewbox>
                         </Button>
@@ -294,7 +342,7 @@
                                                         </ResourceDictionary.ThemeDictionaries>
                                                     </ResourceDictionary>
                                                 </Button.Resources>
-                                                <Viewbox Width="{StaticResource InfoBarCloseButtonGlyphSize}" Height="{StaticResource InfoBarCloseButtonGlyphSize}">
+                                                <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
                                                     <SymbolIcon Symbol="{StaticResource InfoBarCloseButtonSymbol}" />
                                                 </Viewbox>
                                             </Button>
@@ -360,7 +408,7 @@
                                     <RowDefinition Height="*" />
                                     <RowDefinition x:Name="MusicLyricsRow" Height="0" />
                                 </Grid.RowDefinitions>
-                                <StackPanel x:Name="MusicContent" MaxWidth="560" Margin="20,24" Spacing="12"
+                                <StackPanel x:Name="MusicContent" Canvas.ZIndex="1" MaxWidth="560" Margin="20,24" Spacing="12"
                                     HorizontalAlignment="Center" VerticalAlignment="Center" SizeChanged="MusicContentSizeChanged">
                                     <Border x:Name="MusicDiagnosticsPanel" Visibility="Collapsed" Padding="8,6" CornerRadius="6"
                                         Background="#B3202020" HorizontalAlignment="Center" IsHitTestVisible="False">
@@ -388,8 +436,14 @@
                                             Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
                                     <StackPanel Spacing="6">
-                                        <ProgressBar x:Name="MusicProgress" Minimum="0" Maximum="1" Value="0"
-                                            AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}" />
+                                        <local:PlaybackProgressBar x:Name="MusicProgress" Minimum="0" Maximum="1" Value="0"
+                                            Height="32" MinHeight="6" Margin="14,0" CornerRadius="3"
+                                            Background="{ThemeResource PlaybackSeekTrackBrush}" Foreground="{ThemeResource SliderTrackValueFill}"
+                                            AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}">
+                                            <local:PlaybackProgressBar.Resources>
+                                                <x:Double x:Key="ProgressBarTrackHeight">6</x:Double>
+                                            </local:PlaybackProgressBar.Resources>
+                                        </local:PlaybackProgressBar>
                                         <local:PlaybackSeekBar x:Name="MusicSeekSlider" Minimum="0" Maximum="1000" Value="0" Visibility="Collapsed"
                                             Style="{StaticResource PlaybackSeekBarStyle}"
                                             AutomationProperties.Name="{x:Bind Texts.MusicProgress, Mode=OneWay}" />
@@ -402,34 +456,36 @@
                                     </StackPanel>
                                     <!-- Full screen and lyrics sit beside the transport controls, or beside disconnect without them. -->
                                     <Grid x:Name="MusicActionRow" ColumnDefinitions="*,Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="8">
-                                    <StackPanel x:Name="MusicTransportControls" Grid.Column="1" Orientation="Horizontal" Spacing="16" HorizontalAlignment="Center">
-                                        <Button x:Name="MusicPreviousButton" Width="44" Height="44" Padding="0" Click="MusicPreviousClicked"
-                                            Style="{StaticResource SubtleButtonStyle}" VerticalAlignment="Center"
+                                    <StackPanel x:Name="MusicTransportControls" Grid.Column="1" Orientation="Horizontal" Spacing="{StaticResource PlayerActionSpacing}" HorizontalAlignment="Center">
+                                        <Button x:Name="MusicPreviousButton" Click="MusicPreviousClicked"
+                                            Style="{StaticResource PlayerActionButtonStyle}"
                                             AutomationProperties.Name="{x:Bind Texts.MusicPrevious, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.MusicPrevious, Mode=OneWay}">
-                                            <SymbolIcon Symbol="Previous" />
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}"><SymbolIcon Symbol="Previous" /></Viewbox>
                                         </Button>
                                         <Button x:Name="MusicPlayPauseButton" Width="52" Height="52" Padding="0" Click="MusicPlayPauseClicked"
                                             Style="{StaticResource SubtleButtonStyle}" VerticalAlignment="Center">
-                                            <SymbolIcon x:Name="MusicPlayPauseIcon" Symbol="Pause" />
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}"><SymbolIcon x:Name="MusicPlayPauseIcon" Symbol="Pause" /></Viewbox>
                                         </Button>
-                                        <Button x:Name="MusicNextButton" Width="44" Height="44" Padding="0" Click="MusicNextClicked"
-                                            Style="{StaticResource SubtleButtonStyle}" VerticalAlignment="Center"
+                                        <Button x:Name="MusicNextButton" Click="MusicNextClicked"
+                                            Style="{StaticResource PlayerActionButtonStyle}"
                                             AutomationProperties.Name="{x:Bind Texts.MusicNext, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.MusicNext, Mode=OneWay}">
-                                            <SymbolIcon Symbol="Next" />
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}"><SymbolIcon Symbol="Next" /></Viewbox>
                                         </Button>
                                     </StackPanel>
                                     <TextBlock x:Name="MusicControlHint" Grid.Row="1" Grid.ColumnSpan="3" TextAlignment="Center" TextWrapping="Wrap"
                                         Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    <Button x:Name="MusicFullScreenButton" Width="40" Height="40" Padding="0" Click="PlayerFullScreenClicked"
-                                        Style="{StaticResource SubtleButtonStyle}" HorizontalAlignment="Left" VerticalAlignment="Center">
-                                        <SymbolIcon x:Name="MusicFullScreenIcon" Symbol="FullScreen" />
+                                    <Button x:Name="MusicFullScreenButton" Click="PlayerFullScreenClicked"
+                                        Style="{StaticResource PlayerActionButtonStyle}" HorizontalAlignment="Left">
+                                        <Viewbox Style="{StaticResource FullScreenIconViewboxStyle}">
+                                            <Border Padding="{StaticResource FullScreenIconInset}"><SymbolIcon x:Name="MusicFullScreenIcon" Symbol="FullScreen" /></Border>
+                                        </Viewbox>
                                     </Button>
                                     <Button x:Name="MusicDisconnectButton" Grid.Row="2" Grid.Column="1" Content="{x:Bind Texts.Disconnect, Mode=OneWay}"
-                                        Style="{StaticResource SubtleButtonStyle}" HorizontalAlignment="Center" VerticalAlignment="Center" Click="DisconnectClicked" />
+                                        Style="{StaticResource PlayerTextButtonStyle}" HorizontalAlignment="Center" Click="DisconnectClicked" />
                                     <!-- Subtle checked colors match the other icon actions; high contrast keeps system toggle colors. -->
-                                    <ToggleButton x:Name="MusicLyricsButton" Grid.Column="2" Width="40" Height="40" Padding="0"
+                                    <ToggleButton x:Name="MusicLyricsButton" Grid.Column="2" Width="{StaticResource PlayerActionSize}" Height="{StaticResource PlayerActionSize}" Padding="0"
                                         HorizontalAlignment="Right" VerticalAlignment="Center" Click="MusicLyricsClicked">
                                         <ToggleButton.Resources>
                                             <ResourceDictionary>
@@ -484,12 +540,16 @@
                                                 </ResourceDictionary.ThemeDictionaries>
                                             </ResourceDictionary>
                                         </ToggleButton.Resources>
-                                        <FontIcon Glyph="&#xE90B;" FontSize="18" />
+                                        <Viewbox Style="{StaticResource ActionIconViewboxStyle}"><FontIcon Glyph="&#xE90B;" FontSize="{StaticResource ActionIconSize}" /></Viewbox>
                                     </ToggleButton>
                                     </Grid>
                                 </StackPanel>
-                                <local:LyricsView x:Name="MusicLyrics" Visibility="Collapsed" MaxWidth="720"
-                                    HorizontalAlignment="Stretch" VerticalAlignment="Top" />
+                                <Border x:Name="MusicLyricsSlot" Visibility="Collapsed" MaxWidth="720"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Top" IsHitTestVisible="False"
+                                    LayoutUpdated="MusicLyricsSlotLayoutUpdated" />
+                                <Canvas x:Name="MusicLyricsLayer" Grid.ColumnSpan="2" Grid.RowSpan="2">
+                                    <local:LyricsView x:Name="MusicLyrics" Visibility="Collapsed" />
+                                </Canvas>
                                 </Grid>
                             </ScrollViewer>
                             <Border x:Name="VideoDiagnosticsPanel" Visibility="Collapsed" Padding="8,6" CornerRadius="8"
@@ -502,18 +562,18 @@
                                 </ScrollViewer>
                             </Border>
                         </Grid>
-                        <Border x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" Padding="16,8,16,12"
-                            CornerRadius="8" Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}" Visibility="Collapsed"
+                        <Border x:Name="PlayerControls" Grid.Row="2" Margin="0,12,0,0" Padding="12"
+                            CornerRadius="8" Background="{ThemeResource PlayerControlsBackgroundBrush}" Visibility="Collapsed"
                             SizeChanged="PlayerControlsSizeChanged" GotFocus="PlayerControlsGotFocus"
                             PointerEntered="PlayerControlsPointerEntered" PointerExited="PlayerControlsPointerExited">
-                            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
-                                <Border x:Name="PlayerControlsFrost" Grid.RowSpan="3" Margin="-16,-8,-16,-12"
+                            <Grid RowDefinitions="Auto,Auto,Auto">
+                                <Border x:Name="PlayerControlsFrost" Grid.RowSpan="3" Margin="-12"
                                     CornerRadius="8" Visibility="Collapsed" IsHitTestVisible="False">
                                     <Border.Background>
                                         <ImageBrush x:Name="PlayerControlsFrostBrush" Stretch="Fill" />
                                     </Border.Background>
                                 </Border>
-                                <Grid x:Name="VideoTransport" Visibility="Collapsed" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                                <Grid x:Name="VideoTransport" Visibility="Collapsed" Margin="12,0,12,4" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                                     <TextBlock x:Name="VideoElapsedText" FontSize="12" VerticalAlignment="Center" />
                                     <local:PlaybackSeekBar x:Name="VideoSeekSlider" Grid.Column="1" Minimum="0" Maximum="1000" Value="0"
                                         Style="{StaticResource PlaybackSeekBarStyle}"
@@ -521,49 +581,59 @@
                                     <TextBlock x:Name="VideoRemainingText" Grid.Column="2" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Grid Grid.Row="1" ColumnDefinitions="*,Auto,*" ColumnSpacing="12">
-                                    <Button x:Name="PlayerStopButton" Style="{StaticResource SubtleButtonStyle}" Click="DisconnectClicked"
-                                        HorizontalAlignment="Left" VerticalAlignment="Center" MinHeight="36"
+                                    <Button x:Name="PlayerStopButton" Style="{StaticResource PlayerTextButtonStyle}" Click="DisconnectClicked"
+                                        HorizontalAlignment="Left"
                                         Content="{x:Bind Texts.Disconnect, Mode=OneWay}" />
-                                    <StackPanel x:Name="VideoPlaybackActions" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                    <StackPanel x:Name="VideoPlaybackActions" Grid.Column="1" Orientation="Horizontal" Spacing="{StaticResource PlayerActionSpacing}" VerticalAlignment="Center">
                                         <Button x:Name="VideoSkipBackwardButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoSkipBackwardClicked"
                                             AutomationProperties.Name="{x:Bind Texts.SkipBackward10, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.SkipBackward10, Mode=OneWay}">
                                             <!-- Microsoft Fluent System Icons: Skip Back 10 (MIT; see THIRD-PARTY-NOTICES.md). -->
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
                                             <PathIcon Width="24" Height="24" Foreground="{Binding Foreground, ElementName=VideoSkipBackwardButton}"
                                                 Data="F1 M2.74999 2.5C2.33578 2.5 2 2.83579 2 3.25V8.75C2 9.16421 2.33578 9.5 2.74999 9.5H8.25011C8.66432 9.5 9.00011 9.16421 9.00011 8.75C9.00011 8.33579 8.66432 8 8.25011 8H4.34273C5.40077 6.60212 6.77033 5.4648 8.47169 4.93832C10.5381 4.29885 12.7232 4.35354 14.7384 5.10317C16.7673 5.85787 18.6479 7.38847 19.5922 9.11081C19.7914 9.47401 20.2473 9.607 20.6104 9.40785C20.9736 9.20871 21.1066 8.75284 20.9075 8.38964C19.7655 6.30687 17.5773 4.55877 15.2614 3.69728C12.9318 2.83072 10.4069 2.7693 8.02826 3.50536C6.14955 4.08673 4.65345 5.26153 3.49999 6.64949V3.25C3.49999 2.83579 3.1642 2.5 2.74999 2.5ZM8.95266 11.0278C9.27643 11.1186 9.50022 11.4138 9.50022 11.75V20.25C9.50022 20.6642 9.16443 21 8.75022 21C8.33601 21 8.00023 20.6642 8.00023 20.25V13.8328C7.61793 14.202 7.16004 14.5788 6.63611 14.8931C6.28093 15.1062 5.82024 14.9911 5.60713 14.6359C5.39402 14.2807 5.5092 13.82 5.86438 13.6069C6.53976 13.2017 7.10401 12.6421 7.50653 12.1678C7.70552 11.9334 7.85963 11.7261 7.96279 11.5793C8.01427 11.5061 8.05276 11.4483 8.07751 11.4103C8.08989 11.3913 8.0988 11.3772 8.10417 11.3687L8.10951 11.3602L8.11019 11.359C8.28503 11.072 8.629 10.9371 8.95266 11.0278ZM13.1988 12.629C13.7527 11.6377 14.6822 11 16.002 11C17.3218 11 18.2513 11.6377 18.8052 12.629C19.3266 13.5624 19.502 14.7762 19.502 16C19.502 17.2238 19.3266 18.4376 18.8052 19.371C18.2513 20.3623 17.3218 21 16.002 21C14.6822 21 13.7527 20.3623 13.1988 19.371C12.6774 18.4376 12.502 17.2238 12.502 16C12.502 14.7762 12.6774 13.5624 13.1988 12.629ZM14.5083 13.3606C14.1704 13.9654 14.002 14.8766 14.002 16C14.002 17.1234 14.1704 18.0346 14.5083 18.6394C14.8139 19.1863 15.2593 19.5 16.002 19.5C16.7447 19.5 17.1901 19.1863 17.4957 18.6394C17.8336 18.0346 18.002 17.1234 18.002 16C18.002 14.8766 17.8336 13.9654 17.4957 13.3606C17.1901 12.8137 16.7447 12.5 16.002 12.5C15.2593 12.5 14.8139 12.8137 14.5083 13.3606Z" />
+                                            </Viewbox>
                                         </Button>
                                         <Button x:Name="VideoPlayPauseButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoPlayPauseClicked">
-                                            <SymbolIcon x:Name="VideoPlayPauseIcon" Symbol="Pause" />
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}"><SymbolIcon x:Name="VideoPlayPauseIcon" Symbol="Pause" /></Viewbox>
                                         </Button>
                                         <Button x:Name="VideoSkipForwardButton" Style="{StaticResource PlayerActionButtonStyle}" Click="VideoSkipForwardClicked"
                                             AutomationProperties.Name="{x:Bind Texts.SkipForward10, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.SkipForward10, Mode=OneWay}">
                                             <!-- Microsoft Fluent System Icons: Skip Forward 10 (MIT; see THIRD-PARTY-NOTICES.md). -->
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
                                             <PathIcon Width="24" Height="24" Foreground="{Binding Foreground, ElementName=VideoSkipForwardButton}"
                                                 Data="F1 M21.25 2.5C21.6642 2.5 22 2.83579 22 3.25V8.75C22 9.16421 21.6642 9.5 21.25 9.5H15.7499C15.3357 9.5 14.9999 9.16421 14.9999 8.75C14.9999 8.33578 15.3357 8 15.7499 8H19.6573C18.5992 6.60212 17.2297 5.4648 15.5283 4.93832C13.4619 4.29885 11.2768 4.35354 9.26156 5.10317C7.23271 5.85787 5.35214 7.38846 4.40776 9.11081C4.20861 9.47401 3.75274 9.607 3.38955 9.40785C3.02635 9.20871 2.89336 8.75283 3.09251 8.38964C4.23451 6.30687 6.42268 4.55877 8.73861 3.69728C11.0682 2.83072 13.5931 2.7693 15.9717 3.50536C17.8504 4.08673 19.3465 5.26153 20.5 6.64949V3.25C20.5 2.83579 20.8358 2.5 21.25 2.5ZM16.0018 11C14.6821 11 13.7525 11.6377 13.1987 12.629C12.6772 13.5624 12.5019 14.7762 12.5019 16C12.5019 17.2238 12.6772 18.4376 13.1987 19.371C13.7525 20.3623 14.6821 21 16.0018 21C17.3216 21 18.2512 20.3623 18.805 19.371C19.3265 18.4376 19.5018 17.2238 19.5018 16C19.5018 14.7762 19.3265 13.5624 18.805 12.629C18.2512 11.6377 17.3216 11 16.0018 11ZM14.0019 16C14.0019 14.8766 14.1703 13.9654 14.5082 13.3606C14.8137 12.8137 15.2591 12.5 16.0018 12.5C16.7446 12.5 17.19 12.8137 17.4955 13.3606C17.8334 13.9654 18.0018 14.8766 18.0018 16C18.0018 17.1234 17.8334 18.0346 17.4955 18.6394C17.19 19.1863 16.7446 19.5 16.0018 19.5C15.2591 19.5 14.8137 19.1863 14.5082 18.6394C14.1703 18.0346 14.0019 17.1234 14.0019 16ZM9.50005 11.75C9.50005 11.4138 9.27626 11.1186 8.9525 11.0278C8.62884 10.9371 8.28486 11.072 8.11003 11.359L8.10935 11.3602L8.10401 11.3687C8.09864 11.3772 8.08972 11.3913 8.07735 11.4103C8.05259 11.4483 8.0141 11.5061 7.96263 11.5793C7.85946 11.7261 7.70536 11.9334 7.50637 12.1678C7.10384 12.6421 6.5396 13.2016 5.86422 13.6069C5.50903 13.82 5.39386 14.2807 5.60697 14.6359C5.82008 14.9911 6.28077 15.1062 6.63595 14.8931C7.15988 14.5788 7.61776 14.202 8.00007 13.8328V20.25C8.00007 20.6642 8.33585 21 8.75006 21C9.16427 21 9.50005 20.6642 9.50005 20.25V11.75Z" />
+                                            </Viewbox>
                                         </Button>
                                     </StackPanel>
                                     <StackPanel x:Name="PlayerActions" Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" HorizontalAlignment="Right">
                                         <Button x:Name="RotateLeftButton" Style="{StaticResource PlayerActionButtonStyle}"
                                             AutomationProperties.Name="{x:Bind Texts.RotateLeft, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.RotateLeft, Mode=OneWay}" Click="RotateLeftClicked">
-                                            <Path Width="22" Height="22" Stroke="{Binding Foreground, ElementName=RotateLeftButton}"
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
+                                            <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateLeftButton}"
                                                 StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                                 Data="M 4.5,12 A 7.5,7.5 0 1 1 12,19.5 M 2,10.5 L 4.5,13 L 7,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
+                                            </Viewbox>
                                         </Button>
                                         <Button x:Name="RotateRightButton" Style="{StaticResource PlayerActionButtonStyle}"
                                             AutomationProperties.Name="{x:Bind Texts.RotateRight, Mode=OneWay}"
                                             ToolTipService.ToolTip="{x:Bind Texts.RotateRight, Mode=OneWay}" Click="RotateRightClicked">
-                                            <Path Width="22" Height="22" Stroke="{Binding Foreground, ElementName=RotateRightButton}"
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
+                                            <Path Width="24" Height="24" Stroke="{Binding Foreground, ElementName=RotateRightButton}"
                                                 StrokeThickness="1.75" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                                 Data="M 19.5,12 A 7.5,7.5 0 1 0 12,19.5 M 17,10.5 L 19.5,13 L 22,10.5 M 13.6,12 A 1.6,1.6 0 1 1 10.4,12 A 1.6,1.6 0 1 1 13.6,12 Z" />
+                                            </Viewbox>
                                         </Button>
                                         <Button x:Name="FullScreenButton" Style="{StaticResource PlayerActionButtonStyle}" Click="PlayerFullScreenClicked">
-                                            <SymbolIcon x:Name="FullScreenIcon" Symbol="FullScreen" />
+                                            <Viewbox Style="{StaticResource FullScreenIconViewboxStyle}">
+                                                <Border Padding="{StaticResource FullScreenIconInset}"><SymbolIcon x:Name="FullScreenIcon" Symbol="FullScreen" /></Border>
+                                            </Viewbox>
                                         </Button>
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock x:Name="VideoControlHint" Grid.Row="2" Visibility="Collapsed" TextWrapping="Wrap"
+                                <TextBlock x:Name="VideoControlHint" Grid.Row="2" Visibility="Collapsed" Margin="0,4,0,0" TextWrapping="Wrap"
                                     FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             </Grid>
                         </Border>
@@ -591,7 +661,7 @@
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                         <Grid VerticalAlignment="Center" ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
-                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE790;" FontSize="20" />
+                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE790;" FontSize="20" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.ThemeLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -610,7 +680,7 @@
                                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                         <Grid VerticalAlignment="Center" ColumnSpacing="16" ColumnDefinitions="24,*,Auto" RowDefinitions="Auto,Auto">
-                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE774;" FontSize="20" />
+                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE774;" FontSize="20" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.LanguageLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -636,7 +706,7 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7F8;" FontSize="20" />
+                                            <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE7F8;" FontSize="20" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Texts.DecoderLabel, Mode=OneWay}" TextWrapping="Wrap" />
                                                 <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -729,7 +799,7 @@
                                         </local:SettingsExpander.Resources>
                                         <local:SettingsExpander.Header>
                                             <Grid Margin="0,12,12,12" ColumnDefinitions="24,*" ColumnSpacing="16">
-                                                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE72E;" FontSize="20" />
+                                                <FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xE72E;" FontSize="20" VerticalAlignment="Center" />
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                     <TextBlock Text="{x:Bind Texts.SavedPairings, Mode=OneWay}" TextWrapping="Wrap" />
                                                     <TextBlock Style="{StaticResource CaptionTextBlockStyle}"
@@ -806,6 +876,7 @@
                                     <HyperlinkButton Padding="0" HorizontalAlignment="Right"
                                         AutomationProperties.Name="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" NavigateUri="https://github.com/NCFXZ/ClearCast/issues/new">
                                         <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Viewbox Style="{StaticResource ActionIconViewboxStyle}">
                                             <PathIcon Width="16" Height="16" VerticalAlignment="Center"
                                                 Data="M 6.766 11.328
                                                     c -2.063 -.25 -3.516 -1.734 -3.516 -3.656 0 -.781 .281 -1.625 .75 -2.188
@@ -821,6 +892,7 @@
                                                       -.172 -.422 -.36 -.672 -.719 -.719 -.187 -.015 -.25 -.093 -.25 -.187
                                                       0 -.188 .313 -.328 .625 -.328 .453 0 .844 .281 1.25 .86
                                                       .313 .452 .64 .655 1.031 .655 s .641 -.14 1 -.5 c .266 -.265 .47 -.5 .657 -.656 z" />
+                                            </Viewbox>
                                             <TextBlock Text="{x:Bind Texts.AboutReportIssue, Mode=OneWay}" VerticalAlignment="Center" />
                                         </StackPanel>
                                     </HyperlinkButton>

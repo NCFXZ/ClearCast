@@ -98,18 +98,28 @@ internal static class ArtworkFlow
             var raw = new Vector3(pixels[pixel * 3], pixels[pixel * 3 + 1], pixels[pixel * 3 + 2]);
             float sourceBrightness = 0.2126f * raw.X + 0.7152f * raw.Y + 0.0722f * raw.Z;
             var gray = new Vector3(sourceBrightness);
-            raw = Vector3.Clamp(gray + (raw - gray) * (darkTheme ? 1.12f : 1.20f), Vector3.Zero, new Vector3(255));
-            var neutral = darkTheme ? new Vector3(18, 20, 24) : new Vector3(247, 247, 249);
-            var toned = Vector3.Lerp(neutral, raw, darkTheme ? 0.58f : 0.60f);
+            raw = Vector3.Clamp(gray + (raw - gray) * 1.12f, Vector3.Zero, new Vector3(255));
+            var neutral = new Vector3(18, 20, 24);
+            var toned = Vector3.Lerp(neutral, raw, 0.58f);
             float brightness = 0.2126f * toned.X + 0.7152f * toned.Y + 0.0722f * toned.Z;
-            if (!darkTheme && brightness < 175)
+            if (brightness > 98)
             {
-                // Preserve the cover's hue while lifting deep shadows enough
-                // for dark foreground labels; avoid flattening RGB channels.
-                float neutralBrightness = 0.2126f * neutral.X + 0.7152f * neutral.Y + 0.0722f * neutral.Z;
-                toned = Vector3.Lerp(toned, neutral, (175 - brightness) / (neutralBrightness - brightness));
+                toned *= 98 / brightness;
+                brightness = 98;
             }
-            if (darkTheme && brightness > 98) toned *= 98 / brightness;
+            if (!darkTheme)
+            {
+                // Derive light mode from the finished dark texture, preserving its
+                // color and tonal structure while making dark foreground text readable.
+                const float darkFloor = (18 * 0.2126f + 20 * 0.7152f + 24 * 0.0722f) * (1 - 0.58f);
+                float lightBrightness = 165 + MathF.Pow(Math.Clamp((brightness - darkFloor) / (98 - darkFloor), 0, 1), 1.2f) * 82;
+                Vector3 chroma = toned - new Vector3(brightness);
+                float peak = Math.Max(chroma.X, Math.Max(chroma.Y, chroma.Z));
+                float trough = Math.Min(chroma.X, Math.Min(chroma.Y, chroma.Z));
+                float strength = Math.Min(1, Math.Min(peak > 0 ? (255 - lightBrightness) / peak : 1,
+                    trough < 0 ? lightBrightness / -trough : 1));
+                toned = new Vector3(lightBrightness) + chroma * strength;
+            }
             result[pixel * 4] = (byte)Math.Clamp(MathF.Round(toned.Z), 0, 255);
             result[pixel * 4 + 1] = (byte)Math.Clamp(MathF.Round(toned.Y), 0, 255);
             result[pixel * 4 + 2] = (byte)Math.Clamp(MathF.Round(toned.X), 0, 255);

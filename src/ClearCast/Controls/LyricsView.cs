@@ -20,6 +20,7 @@ internal sealed class LyricsView : Grid
     private const float InactiveOpacity = 0.3f;
     private const float PlainOpacity = 0.75f;
     private const float InactiveScale = 0.96f;
+    private const double WheelScrollScale = 0.25;
     private const float BlurPadding = 16;
     private const double AnchorRatio = 0.3;
     private const int MaximumStaggeredLines = 8;
@@ -85,6 +86,7 @@ internal sealed class LyricsView : Grid
         UiBlurAnimationStarts = 0;
     }
     internal void UiScrollBy(double delta) => ScrollBy(delta);
+    internal void UiScrollWheelBy(int delta) => ScrollWheelBy(delta);
     internal int UiVisibleLineCount => _entries.Count(entry => entry?.Sprite.IsVisible == true);
     internal double UiManualOffset => _manualBrowsing ? _manualTranslation - ScrollRange().Base : 0;
     internal bool UiManualBrowsing => _manualBrowsing;
@@ -165,7 +167,9 @@ internal sealed class LyricsView : Grid
         _lines.SizeChanged += (_, _) => { _geometryDirty = true; Relayout(false); };
         _viewport.PointerWheelChanged += (_, args) =>
         {
-            ScrollBy(args.GetCurrentPoint(_viewport).Properties.MouseWheelDelta * 0.8);
+            var properties = args.GetCurrentPoint(_viewport).Properties;
+            if (properties.IsHorizontalMouseWheel) return;
+            ScrollWheelBy(properties.MouseWheelDelta);
             args.Handled = true;
         };
         _viewport.ManipulationStarted += (_, _) => _manipulating = true;
@@ -338,6 +342,8 @@ internal sealed class LyricsView : Grid
         Line first = _entries.First(entry => entry is not null)!, last = _entries.Last(entry => entry is not null)!;
         return (anchorY - _entries[AnchorIndex()]!.Top, anchorY - last.Top, anchorY - first.Top);
     }
+
+    private void ScrollWheelBy(int delta) => ScrollBy(delta * WheelScrollScale);
 
     private void EndManualGesture()
     {

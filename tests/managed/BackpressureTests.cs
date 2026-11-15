@@ -47,6 +47,38 @@ internal static class BackpressureTests
         gate.RunAsync(() => Interlocked.Increment(ref executed)).GetAwaiter().GetResult();
         check(failed && executed == 3, "command failure releases admission for the next operation");
 
+        var cadence = new AdaptiveWorkCadence(33, 264);
+        for (int sample = 0; sample < 1000; sample++) cadence.Observe(TimeSpan.FromMilliseconds(2));
+        check(cadence.IntervalMilliseconds == 33 && !cadence.IsThrottled && cadence.Multiplier == 1,
+            "healthy visual work preserves the normal sampling cadence without a quality downgrade");
+        cadence.Observe(TimeSpan.FromMilliseconds(100));
+        cadence.Observe(TimeSpan.FromMilliseconds(100));
+        check(cadence.IntervalMilliseconds == 33, "isolated slow visual samples do not lower normal quality");
+        cadence.Observe(TimeSpan.FromMilliseconds(100));
+        check(cadence.IntervalMilliseconds == 66 && cadence.Multiplier == 2,
+            "sustained measured visual overload applies bounded backpressure");
+        for (int sample = 0; sample < 30; sample++) cadence.Observe(TimeSpan.FromSeconds(1));
+        check(cadence.IntervalMilliseconds == 264 && cadence.Multiplier == 8,
+            "continued overload cannot create an unbounded visual delay or sampling multiplier");
+        for (int sample = 0; sample < 15; sample++) cadence.Observe(TimeSpan.FromMilliseconds(2));
+        check(cadence.IntervalMilliseconds == 264, "recovery requires a sustained healthy window rather than oscillating after one fast frame");
+        cadence.Observe(TimeSpan.FromMilliseconds(2));
+        check(cadence.IntervalMilliseconds == 132, "visual recovery restores one quality tier at a time");
+        for (int sample = 0; sample < 32; sample++) cadence.Observe(TimeSpan.FromMilliseconds(2));
+        check(cadence.IntervalMilliseconds == 33 && !cadence.IsThrottled,
+            "healthy work automatically returns to the exact normal cadence");
+        for (int sample = 0; sample < 100; sample++)
+        {
+            cadence.Observe(TimeSpan.FromMilliseconds(100));
+            cadence.Observe(TimeSpan.FromMilliseconds(2));
+        }
+        check(!cadence.IsThrottled, "intermittent isolated spikes do not accumulate into a permanent quality downgrade");
+        cadence.Observe(TimeSpan.FromSeconds(1));
+        cadence.Observe(TimeSpan.FromSeconds(1));
+        cadence.Reset();
+        cadence.Observe(TimeSpan.FromSeconds(1));
+        check(!cadence.IsThrottled, "a new media generation resets stale pressure and its unfinished overload window");
+
         string fixture = Path.Combine(root, "backpressure");
         string state = Directory.CreateDirectory(Path.Combine(fixture, ".clearcast-state")).FullName;
         string preferences = Path.Combine(state, "preferences.json");

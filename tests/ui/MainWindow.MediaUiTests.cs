@@ -231,7 +231,12 @@ public sealed partial class MainWindow
         double scale = WindowLayout.XamlRoot.RasterizationScale;
         foreach (Button button in new[] { VideoSkipBackwardButton, VideoSkipForwardButton })
         {
-            var icon = button.Content as FrameworkElement ?? throw new InvalidOperationException("Missing skip icon content.");
+            var display = button.Content as Viewbox ?? throw new InvalidOperationException("Missing skip icon display frame.");
+            var icon = display.Child as FrameworkElement ?? throw new InvalidOperationException("Missing skip icon content.");
+            _uiTestLayouts.Add(new { phase = "skip icon display size", button = button.Name,
+                display.ActualWidth, display.ActualHeight, scale });
+            UiCheck(Math.Abs(display.ActualWidth - 20) <= 1 / scale && Math.Abs(display.ActualHeight - 20) <= 1 / scale,
+                $"skip icon matches the shared 20-DIP action icon size: {button.Name} ({display.ActualWidth:F3} x {display.ActualHeight:F3})");
             UiCheck(Math.Abs(icon.ActualWidth - 24) < 0.1 && Math.Abs(icon.ActualHeight - 24) < 0.1,
                 "skip icon retains its complete 24-DIP source canvas: " + button.Name);
             var bitmap = new RenderTargetBitmap();
@@ -740,6 +745,227 @@ public sealed partial class MainWindow
         }
     }
 
+    private async Task UiTestVideoNavigationAsync(string output)
+    {
+        var preferences = _preferences;
+        var previousSize = AppWindow.Size;
+        nint window = WindowNative.GetWindowHandle(this);
+        Microsoft.UI.Xaml.Media.Animation.NavigationTransitionInfo? transition = null;
+        void Navigated(object sender, Microsoft.UI.Xaml.Navigation.NavigationEventArgs args) => transition = args.NavigationTransitionInfo;
+        bool DefaultTransition() => _motionSettings.AnimationsEnabled
+            ? transition is Microsoft.UI.Xaml.Media.Animation.EntranceNavigationTransitionInfo
+            : transition is Microsoft.UI.Xaml.Media.Animation.SuppressNavigationTransitionInfo;
+        static bool SameRect(UiNativeRect first, UiNativeRect second) => first.Left == second.Left && first.Top == second.Top &&
+            first.Width == second.Width && first.Height == second.Height;
+        UiNativeRect CheckHost(string context, bool settled = false)
+        {
+            double scale = WindowLayout.XamlRoot.RasterizationScale;
+            var slot = GetVideoSlotBounds(scale) ?? throw new InvalidOperationException("Missing stationary video slot.");
+            var displayed = UiMeasure(VideoHostSlot);
+            var expected = GetPlayerVideoLayout(slot).Host;
+            var origin = new UiCompositorPoint();
+            var actual = new UiNativeRect();
+            UiCheck(UiCompositorClientToScreen(window, ref origin) && UiGetWindowRect(_videoHost!.Handle, out actual) &&
+                actual.Left == origin.X + expected.X && actual.Top == origin.Y + expected.Y &&
+                actual.Width == expected.Width && actual.Height == expected.Height && (!settled ||
+                Math.Abs(slot.X - displayed.X * scale) <= 1 && Math.Abs(slot.Y - displayed.Y * scale) <= 1),
+                "live video stays at its arranged location during the default page entrance " + context);
+            _uiTestLayouts.Add(new { phase = "stationary video tab return", context, slot, displayed, expected,
+                actual.Left, actual.Top, actual.Width, actual.Height });
+            return actual;
+        }
+        NavigationFrame.Navigated += Navigated;
+        try
+        {
+            UiCheck(_receiver is null && !_hasVideo && !_hasMusic,
+                "video navigation uses a stopped receiver and only its owned native window");
+            _preferences = _preferences with { AutoFullScreen = false };
+            _videoHost ??= CreatePlayerVideoHost();
+            nint handle = _videoHost.Handle;
+            await UiNavigateAsync(MirrorNavigationItem, MirrorPage);
+            foreach (string source in new[] { "mirror", "direct" })
+            {
+                ApplyMediaState(new ReceiverMediaState(991, ReceiverMediaKind.Video, true, "", "", "",
+                    30_000, 180_000, 0, 0, source == "direct" ? MediaControls.PlayPause | MediaControls.Seek : MediaControls.None)
+                    { Source = source, ControlSession = 991, ContentRevision = 991, SeekEndMs = 180_000 });
+                SetVideoAvailable(true);
+                foreach (var mode in new[] { (Width: 640, Original: false), (Width: 1120, Original: false), (Width: 1120, Original: true) })
+                {
+                    _preferences = _preferences with { OriginalSize = mode.Original };
+                    SetPlayerFrameSize(mode.Original ? 3840 : 1280, mode.Original ? 2160 : 720);
+                    double scale = WindowLayout.XamlRoot.RasterizationScale;
+                    AppWindow.Resize(new SizeInt32((int)(mode.Width * scale), (int)(760 * scale)));
+                    await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
+                    UpdateVideoHost();
+                    foreach (var destination in new[] { SettingsNavigationItem, AboutNavigationItem })
+                    foreach (int delay in new[] { 0, 500 })
+                    {
+                        MainNavigation.SelectedItem = destination;
+                        UiCheck(!UiIsWindowVisible(handle) && _hasVideo && DefaultTransition(),
+                            "leaving AirPlay immediately hides its retained video host " + source + " " + destination.Tag + " " + delay);
+                        if (delay > 0)
+                        {
+                            // Resize off-screen to catch stale slot coordinates on return.
+                            AppWindow.Resize(new SizeInt32((int)((mode.Width + 40) * scale), (int)(760 * scale)));
+                            await Task.Delay(delay);
+                        }
+                        var watch = Stopwatch.StartNew();
+                        MainNavigation.SelectedItem = MirrorNavigationItem;
+                        bool visible = UiIsWindowVisible(handle);
+                        double returnMilliseconds = watch.Elapsed.TotalMilliseconds;
+                        UiCheck(visible && _videoHost.Handle == handle,
+                            "returning to active AirPlay restores the same native host synchronously " + source + " " + mode + " " + delay);
+                        UiCheck(DefaultTransition(),
+                            "video controls use the same default entrance as the other pages " + source + " " + mode);
+                        var initial = CheckHost(source + " " + mode + " first");
+                        _uiTestLayouts.Add(new { phase = "video tab return", source, mode.Width, mode.Original,
+                            destination = destination.Tag, delay, returnMilliseconds, visible, transition = transition?.GetType().Name });
+                        await Task.Delay(32);
+                        UiCheck(UiIsWindowVisible(handle),
+                            "the restored video host remains visible on subsequent frames " + source + " " + mode);
+                        var moving = CheckHost(source + " " + mode + " moving");
+                        UiCheck(SameRect(moving, initial),
+                            "video does not move or resize with the animated controls " + source + " " + mode);
+                        if (delay > 0)
+                        {
+                            await Task.Delay(180);
+                            UiCheck(SameRect(CheckHost(source + " " + mode + " middle"), initial) && UiIsWindowVisible(handle),
+                                "video stays fixed and visible in the middle of the default entrance " + source + " " + mode);
+                            await Task.Delay(320);
+                            UiCheck(SameRect(CheckHost(source + " " + mode + " settled", true), initial) && UiIsWindowVisible(handle),
+                                "the default entrance finishes without a video position or size jump " + source + " " + mode);
+                        }
+                    }
+                }
+                SetVideoAvailable(false);
+                ApplyMediaState(ReceiverMediaState.Empty);
+            }
+            MainNavigation.SelectedItem = SettingsNavigationItem;
+            MainNavigation.SelectedItem = MirrorNavigationItem;
+            UiCheck(DefaultTransition(),
+                "idle AirPlay retains the existing page entrance animation policy");
+            await Task.Delay(500);
+            await UiCaptureAsync(output, "video-navigation-returned-idle");
+        }
+        finally
+        {
+            NavigationFrame.Navigated -= Navigated;
+            SetVideoAvailable(false);
+            ApplyMediaState(ReceiverMediaState.Empty);
+            _preferences = preferences;
+            AppWindow.Resize(previousSize);
+        }
+    }
+
+    private async Task UiTestPlayerFrostBackpressureAsync()
+    {
+        int uiThread = Environment.CurrentManagedThreadId;
+        var previousPixels = _videoBackdropPixels;
+        double previousWidth = PlayerControls.MaxWidth;
+        Task<bool>? previousStop = _stopTask;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int cancellations = 0;
+        static byte[] Frame(byte color)
+        {
+            var pixels = new byte[ReceiverVideoFrame.ByteCount];
+            for (int pixel = 0; pixel < pixels.Length; pixel += 4)
+            {
+                pixels[pixel] = color;
+                pixels[pixel + 1] = (byte)(255 - color);
+                pixels[pixel + 2] = (byte)(color / 2);
+                pixels[pixel + 3] = 255;
+            }
+            return pixels;
+        }
+        try
+        {
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+            int starts = _uiFrostWorkStarts;
+            _uiBeforeFrostRenderAsync = async token =>
+            {
+                using var canceled = token.Register(() => Interlocked.Increment(ref cancellations));
+                entered.TrySetResult();
+                // Simulate a slow consumer that does not immediately observe cancellation.
+                await release.Task.ConfigureAwait(false);
+            };
+            _videoBackdropPixels = Frame(1);
+            UpdatePlayerControlsFrost();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int sample = 0; sample < 1000; sample++)
+            {
+                _videoBackdropPixels = Frame((byte)sample);
+                UpdatePlayerControlsFrost();
+            }
+            PlayerControls.MaxWidth = Math.Max(240, previousWidth - 64);
+            await UiWaitForStableLayout(PlayerControls);
+            UpdatePlayerControlsFrost();
+            PlayerControls.MaxWidth = previousWidth;
+            await UiWaitForStableLayout(PlayerControls);
+            UpdatePlayerControlsFrost();
+            UiCheck(_uiFrostWorkActive == 1 && _uiMaxFrostWorkActive == 1 && _uiFrostWorkStarts == starts + 1 &&
+                _pendingPlayerControlsFrost is not null && cancellations > 0,
+                "a thousand frost frames and resized layouts retain one background worker and only the newest descriptor");
+            byte[] latest = _videoBackdropPixels!;
+            release.SetResult();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+            UiCheck(_uiFrostWorkActive == 0 && !_playerControlsFrostRunning && _pendingPlayerControlsFrost is null &&
+                _appliedPlayerControlsFrost is { } applied && ReferenceEquals(applied.Pixels, latest) && _uiFrostWorkThread != uiThread,
+                "frost rendering stays off the UI thread and publishes the newest valid layout after overload drains");
+
+            _uiBeforeFrostRenderAsync = null;
+            entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _uiAfterFrostRenderAsync = async _ =>
+            {
+                entered.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+            };
+            _videoBackdropPixels = Frame(50);
+            UpdatePlayerControlsFrost();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            ResetVideoBackdrop();
+            UiCheck(_pendingPlayerControlsFrost is null && PlayerControlsFrostBrush.ImageSource is null,
+                "changing video generation clears queued frost and its visible bitmap immediately");
+            release.SetResult();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+            UiCheck(_appliedPlayerControlsFrost is null && PlayerControlsFrostBrush.ImageSource is null && _uiFrostWorkActive == 0,
+                "an already-computed old-session frost cannot reappear when its completion arrives late");
+
+            entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _videoBackdropPixels = Frame(80);
+            UpdatePlayerControlsFrost();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            _stopTask = Task.FromResult(true);
+            UpdatePlayerControlsFrost();
+            UiCheck(_pendingPlayerControlsFrost is null && PlayerControlsFrostBrush.ImageSource is null,
+                "stopping playback revokes pending frost without waiting for an old completed worker");
+            release.SetResult();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+            UiCheck(!_playerControlsFrostRunning && _uiFrostWorkActive == 0 && _appliedPlayerControlsFrost is null &&
+                PlayerControlsFrostBrush.ImageSource is null,
+                "stopping playback drains the background frost pump and rejects late publication");
+            _uiTestLayouts.Add(new { phase = "background frost backpressure", uiThread, workerThread = _uiFrostWorkThread,
+                maximumActive = _uiMaxFrostWorkActive, starts = _uiFrostWorkStarts - starts, cancellations,
+                pending = _pendingPlayerControlsFrost is not null, normalInterval = _playerControlsFrostCadence.IntervalMilliseconds });
+        }
+        finally
+        {
+            _uiBeforeFrostRenderAsync = _uiAfterFrostRenderAsync = null;
+            release.TrySetResult();
+            ClearPlayerControlsFrost();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+            _stopTask = previousStop;
+            PlayerControls.MaxWidth = previousWidth;
+            _videoBackdropPixels = previousPixels;
+            _playerControlsFrostCadence.Reset();
+            ShowPlayerOverlay();
+            UpdatePlayerControlsFrost();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     private async Task UiTestFloatingPlayerControlsAsync(string output)
     {
         // Synthetic dimensions exercise only our own HWND; no receiver or decoder starts.
@@ -766,6 +992,59 @@ public sealed partial class MainWindow
         }
         var preferences = _preferences;
         _videoHost ??= CreatePlayerVideoHost();
+        void CheckActionInsets(string context)
+        {
+            UiBounds card = UiMeasure(PlayerControls), leftAction = UiMeasure(PlayerStopButton), rightAction = UiMeasure(FullScreenButton);
+            var fullScreenIcon = (Viewbox)FullScreenButton.Content;
+            double pixel = 1 / WindowLayout.XamlRoot.RasterizationScale;
+            UiCheck(Math.Abs(fullScreenIcon.ActualWidth - 18) <= pixel && Math.Abs(fullScreenIcon.ActualHeight - 18) <= pixel,
+                "full-screen and restore glyphs retain their 18-DIP display size " + context);
+            double left = leftAction.X - card.X, top = leftAction.Y - card.Y,
+                right = card.X + card.Width - rightAction.X - rightAction.Width,
+                bottom = card.Y + card.Height - leftAction.Y - leftAction.Height;
+            _uiTestLayouts.Add(new { phase = "player control inner spacing", context, left, top, right, bottom });
+            UiCheck(top >= 8 && Math.Abs(left - top) <= 1 && Math.Abs(right - top) <= 1 && Math.Abs(bottom - top) <= 1,
+                "player control actions have equal inner spacing on all four sides " + context);
+        }
+        void CheckTimelineAlignment(string context)
+        {
+            var disconnectText = UiDescendants<TextBlock>(PlayerStopButton).Single(block => block.Text == Texts.Disconnect);
+            UiBounds elapsed = UiMeasure(VideoElapsedText), remaining = UiMeasure(VideoRemainingText),
+                text = UiMeasure(disconnectText), icon = UiMeasure(FullScreenIcon);
+            var thumb = UiDescendants<Border>(VideoSeekSlider).Single(element => element.Name == "Thumb");
+            _uiTestLayouts.Add(new { phase = "video timeline content alignment", context, elapsed, remaining, text, icon,
+                thumb = UiMeasure(thumb), timeline = UiMeasure(VideoSeekSlider) });
+            UiCheck(Math.Abs(elapsed.X - text.X) <= 1 &&
+                Math.Abs(remaining.X + remaining.Width - icon.X - icon.Width) <= 1,
+                "timeline time labels align with the visible disconnect text and full-screen glyph " + context);
+            double value = VideoSeekSlider.Value;
+            try
+            {
+                foreach (double position in new[] { VideoSeekSlider.Minimum, (VideoSeekSlider.Minimum + VideoSeekSlider.Maximum) / 2, VideoSeekSlider.Maximum })
+                {
+                    VideoSeekSlider.Value = position;
+                    VideoSeekSlider.UpdateLayout();
+                    UiBounds handle = UiMeasure(thumb), timeline = UiMeasure(VideoSeekSlider),
+                        fill = UiMeasure(UiDescendants<Microsoft.UI.Xaml.Shapes.Rectangle>(VideoSeekSlider).Single(element => element.Name == "ProgressFill"));
+                    UiCheck(Math.Abs(fill.X + fill.Width - handle.X - handle.Width / 2) <= 1 &&
+                        handle.X >= timeline.X - 1 && handle.X + handle.Width <= timeline.X + timeline.Width + 1,
+                        "the seek handle stays within the track and centered on the fill endpoint " + context + " " + position);
+                }
+            }
+            finally { VideoSeekSlider.Value = value; VideoSeekSlider.UpdateLayout(); }
+        }
+        async Task CaptureSeekAppearance(string name)
+        {
+            // Render the enabled appearance independently of this fixture's
+            // stopped receiver. This changes no capability or sends no command.
+            bool enabled = VideoSeekSlider.IsEnabled;
+            try
+            {
+                VideoSeekSlider.IsEnabled = true;
+                await UiCaptureAsync(output, name, PlayerControls);
+            }
+            finally { VideoSeekSlider.IsEnabled = enabled; }
+        }
         try
         {
             UiCheck(_receiver is null && !_hasMusic && !_hasVideo && !_playerFullScreen,
@@ -781,6 +1060,7 @@ public sealed partial class MainWindow
             double windowedWidth = PlayerControls.ActualWidth;
             UiCheck(_captionThemeSettings?.HighContrast == true || PlayerControls.Background is AcrylicBrush,
                 "player controls use the system acrylic material with its high-contrast fallback");
+            CheckActionInsets("windowed");
             await UiCaptureAsync(output, "floating-player-controls-windowed");
 
             SetPlayerFullScreen(true);
@@ -796,8 +1076,10 @@ public sealed partial class MainWindow
                 "full-screen controls retain their windowed width, stay centered and leave 24 DIP at the bottom");
             UiCheck(PlayerControls.CornerRadius == windowedCorners && PlayerControls.Padding == windowedPadding,
                 "full-screen controls retain the windowed rounded corners and inner spacing");
+            CheckActionInsets("full screen");
             _videoBackdropPixels = Frame(false);
             UpdatePlayerControlsFrost();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
             WriteableBitmap? frostBitmap = _playerControlsFrostBitmap;
             bool frostEnabled = PlayerControlsFrostWanted;
             if (frostEnabled)
@@ -825,10 +1107,13 @@ public sealed partial class MainWindow
                     "the rendered control background contains the sampled video colors");
                 _videoBackdropPixels = Frame(true);
                 UpdatePlayerControlsFrost();
+                await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
                 byte[] second = BitmapPixels(frostBitmap);
                 UiCheck(ReferenceEquals(frostBitmap, _playerControlsFrostBitmap) &&
                     first.Where((value, index) => value != second[index]).Count() > first.Length / 8,
                     "new video samples visibly update the existing frost bitmap without reallocating it");
+                await UiTestPlayerFrostBackpressureAsync();
+                frostBitmap = _playerControlsFrostBitmap;
             }
             else
             {
@@ -866,6 +1151,7 @@ public sealed partial class MainWindow
                 ShowPlayerOverlay();
                 UpdatePlayerControlsFrost();
                 UpdateVideoHost();
+                await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
                 UiCheck(PlayerControls.IsHitTestVisible && UiGetWindowRgn(_videoHost.Handle, region) > 0 &&
                     !UiPointInRegion(region, centerX, centerY) && UiPointInRegion(region, x, y),
                     "showing floating controls restores the rounded exclusion and pointer hit area");
@@ -883,6 +1169,7 @@ public sealed partial class MainWindow
             UiCheck(_playerControlsFrostBitmap is null && PlayerControlsFrostBrush.ImageSource is null,
                 "a media source change clears the previous session's frost bitmap");
             await UiWaitForStableLayout(PlayerControls, VideoPlaybackActions, VideoSeekSlider);
+            CheckTimelineAlignment("full screen");
             UiBounds disconnect = UiMeasure(PlayerStopButton), transport = UiMeasure(VideoPlaybackActions), actions = UiMeasure(PlayerActions);
             UiCheck(disconnect.X + disconnect.Width <= transport.X &&
                 transport.X + transport.Width <= actions.X && VideoSeekSlider.ActualWidth > 0,
@@ -890,13 +1177,23 @@ public sealed partial class MainWindow
             ShowPlayerOverlay();
             _videoBackdropPixels = Frame(false);
             UpdatePlayerControlsFrost();
+            await _playerControlsFrostTask.WaitAsync(TimeSpan.FromSeconds(5));
             await UiCaptureAsync(output, "floating-player-controls-fullscreen-video");
+            await CaptureSeekAppearance("reference-seek-fullscreen");
             ResetVideoBackdrop();
             UiCheck(_videoBackdropPixels is null && _playerControlsFrostBitmap is null &&
                 PlayerControlsFrost.Visibility == Visibility.Collapsed && PlayerControlsFrostBrush.ImageSource is null,
                 "video reset discards sampled pixels and frost resources before another session");
             _videoBackdropPixels = Frame(true);
             UpdatePlayerControlsFrost();
+            SetPlayerFullScreen(false);
+            await UiWaitForStableLayout(PlayerControls, VideoTransport, VideoSeekSlider);
+            CheckTimelineAlignment("windowed");
+            await UiCaptureAsync(output, "aligned-player-controls-windowed-video");
+            await CaptureSeekAppearance("reference-seek-windowed");
+            var videoThumb = UiDescendants<Border>(VideoSeekSlider).Single(element => element.Name == "Thumb");
+            await UiWaitUntil(() => videoThumb.Opacity == 0,
+                "an unavailable video seek hides its handle without dimming the timeline");
             ApplyMediaState(ReceiverMediaState.Empty);
             SetPlayerFullScreen(false);
             await UiWaitForStableLayout(VideoHostSlot, PlayerControls);
@@ -914,6 +1211,94 @@ public sealed partial class MainWindow
             SetVideoAvailable(false);
             _preferences = preferences;
         }
+    }
+
+    private async Task UiTestMusicProgressAppearanceAsync(string output, ReceiverMediaState audio)
+    {
+        ApplyMediaState(audio with { Playing = false, PositionMs = 90_000 });
+        await UiWaitForStableLayout(MusicProgress, MusicArtworkFrame);
+        var track = UiDescendants<Microsoft.UI.Xaml.Shapes.Rectangle>(MusicProgress)
+            .Single(element => element.Name == "ProgressBarTrack");
+        var fill = UiDescendants<Microsoft.UI.Xaml.Shapes.Rectangle>(MusicProgress)
+            .Single(element => element.Name == "DeterminateProgressBarIndicator");
+        UiBounds readOnlyTrack = UiMeasure(track), artwork = UiMeasure(MusicArtworkFrame);
+        _uiTestLayouts.Add(new { phase = "read-only music timeline", track = readOnlyTrack, fill = UiMeasure(fill),
+            trackRadiusX = track.RadiusX, trackRadiusY = track.RadiusY, fillRadiusX = fill.RadiusX, fillRadiusY = fill.RadiusY,
+            MusicProgress.Minimum, MusicProgress.Maximum, MusicProgress.Value, MusicProgress.MinHeight });
+        await UiCaptureAsync(output, "reference-music-readonly", (FrameworkElement)MusicProgress.Parent);
+        UiCheck(MusicProgress.Visibility == Visibility.Visible && MusicSeekSlider.Visibility == Visibility.Collapsed &&
+            !MusicProgress.IsTabStop && !UiDescendants<Border>(MusicProgress).Any(element => element.Name == "Thumb"),
+            "read-only music progress has no drag handle or keyboard seek target");
+        double pixel = 1 / WindowLayout.XamlRoot.RasterizationScale;
+        UiCheck(Math.Abs(track.ActualHeight - 6) <= pixel && Math.Abs(fill.ActualHeight - 6) <= pixel &&
+            track.RadiusX == 3 && track.RadiusY == 3 && fill.RadiusX == 3 && fill.RadiusY == 3 &&
+            Math.Abs(fill.ActualWidth * 2 - track.ActualWidth) <= 1,
+            "read-only music uses a six-DIP rounded timeline with the correct playback fraction");
+        UiCheck(track.Fill is SolidColorBrush trackBrush && MusicSeekSlider.Background is SolidColorBrush seekTrack &&
+            trackBrush.Color == seekTrack.Color && fill.Fill is SolidColorBrush fillBrush &&
+            MusicSeekSlider.Foreground is SolidColorBrush seekFill && fillBrush.Color == seekFill.Color,
+            "read-only and controllable music progress share the same track and theme accent colors");
+        await UiCaptureAsync(output, "music-progress-readonly");
+
+        ApplyMediaState(audio with { Playing = false, PositionMs = 90_000, Controls = MediaControls.Seek,
+            ControlSession = 41, ContentRevision = 2, SeekEndMs = 180_000 });
+        await UiWaitForStableLayout(MusicSeekSlider, MusicArtworkFrame);
+        var seekRail = UiDescendants<Microsoft.UI.Xaml.Shapes.Rectangle>(MusicSeekSlider)
+            .Single(element => element.Name != "ProgressFill");
+        var thumb = UiDescendants<Border>(MusicSeekSlider).Single(element => element.Name == "Thumb");
+        UiBounds seekTrackBounds = UiMeasure(seekRail), seekArtwork = UiMeasure(MusicArtworkFrame);
+        UiCheck(Math.Abs(readOnlyTrack.X - seekTrackBounds.X) <= 1 &&
+            Math.Abs(readOnlyTrack.Y - seekTrackBounds.Y) <= 1 &&
+            Math.Abs(readOnlyTrack.Width - seekTrackBounds.Width) <= 1 &&
+            Math.Abs(artwork.Width - seekArtwork.Width) <= 1 && Math.Abs(artwork.Y - seekArtwork.Y) <= 1,
+            "switching music seek capability preserves the timeline and album layout");
+        await UiWaitUntil(() => thumb.Opacity == 0, "unavailable music seek hides its handle");
+        try
+        {
+            MusicSeekSlider.IsEnabled = true;
+            await UiWaitUntil(() => thumb.Opacity == 1, "available music seek restores its handle");
+            await UiCaptureAsync(output, "reference-music-seek", (FrameworkElement)MusicSeekSlider.Parent);
+        }
+        finally { MusicSeekSlider.IsEnabled = false; }
+        ApplyMediaState(audio with { DurationMs = 0 });
+        UiCheck(MusicProgress.IsIndeterminate && MusicProgress.Value == 0 && MusicDuration.Text == "—:—",
+            "unknown music duration retains the native indeterminate progress indication");
+        await UiWaitForStableLayout(MusicProgress);
+        var rail = UiDescendants<Border>(MusicProgress).Single(element => element.Name == "ProgressBarRoot");
+        UiCheck(rail.Background is SolidColorBrush railBrush && MusicProgress.Background is SolidColorBrush background &&
+            railBrush.Color == background.Color && Math.Abs(rail.ActualHeight - 6) <= pixel,
+            "indeterminate music retains a full-width rail in the same unplayed color");
+        var graySamples = new List<int>();
+        for (int sample = 0; sample < 12; ++sample)
+        {
+            var raster = new RenderTargetBitmap();
+            await raster.RenderAsync(rail);
+            var buffer = await raster.GetPixelsAsync();
+            byte[] pixels = new byte[buffer.Length];
+            using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(pixels);
+            int width = raster.PixelWidth, height = raster.PixelHeight;
+            int[] cornerAlpha = [pixels[3], pixels[(width - 1) * 4 + 3],
+                pixels[(height - 1) * width * 4 + 3], pixels[(height * width - 1) * 4 + 3]];
+            int opaque = 0, gray = 0;
+            var color = ((SolidColorBrush)MusicProgress.Background).Color;
+            for (int x = 1; x < width - 1; ++x)
+            {
+                int offset = (height / 2 * width + x) * 4;
+                if (pixels[offset + 3] > 200) ++opaque;
+                if (Math.Abs(pixels[offset] - color.B) + Math.Abs(pixels[offset + 1] - color.G) +
+                    Math.Abs(pixels[offset + 2] - color.R) < 10) ++gray;
+            }
+            graySamples.Add(gray);
+            _uiTestLayouts.Add(new { phase = "indeterminate music rail", sample, width, height, cornerAlpha, opaque, gray });
+            UiCheck(cornerAlpha.Max() < 96 && opaque >= width - 4,
+                "moving music indicators retain rounded ends and a continuous visible rail " + sample);
+            if (sample is 0 or 6 or 11)
+                await UiCaptureAsync(output, "reference-music-indeterminate-" + sample, (FrameworkElement)MusicProgress.Parent);
+            await Task.Delay(160);
+        }
+        UiCheck(graySamples.Max() > rail.ActualWidth / 4,
+            "indeterminate progress renders the unplayed rail beneath the moving indicators");
+        ApplyMediaState(audio);
     }
 
     private async Task UiTestPlaybackPreferencesAsync(string output)
@@ -988,6 +1373,7 @@ public sealed partial class MainWindow
             UiCheck(!_playerFullScreen, "ending automatically full-screen music exits full screen");
 
             AutoFullScreenToggle.IsOn = false;
+            await UiTestMusicProgressAppearanceAsync(output, audio);
             ApplyMediaState(audio);
             _lyrics = Lyrics.ParseSynced("[00:00.00]Synthetic settings lyric");
             UpdateLyricsPresentation(false);
@@ -1468,16 +1854,69 @@ public sealed partial class MainWindow
             await backdrop.DisposeAsync();
             WindowLayout.Children.Remove(backdrop);
         }
+        await UiTestGpuRetirementBackpressureAsync();
         _uiTestLayouts.Add(new { kind = "rendering-backpressure", burst = 5000, svgWorkerLimit = 4,
             backdropWorkerLimit = 1, pendingRequestLimit = 1 });
     }
 
-    private static async Task<byte[]> UiCreateSolidArtworkAsync(Guid codec, uint width, uint height)
+    private async Task UiTestGpuRetirementBackpressureAsync()
+    {
+        var backdrop = new MusicBackdrop { Width = 1, Height = 1, Opacity = 0 };
+        var fenceEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFence = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        WindowLayout.Children.Add(backdrop);
+        try
+        {
+            await UiWaitUntil(() => backdrop.IsLoaded, "GPU-retirement fixture loads");
+            var pixels = new byte[ReceiverVideoFrame.ByteCount];
+            for (int pixel = 0; pixel < pixels.Length; pixel += 4)
+            { pixels[pixel] = 220; pixels[pixel + 1] = 70; pixels[pixel + 2] = 30; pixels[pixel + 3] = 255; }
+            await backdrop.SetVideoFrameAsync(pixels, false, false);
+            backdrop.UiBeforeResourceCommitAsync = async () =>
+            {
+                fenceEntered.TrySetResult();
+                // This holds the same safe-retirement boundary as a stalled
+                // compositor, without force-releasing any in-use COM objects.
+                await releaseFence.Task;
+            };
+            Task replacement = backdrop.SetVideoFrameAsync(pixels, true, false);
+            await fenceEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Task latest = replacement;
+            for (int sample = 0; sample < 5000; sample++) latest = backdrop.SetVideoFrameAsync(pixels, false, false);
+            UiCheck(backdrop.UiFlowGroupsCreated == 2 && backdrop.UiRetainedFlowGroups == 2 && backdrop.UiImagePending,
+                "a stalled GPU retirement admits no additional flow groups during a five-thousand-frame burst");
+            backdrop.CancelPendingImageWork();
+            Task clear = backdrop.SetArtworkAsync(null, false);
+            UiCheck(clear.IsCompletedSuccessfully && latest.IsCompleted && !backdrop.UiImagePending && !backdrop.HasArtworkFlow &&
+                backdrop.UiRetainedFlowGroups == 2 && !replacement.IsCompleted,
+                "logical visual stop clears active and queued presentation immediately without waiting for a GPU fence");
+            Task closing = backdrop.DisposeAsync();
+            UiCheck(!closing.IsCompleted && backdrop.UiFlowGroupsCreated == 2,
+                "window teardown retains unsafe COM resources until their real retirement fence can complete");
+            releaseFence.SetResult();
+            await Task.WhenAll(replacement, closing).WaitAsync(TimeSpan.FromSeconds(10));
+            UiCheck(backdrop.UiRetainedFlowGroups == 0 && !backdrop.HasArtworkFlow && !backdrop.UiImagePending,
+                "retirement recovery drains every retained flow without reopening stopped imagery");
+            _uiTestLayouts.Add(new { kind = "GPU-retirement-backpressure", created = backdrop.UiFlowGroupsCreated,
+                retired = backdrop.UiFlowGroupsRetired, retained = backdrop.UiRetainedFlowGroups,
+                closeBoundary = "safe resources retained until compositor commit completes" });
+        }
+        finally
+        {
+            releaseFence.TrySetResult();
+            await backdrop.DisposeAsync();
+            WindowLayout.Children.Remove(backdrop);
+        }
+    }
+
+    private static async Task<byte[]> UiCreateSolidArtworkAsync(Guid codec, uint width, uint height, uint color = 0)
     {
         using var stream = new InMemoryRandomAccessStream();
         var encoder = await BitmapEncoder.CreateAsync(codec, stream);
-        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96,
-            new byte[checked((int)(width * height * 4))]);
+        var pixels = new byte[checked((int)(width * height * 4))];
+        for (int offset = 0; offset < pixels.Length; offset += 4)
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(pixels.AsSpan(offset, 4), color);
+        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, width, height, 96, 96, pixels);
         await encoder.FlushAsync();
         stream.Seek(0);
         using var reader = new DataReader(stream);
@@ -1832,6 +2271,198 @@ public sealed partial class MainWindow
         ApplyMediaState(ReceiverMediaState.Empty);
     }
 
+    private async Task UiTestLyricsLayoutAsync(string output)
+    {
+        var preferences = _preferences;
+        nint window = WindowNative.GetWindowHandle(this);
+        var textFrames = new Dictionary<string, (UiBounds? Title, UiBounds? Lyrics)>();
+        static UiBounds ArtworkPixels(UiCompositorFrame frame)
+        {
+            int left = frame.Width, top = frame.Height, right = -1, bottom = -1;
+            for (int y = 0; y < frame.Height; ++y)
+            for (int x = 0; x < frame.Width; ++x)
+            {
+                int pixel = (y * frame.Width + x) * 4;
+                if (frame.Pixels[pixel] < 245 || frame.Pixels[pixel + 1] > 10 || frame.Pixels[pixel + 2] < 245) continue;
+                left = Math.Min(left, x); right = Math.Max(right, x);
+                top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+            }
+            if (right < left || bottom < top) throw new InvalidOperationException("Owned-window capture omitted the synthetic artwork.");
+            return new(left, top, right - left + 1, bottom - top + 1);
+        }
+        // The one-DIP frame stroke also scales, so the solid interior can differ
+        // by a few physical pixels even when the outside artwork box is identical.
+        static bool SameBox(UiBounds first, UiBounds second) => Math.Abs(first.X - second.X) <= 6 &&
+            Math.Abs(first.Y - second.Y) <= 6 && Math.Abs(first.Width - second.Width) <= 12 && Math.Abs(first.Height - second.Height) <= 12;
+        static bool SameText(UiBounds? first, UiBounds? second) => first is null ? second is null : second is not null && SameBox(first, second);
+        void PauseAt(float progress)
+        {
+            foreach (var element in MusicLayoutElements.Append(MusicLyrics))
+            {
+                var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(element);
+                foreach (string property in new[] { "Translation", "Scale", "Opacity" })
+                {
+                    if (visual.TryGetAnimationController(property) is not { } controller) continue;
+                    controller.Pause();
+                    controller.Progress = progress;
+                }
+            }
+        }
+        async Task<UiBounds> Capture(string phase)
+        {
+            // Exercise incoming progress updates during the independent layout
+            // animation, including a reversal while it is still in flight.
+            _mediaState = _mediaState with { PositionMs = _mediaState.PositionMs + 100 };
+            UpdateMusicProgress();
+            await Task.Delay(90); // Allow the compositor to present the paused position.
+            var frame = await Task.Run(() => UiCaptureOwnedWindow(window));
+            var artwork = ArtworkPixels(frame);
+            int artworkOverlayPixels = 0;
+            // Exclude the scaled frame stroke and rounded corners. The synthetic
+            // cover's opaque interior must cover any lyric glyphs behind it.
+            for (int y = (int)(artwork.Y + artwork.Height * 0.1); y < artwork.Y + artwork.Height * 0.9; ++y)
+            for (int x = (int)(artwork.X + artwork.Width * 0.1); x < artwork.X + artwork.Width * 0.9; ++x)
+            {
+                int pixel = (y * frame.Width + x) * 4;
+                if (frame.Pixels[pixel] < 245 || frame.Pixels[pixel + 1] > 10 || frame.Pixels[pixel + 2] < 245)
+                    ++artworkOverlayPixels;
+            }
+            UiBounds? TextPixels(FrameworkElement element, bool fullRow)
+            {
+                if (element.Visibility != Visibility.Visible) return null;
+                var box = UiCompositorContentBounds(window, element, 0);
+                var panel = UiCompositorContentBounds(window, MusicPanel, 0);
+                int left = frame.Width, top = frame.Height, right = -1, bottom = -1;
+                bool dark = WindowLayout.ActualTheme == ElementTheme.Dark;
+                for (int y = Math.Max(0, box.Top); y < Math.Min(frame.Height, box.Bottom); ++y)
+                for (int x = Math.Max(0, fullRow ? panel.Left : box.Left); x < Math.Min(frame.Width, fullRow ? panel.Right : box.Right); ++x)
+                {
+                    int pixel = (y * frame.Width + x) * 4;
+                    bool ink = dark ? frame.Pixels[pixel] > 210 && frame.Pixels[pixel + 1] > 210 && frame.Pixels[pixel + 2] > 210
+                        : frame.Pixels[pixel] < 80 && frame.Pixels[pixel + 1] < 80 && frame.Pixels[pixel + 2] < 80;
+                    if (!ink) continue;
+                    left = Math.Min(left, x); right = Math.Max(right, x);
+                    top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+                }
+                return right < left ? null : new(left, top, right - left + 1, bottom - top + 1);
+            }
+            var titlePixels = TextPixels(MusicTitle, true);
+            var lyricsPixels = TextPixels(MusicLyrics, false);
+            var progressBox = UiCompositorContentBounds(window, MusicProgress, 0);
+            var accent = ((SolidColorBrush)MusicProgress.Foreground).Color;
+            int progressPixels = 0;
+            for (int y = Math.Max(0, progressBox.Top); y < Math.Min(frame.Height, progressBox.Bottom); ++y)
+            for (int x = Math.Max(0, progressBox.Left); x < Math.Min(frame.Width, progressBox.Right); ++x)
+            {
+                int pixel = (y * frame.Width + x) * 4;
+                if (Math.Abs(frame.Pixels[pixel] - accent.B) + Math.Abs(frame.Pixels[pixel + 1] - accent.G) +
+                    Math.Abs(frame.Pixels[pixel + 2] - accent.R) < 20) ++progressPixels;
+            }
+            double expectedProgressPixels = (progressBox.Right - progressBox.Left) *
+                MusicProgress.MinHeight * WindowLayout.XamlRoot.RasterizationScale * MusicProgress.Value / MusicProgress.Maximum;
+            _uiTestLayouts.Add(new { phase = "lyrics transition progress", name = phase, progressPixels, expectedProgressPixels });
+            UiCheck(progressPixels >= expectedProgressPixels * 0.55,
+                "playback progress remains visible while lyrics and album layout animate " + phase);
+            textFrames.Add(phase, (titlePixels, lyricsPixels));
+            _uiTestLayouts.Add(new { phase = "lyrics transition pixels", name = phase, artwork,
+                layoutArtwork = LayoutBounds(MusicArtworkFrame), content = LayoutBounds(MusicContent), lyrics = LayoutBounds(MusicLyrics),
+                title = LayoutBounds(MusicTitle), displayedTitle = UiMeasure(MusicTitle), titleAlignment = MusicTitle.TextAlignment.ToString(),
+                displayedLyrics = UiMeasure(MusicLyrics), titlePixels, lyricsPixels, artworkOverlayPixels,
+                lyricsOpacity = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(MusicLyrics).Opacity });
+            await UiSaveCompositorFrameAsync(output, phase, frame);
+            if (phase.EndsWith("-closing-middle", StringComparison.Ordinal))
+                UiCheck(artworkOverlayPixels == 0, "the opaque artwork stays in front of fading lyric glyphs " + phase);
+            return artwork;
+        }
+        try
+        {
+            _preferences = _preferences with { AutoFullScreen = false, ShowLyrics = false };
+            await UiNavigateAsync(MirrorNavigationItem, MirrorPage);
+            ApplyMediaState(new ReceiverMediaState(991, ReceiverMediaKind.Audio, false,
+                "Continuous layout", "Synthetic artist", "Synthetic album", 45_000, 240_000, 0, 0, MediaControls.None));
+            await UiWaitUntil(() => !_lyricsPending, "layout fixture offline lookup settles");
+            _lyrics = Lyrics.ParseSynced("[00:20.00]Previous lyric\n[00:40.00]Current lyric\n[01:00.00]Next lyric");
+            byte[] artwork = await UiCreateSolidArtworkAsync(BitmapEncoder.PngEncoderId, 64, 64, 0xFFFF00FF);
+            await ApplyMusicArtworkAsync(artwork, _artworkGeneration, _receiver);
+            foreach (var mode in new[] { (640, 760, false), (1120, 760, false), (1120, 960, false), (1120, 760, true) })
+            {
+                SetPlayerFullScreen(false);
+                double scale = WindowLayout.XamlRoot!.RasterizationScale;
+                AppWindow.Resize(new SizeInt32((int)(mode.Item1 * scale), (int)(mode.Item2 * scale)));
+                if (mode.Item3) SetPlayerFullScreen(true);
+                _preferences = _preferences with { ShowLyrics = false };
+                UpdateLyricsPresentation(false);
+                MusicPanel.ChangeView(null, 0, null, true);
+                await UiWaitForStableLayout(MusicPanel, MusicContent, MusicArtworkFrame);
+                string prefix = $"lyrics-layout-{mode.Item1}-{mode.Item2}-{mode.Item3}";
+                var closed = await Capture(prefix + "-closed");
+                _preferences = _preferences with { ShowLyrics = true };
+                UpdateLyricsPresentation(true);
+                if (!_motionSettings.AnimationsEnabled)
+                {
+                    UiCheck(_lyricsOpen && !_lyricsClosing, "motion-disabled lyrics switch directly " + prefix);
+                    continue;
+                }
+                PauseAt(0);
+                var openingStart = await Capture(prefix + "-opening-start");
+                UiCheck(SameBox(closed, openingStart), "opening preserves the displayed artwork box without a size jump " + prefix);
+                UiCheck(textFrames[prefix + "-closed"].Title is not null &&
+                    SameText(textFrames[prefix + "-closed"].Title, textFrames[prefix + "-opening-start"].Title),
+                    "opening keeps the rendered title in its original position " + prefix);
+                double targetSize = MusicArtworkFrame.Width;
+                PauseAt(0.15f);
+                var openingMiddle = await Capture(prefix + "-opening-middle");
+                PauseAt(1);
+                await UiWaitForStableLayout(MusicPanel, MusicContent, MusicArtworkFrame);
+                var opened = await Capture(prefix + "-opened");
+                UiCheck(Math.Abs(MusicArtworkFrame.Width - targetSize) <= 1,
+                    "opening has no second artwork resize after layout settles " + prefix);
+                UiCheck(openingMiddle.Width >= Math.Min(closed.Width, opened.Width) - 3 &&
+                    openingMiddle.Width <= Math.Max(closed.Width, opened.Width) + 3 && !SameBox(openingStart, opened),
+                    "artwork moves and scales between both layout endpoints " + prefix);
+                _preferences = _preferences with { ShowLyrics = false };
+                UpdateLyricsPresentation(true);
+                PauseAt(0);
+                var closingStart = await Capture(prefix + "-closing-start");
+                var closingLyricsBounds = UiMeasure(MusicLyrics);
+                UiCheck(SameBox(opened, closingStart) && MusicLyricsSlot.Visibility == Visibility.Collapsed,
+                    "closing retains the displayed artwork and removes lyrics from layout measurement " + prefix);
+                PauseAt(0.15f);
+                var closingMiddle = await Capture(prefix + "-closing-middle");
+                var fadingLyricsBounds = UiMeasure(MusicLyrics);
+                UiCheck(Math.Abs(closingLyricsBounds.X - fadingLyricsBounds.X) <= 0.1 &&
+                    Math.Abs(closingLyricsBounds.Y - fadingLyricsBounds.Y) <= 0.1,
+                    "closing lyrics fade at their existing position while the artwork moves " + prefix);
+                _preferences = _preferences with { ShowLyrics = true };
+                UpdateLyricsPresentation(true);
+                PauseAt(0);
+                var reversed = await Capture(prefix + "-reversed");
+                UiCheck(SameBox(closingMiddle, reversed), "mid-transition reversal continues from the displayed artwork box " + prefix);
+                UiCheck(SameText(textFrames[prefix + "-closing-middle"].Title, textFrames[prefix + "-reversed"].Title) &&
+                    SameText(textFrames[prefix + "-closing-middle"].Lyrics, textFrames[prefix + "-reversed"].Lyrics),
+                    "mid-transition reversal retains rendered text and lyric surfaces " + prefix);
+                UiCheck(MusicLyricsSlot.Visibility == Visibility.Visible && ReferenceEquals(MusicLyrics.Parent, MusicLyricsLayer),
+                    "reopening retains the same lyrics parent and restores its layout slot " + prefix);
+                UpdateLyricsPresentation(false);
+                _preferences = _preferences with { ShowLyrics = false };
+                UpdateLyricsPresentation(true);
+                await UiWaitUntil(() => !_lyricsClosing, "unpaused close finishes " + prefix);
+                await UiWaitForStableLayout(MusicPanel, MusicContent, MusicArtworkFrame);
+                var finished = await Capture(prefix + "-finished");
+                UiCheck(SameBox(closed, finished) && MusicLyrics.Visibility == Visibility.Collapsed && MusicLyricsSlot.Visibility == Visibility.Collapsed,
+                    "completed close restores the centered player without an endpoint jump " + prefix);
+            }
+        }
+        finally
+        {
+            SetPlayerFullScreen(false);
+            _preferences = preferences;
+            ResetLyrics();
+            ApplyMediaState(ReceiverMediaState.Empty);
+            UpdateLyricsPresentation(false);
+        }
+    }
+
     private async Task UiTestMusicLyricsAsync(string output, bool english)
     {
         string theme = english ? "en-dark-" : "zh-light-";
@@ -1906,7 +2537,7 @@ public sealed partial class MainWindow
             UpdateLyricsPresentation(true);
             UiCheck(!_lyricsOpen && (_motionSettings.AnimationsEnabled
                 ? _lyricsClosing && MusicLyrics.Visibility == Visibility.Visible
-                : MusicLyrics.Visibility == Visibility.Collapsed), "closing lyrics fades the panel out in place before the layout settles");
+                : MusicLyrics.Visibility == Visibility.Collapsed), "closing lyrics fade in place before removal");
             await UiWaitUntil(() => !_lyricsClosing && MusicLyrics.Visibility == Visibility.Collapsed, "lyrics close animation completes");
         }
         finally
@@ -1984,8 +2615,8 @@ public sealed partial class MainWindow
             UiCheck(elapsed.Y + elapsed.Height <= Math.Min(previous.Y, Math.Min(playPause.Y, next.Y)) + 1 &&
                 previous.X + previous.Width <= playPause.X + 1 && playPause.X + playPause.Width <= next.X + 1,
                 "music transport controls do not overlap text or one another " + prefix);
-            UiCheck(previous.Width >= 44 && previous.Height >= 44 && playPause.Width >= 52 && playPause.Height >= 52 &&
-                next.Width >= 44 && next.Height >= 44, "music transport controls retain their touch target sizes " + prefix);
+            UiCheck(previous.Width >= 40 && previous.Height >= 40 && playPause.Width >= 52 && playPause.Height >= 52 &&
+                next.Width >= 40 && next.Height >= 40, "music transport controls share the 40-DIP target size and retain the larger primary action " + prefix);
             UiBounds transport = UiMeasure(MusicTransportControls), fullScreen = UiMeasure(MusicFullScreenButton),
                 lyrics = UiMeasure(MusicLyricsButton), disconnect = UiMeasure(MusicDisconnectButton);
             UiCheck(Math.Abs(fullScreen.CenterY - transport.CenterY) <= 1 && Math.Abs(lyrics.CenterY - transport.CenterY) <= 1 &&

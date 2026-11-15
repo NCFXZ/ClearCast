@@ -40,6 +40,10 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         internal bool ClockStarted;
         internal bool RateControlUnavailable;
         internal bool VideoFrame;
+#if CLEARCAST_UI_TESTS
+        internal Func<Task>? BeforeResourceCommit;
+        internal Action? Retired;
+#endif
         private bool _disposed;
 
         public async Task DisposeAsync()
@@ -59,6 +63,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             foreach (var stream in Streams) Close(stream.Dispose);
             // A controller/rate change can still be queued in DComp's raw-pointer rebuild
             // list. Keep the detached resource group alive until that commit has drained.
+#if CLEARCAST_UI_TESTS
+            if (BeforeResourceCommit is { } beforeCommit) await beforeCommit();
+#endif
             await WaitForResourceCommitAsync(Root.Compositor);
             await ControllerRetirement;
             if (Controller is { } controller) Close(controller.Dispose);
@@ -71,6 +78,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             foreach (var brush in Brushes) Close(brush.Dispose);
             Close(Clock.Dispose);
             Close(Root.Dispose);
+#if CLEARCAST_UI_TESTS
+            Retired?.Invoke();
+#endif
         }
     }
 
@@ -101,6 +111,9 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     internal Func<Task>? UiBeforeImageDecodeAsync;
     internal int UiImageDecodeStarts, UiImageDecodeActive, UiMaxImageDecodeActive;
     internal bool UiImagePending => _imageRequest is not null;
+    internal Func<Task>? UiBeforeResourceCommitAsync;
+    internal int UiFlowGroupsCreated, UiFlowGroupsRetired;
+    internal int UiRetainedFlowGroups => UiFlowGroupsCreated - UiFlowGroupsRetired;
 #endif
 
     public MusicBackdrop()
@@ -262,6 +275,22 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     public Task SetArtworkAsync(byte[]? bytes, bool darkTheme) => SetImageAsync(bytes, darkTheme, false, false);
 
     public Task SetVideoFrameAsync(byte[] pixels, bool darkTheme, bool smooth = true) => SetImageAsync(pixels, darkTheme, true, smooth);
+
+    internal void CancelPendingImageWork()
+    {
+        ++_artworkGeneration;
+        _artworkCancellation?.Cancel();
+        _imageRequest?.Completion.TrySetResult(true);
+        _imageRequest = null;
+        // Logical stop does not wait for a GPU retirement fence. Keep the last
+        // live flow owned and visible until normal retirement can safely finish.
+        if (_flow is { VideoFrame: true } flow)
+        {
+            CloseComposition(() => flow.Root.StopAnimation("Opacity"));
+            CloseComposition(() => flow.Root.Opacity = 1);
+            IsVideoTransitioning = false;
+        }
+    }
 
     private Task SetImageAsync(byte[]? bytes, bool darkTheme, bool videoFrame, bool smooth)
     {
@@ -445,6 +474,11 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     {
         var compositor = _root!.Compositor;
         var flow = new FlowResources(compositor);
+#if CLEARCAST_UI_TESTS
+        UiFlowGroupsCreated++;
+        flow.BeforeResourceCommit = () => UiBeforeResourceCommitAsync?.Invoke() ?? Task.CompletedTask;
+        flow.Retired = () => UiFlowGroupsRetired++;
+#endif
         flow.ArtworkGeneration = generation;
         flow.VideoFrame = videoFrame;
         flow.Root.RelativeSizeAdjustment = Vector2.One;

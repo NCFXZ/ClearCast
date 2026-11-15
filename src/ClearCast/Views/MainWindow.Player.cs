@@ -36,6 +36,14 @@ public sealed partial class MainWindow
     private int _uiVideoHostUpdateCallbacks;
 #endif
 
+    private void InitializePlayerControlsAppearance()
+    {
+        var shadow = new ThemeShadow();
+        shadow.Receivers.Add(MusicBackground);
+        PlayerControls.Shadow = shadow;
+        PlayerControls.Translation = new System.Numerics.Vector3(0, 0, 8);
+    }
+
     private void QueueVideoHostUpdate()
     {
         if (_videoHostUpdateQueued || _closed) return;
@@ -261,7 +269,7 @@ public sealed partial class MainWindow
 
     private void TogglePlayerFullScreen()
     {
-        if ((_hasVideo || _hasMusic) && IsMirrorPageSelected && !IsMirrorPageEntering)
+        if ((_hasVideo || _hasMusic) && IsMirrorPageSelected)
             SetPlayerFullScreen(!_playerFullScreen);
     }
 
@@ -296,7 +304,6 @@ public sealed partial class MainWindow
 
         // Keep the independently composed video HWND out of DWM's presenter transition.
         _videoHost?.SuspendPresentation();
-        StopPageEntrance();
         if (enabled)
             _restoreVideoSlot = VideoHostSlot.XamlRoot is { } root ? GetVideoSlotBounds(root.RasterizationScale) : null;
         const uint transitionsForceDisabled = 3;

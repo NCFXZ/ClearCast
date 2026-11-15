@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Security.Cryptography;
 
 namespace ClearCast;
 
@@ -101,5 +102,46 @@ internal static class VideoFrostTests
         allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
         check(updatesValid && allocated == 0,
             "video frost keeps fresh bounded output across repeated frame, rotation, size and clipped-layout changes");
+
+        for (int y = 0; y < ReceiverVideoFrame.Side; y++)
+        for (int x = 0; x < ReceiverVideoFrame.Side; x++)
+        {
+            int pixel = (y * ReceiverVideoFrame.Side + x) * 4;
+            frame[pixel] = (byte)(x * 7 + y * 3);
+            frame[pixel + 1] = (byte)(x * 3 + y * 11);
+            frame[pixel + 2] = (byte)(x * 5 + y * 13);
+            frame[pixel + 3] = 255;
+        }
+        string PixelHash()
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            foreach (var layout in layouts)
+            for (int rotation = 0; rotation < 4; rotation++)
+                hash.AppendData(renderer.Render(frame, layout.Picture, layout.Controls, rotation));
+            return Convert.ToHexString(hash.GetHashAndReset());
+        }
+        const string originalPixels = "403EBD06548AE93E74A62E94F69A99831B3D02CB37BB0E2C314F655AB6AF4EDD";
+        check(PixelHash() == originalPixels,
+            "background-capable frost remains byte-for-byte equal to the original algorithm across twelve layout and rotation fixtures");
+        using var cancellation = new CancellationTokenSource();
+        using var firstRender = new ManualResetEventSlim();
+        int rendered = 0;
+        Task busy = Task.Run(() =>
+        {
+            for (int repeat = 0; repeat < 1000; repeat++)
+            {
+                renderer.Render(frame, picture, local, repeat, cancellation.Token);
+                Interlocked.Increment(ref rendered);
+                firstRender.Set();
+            }
+        });
+        check(firstRender.Wait(TimeSpan.FromSeconds(5)), "background frost starts rendering without a UI thread");
+        cancellation.Cancel();
+        bool canceled = false;
+        try { busy.WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { canceled = true; }
+        check(canceled && rendered < 1000, "stop cancels ongoing frost load and drains its worker within a bounded wait");
+        check(PixelHash() == originalPixels,
+            "a canceled render cannot leave stale pixels in the next admitted frost result");
     }
 }

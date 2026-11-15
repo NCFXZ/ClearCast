@@ -32,13 +32,14 @@ public sealed partial class MainWindow
         }
         static bool Close(double first, double second) => Math.Abs(first - second) <= 0.15;
 
-        async Task CheckDeltas(string phase, int probe, IReadOnlyList<double> deltas)
+        async Task CheckDeltas(string phase, int probe, IReadOnlyList<double> deltas, IReadOnlyList<int>? wheelInput = null)
         {
             Phase(phase);
             for (int index = 0; index < deltas.Count; ++index)
             {
                 var before = Snapshot(phase + "-before", index, probe);
-                MusicLyrics.UiScrollBy(deltas[index]);
+                if (wheelInput is null) MusicLyrics.UiScrollBy(deltas[index]);
+                else MusicLyrics.UiScrollWheelBy(wheelInput[index]);
                 var after = Snapshot(phase + "-submitted", index, probe);
                 UiCheck(after.Browsing && !after.Animating && Close(after.Y, after.TargetY),
                     $"{phase} publishes the direct visual position without a trailing offset animation {index}");
@@ -72,9 +73,10 @@ public sealed partial class MainWindow
             UiCheck(_lyricsOpen && MusicLyrics.ActiveLineIndex == 60,
                 "input fixture opens with synced lyrics at a stable midpoint");
 
-            double[] wheelDeltas = [-17.5, -11.25, 6.75, 22, -5.5, 5.5];
+            double[] wheelDeltas = [-30, -10, 15, 25, -3, 3];
+            int[] wheelInput = [-120, -40, 60, 100, -12, 12];
             double[] fineDeltas = [-2.25, -1.5, 0.75, 3, -4.125, 4.125];
-            await CheckDeltas("synced-wheel", 60, wheelDeltas);
+            await CheckDeltas("synced-wheel", 60, wheelDeltas, wheelInput);
             await CheckDeltas("synced-fine-input", 60, fineDeltas);
             UiCheck(Math.Abs(MusicLyrics.UiManualOffset) <= 0.15 && MusicLyrics.UiManualBrowsing,
                 "a zero-net manual gesture still keeps the explicit browsing hold");
@@ -134,7 +136,7 @@ public sealed partial class MainWindow
             await Task.Delay(600);
             UiCheck(!MusicLyrics.UiManualBrowsing && MusicLyrics.ActiveLineIndex == -1,
                 "replacing synced lyrics with plain text clears the former browsing state");
-            await CheckDeltas("plain-wheel", 3, wheelDeltas);
+            await CheckDeltas("plain-wheel", 3, wheelDeltas, wheelInput);
             await CheckDeltas("plain-fine-input", 3, fineDeltas);
             var plain = Snapshot("plain-before-playback", 0, 3);
             MusicLyrics.SetPosition(180_000);

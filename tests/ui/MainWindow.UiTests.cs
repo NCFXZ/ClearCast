@@ -338,7 +338,7 @@ public sealed partial class MainWindow
         }, "stable layout geometry", 5000);
     }
 
-    private async Task UiCaptureAsync(string folder, string name)
+    private async Task UiCaptureAsync(string folder, string name, FrameworkElement? target = null)
     {
         Brush originalBackground = WindowLayout.Background;
         Border? resourceProbe = null;
@@ -354,7 +354,7 @@ public sealed partial class MainWindow
             WindowLayout.Children.Remove(resourceProbe);
             resourceProbe = null;
             var bitmap = new RenderTargetBitmap();
-            await bitmap.RenderAsync(WindowLayout);
+            await bitmap.RenderAsync(target ?? WindowLayout);
             var buffer = await bitmap.GetPixelsAsync();
             byte[] bytes = new byte[buffer.Length];
             using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(bytes);
@@ -1082,9 +1082,24 @@ public sealed partial class MainWindow
                         await UiTestPlaybackPreferencesAsync(output);
                         return;
                     }
+                    if (lyricsStress == "navigation")
+                    {
+                        await UiTestVideoNavigationAsync(output);
+                        return;
+                    }
                     if (lyricsStress == "input")
                     {
                         await UiTestLyricsInputAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "layout")
+                    {
+                        await UiTestLyricsLayoutAsync(output);
+                        return;
+                    }
+                    if (lyricsStress == "landing")
+                    {
+                        await UiTestLandingAnimationAsync(output);
                         return;
                     }
                     if (lyricsStress == "performance")

@@ -7,6 +7,7 @@ using Microsoft.UI.System;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -58,6 +59,7 @@ public sealed partial class MainWindow : Window
         ApplyAppLanguage(_preferences.Language == AppLanguage.English);
         InitializeComponent();
         InitializePlaybackControls();
+        InitializePlayerControlsAppearance();
         ApplyAppTheme();
         WindowLayout.Language = Texts.IsEnglish ? "en-US" : "zh-CN";
         string icon = Path.Combine(AppContext.BaseDirectory, "Assets", "ClearCast.ico");
@@ -127,7 +129,6 @@ public sealed partial class MainWindow : Window
             StopReceiverNetworkChanges();
             AppWindow.Changed -= WindowChanged;
             CancelPlayerPresenterTransition();
-            StopPageEntrance();
             if (_captionThemeSettings is not null)
                 _captionThemeSettings.Changed -= CaptionSystemThemeChanged;
             _receiverTimer.Stop();
@@ -531,7 +532,7 @@ public sealed partial class MainWindow : Window
             _videoHost.Hide();
             return;
         }
-        PositionPlayer(slot, _hasVideo && !IsMirrorPageEntering, scale);
+        PositionPlayer(slot, _hasVideo, scale);
     }
 
     private RectInt32? GetVideoSlotBounds(double scale)
@@ -539,8 +540,15 @@ public sealed partial class MainWindow : Window
         if (!IsMirrorPageSelected || VideoHostSlot.ActualWidth <= 0 || VideoHostSlot.ActualHeight <= 0)
             return null;
 
-        Rect slot = VideoHostSlot.TransformToVisual(null).TransformBounds(
-            new Rect(0, 0, VideoHostSlot.ActualWidth, VideoHostSlot.ActualHeight));
+        // Native video stays at its arranged location; only XAML content joins
+        // the default page transition. Animated transforms must not move the HWND.
+        var offset = System.Numerics.Vector3.Zero;
+        for (DependencyObject? parent = VideoHostSlot; parent is not null && !ReferenceEquals(parent, WindowLayout);
+            parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is UIElement child) offset += child.ActualOffset;
+        }
+        Rect slot = new(offset.X, offset.Y, VideoHostSlot.ActualWidth, VideoHostSlot.ActualHeight);
         int left = (int)Math.Ceiling(slot.Left * scale);
         int top = (int)Math.Ceiling(slot.Top * scale);
         int right = (int)Math.Floor(slot.Right * scale);
@@ -635,6 +643,10 @@ public sealed partial class MainWindow : Window
         _receiverTimer.Stop();
         _musicActivityTimer?.Stop();
         _videoBackdropTimer?.Stop();
+        CancelMusicArtworkWork();
+        CancelPendingLyricsWork();
+        CancelVideoBackdropWork();
+        MusicBackground.CancelPendingImageWork();
         MusicBackground.ResetAudioActivity();
         PlayerStopButton.IsEnabled = DecoderButton.IsEnabled = false;
         HidePairingCode();

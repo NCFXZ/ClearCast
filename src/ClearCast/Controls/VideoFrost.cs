@@ -18,8 +18,10 @@ internal sealed class VideoFrost
     /// Maps the unrotated receiver sample through the displayed image rectangle, including black
     /// letterboxing. The returned BGRA buffer is reused and is valid until the next call.
     /// </summary>
-    internal byte[] Render(ReadOnlySpan<byte> source, RectangleF picture, RectangleF controls, int quarterTurns)
+    internal byte[] Render(ReadOnlySpan<byte> source, RectangleF picture, RectangleF controls, int quarterTurns,
+        CancellationToken cancellation = default)
     {
+        cancellation.ThrowIfCancellationRequested();
         if (source.Length != ReceiverVideoFrame.ByteCount || !Valid(picture) || !Valid(controls))
         {
             for (int offset = 0; offset < _output.Length; offset += 4)
@@ -39,6 +41,7 @@ internal sealed class VideoFrost
         // pixels inside the card. Native-size cropping uses the complete image rectangle.
         for (int y = 0; y < height; y++)
         {
+            cancellation.ThrowIfCancellationRequested();
             double displayY = controls.Y + (y - padY + 0.5) * controls.Height / Height;
             for (int x = 0; x < width; x++)
             {
@@ -73,16 +76,19 @@ internal sealed class VideoFrost
         // proportional to the fixed texture area rather than the blur radius.
         for (int pass = 0; pass < Passes; pass++)
         {
-            Blur(_sample, _scratch, width, height, radiusX, horizontal: true);
-            Blur(_scratch, _sample, width, height, radiusY, horizontal: false);
+            Blur(_sample, _scratch, width, height, radiusX, horizontal: true, cancellation);
+            Blur(_scratch, _sample, width, height, radiusY, horizontal: false, cancellation);
         }
         for (int y = 0; y < Height; y++)
+        {
+            cancellation.ThrowIfCancellationRequested();
             for (int x = 0; x < Width; x++)
             {
                 int input = ((y + padY) * width + x + padX) * 4, output = (y * Width + x) * 4;
                 for (int channel = 0; channel < 3; channel++) _output[output + channel] = Tint(_sample[input + channel]);
                 _output[output + 3] = 255;
             }
+        }
         return _output;
     }
 
@@ -92,12 +98,14 @@ internal sealed class VideoFrost
     // A translucent dark tint, baked against the sampled video, keeps white transport labels legible.
     private static byte Tint(byte value) => (byte)((value * 40 + 24 * 60 + 50) / 100);
 
-    private static void Blur(byte[] source, byte[] target, int width, int height, int radius, bool horizontal)
+    private static void Blur(byte[] source, byte[] target, int width, int height, int radius, bool horizontal,
+        CancellationToken cancellation)
     {
         int length = horizontal ? width : height, lines = horizontal ? height : width;
         int step = horizontal ? 4 : width * 4, divisor = radius * 2 + 1;
         for (int line = 0; line < lines; line++)
         {
+            cancellation.ThrowIfCancellationRequested();
             int start = horizontal ? line * width * 4 : line * 4;
             for (int channel = 0; channel < 3; channel++)
             {
