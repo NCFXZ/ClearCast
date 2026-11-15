@@ -104,7 +104,7 @@ pacman -S --needed git diffutils \
 ```powershell
 New-Item -ItemType Directory -Force .runtime
 Invoke-WebRequest 'https://codeload.github.com/FDH2/UxPlay/tar.gz/d4b7373cb6107b2d8d6c5838991c19d39e2b96ae' -OutFile .runtime\uxplay-d4b7373.tar.gz
-Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/download/2.8.0/libplist-2.8.0.tar.bz2' -OutFile .runtime\libplist-2.8.0.tar.bz2
+Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/download/2.8.1/libplist-2.8.1.tar.bz2' -OutFile .runtime\libplist-2.8.1.tar.bz2
 pwsh -File .\scripts\native\Build-OpenSslSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -RuntimeDirectory .runtime\openssl-security
 pwsh -File .\scripts\native\Build-LibplistSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -DiffDirectory C:\msys64\usr\bin
 pwsh -File .\scripts\native\Build-GStreamerSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
@@ -112,7 +112,7 @@ pwsh -File .\scripts\native\Build-GStreamerHttpSecurity.ps1 -Ucrt64Directory C:\
 pwsh -File .\scripts\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
 
-安全组件构建脚本验证固定官方源码的 SHA-256，独立构建 libplist 2.8.0、OpenSSL 3.5.9 LTS，以及 GStreamer 1.28.9 的 codecparsers、videoparsersbad 和带受控目标地址补丁的 HTTP 源 libgstsoup。其余组件使用 MSYS2 运行时。构建工具和安全组件使用独立目录，不覆盖 MSYS2 安装；接收器构建会验证组件、头文件、导入库及源码补丁的清单与哈希，缺失或不匹配时停止。HTTP 组件的 `gstreamer-http-security-manifest.json` 和 `LICENSE-GStreamerHttpSecurity.txt` 必须随 receiver 发布。构建完成后执行上一节的发布命令。
+安全组件构建脚本验证固定官方源码的 SHA-256，独立构建 libplist 2.8.1、OpenSSL 3.5.9 LTS，以及 GStreamer 1.28.9 的 codecparsers、videoparsersbad 和带受控目标地址补丁的 HTTP 源 libgstsoup。其余组件使用 MSYS2 运行时。构建工具和安全组件使用独立目录，不覆盖 MSYS2 安装；接收器构建会验证组件、头文件、导入库及源码补丁的清单与哈希，缺失或不匹配时停止。HTTP 组件的 `gstreamer-http-security-manifest.json` 和 `LICENSE-GStreamerHttpSecurity.txt` 必须随 receiver 发布。构建完成后执行上一节的发布命令。
 
 ### 清晰度与真机验收
 
@@ -241,7 +241,7 @@ Build with PowerShell 7 and `git` on PATH. Download the pinned source archive fr
 ```powershell
 New-Item -ItemType Directory -Force .runtime
 Invoke-WebRequest 'https://codeload.github.com/FDH2/UxPlay/tar.gz/d4b7373cb6107b2d8d6c5838991c19d39e2b96ae' -OutFile .runtime\uxplay-d4b7373.tar.gz
-Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/download/2.8.0/libplist-2.8.0.tar.bz2' -OutFile .runtime\libplist-2.8.0.tar.bz2
+Invoke-WebRequest 'https://github.com/libimobiledevice/libplist/releases/download/2.8.1/libplist-2.8.1.tar.bz2' -OutFile .runtime\libplist-2.8.1.tar.bz2
 pwsh -File .\scripts\native\Build-OpenSslSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -RuntimeDirectory .runtime\openssl-security
 pwsh -File .\scripts\native\Build-LibplistSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64 -DiffDirectory C:\msys64\usr\bin
 pwsh -File .\scripts\native\Build-GStreamerSecurity.ps1 -Ucrt64Directory C:\msys64\ucrt64
@@ -249,7 +249,7 @@ pwsh -File .\scripts\native\Build-GStreamerHttpSecurity.ps1 -Ucrt64Directory C:\
 pwsh -File .\scripts\native\Build-Receiver.ps1 -Ucrt64Directory C:\msys64\ucrt64
 ```
 
-The security-component scripts verify pinned official source SHA-256 values and independently build libplist 2.8.0, OpenSSL 3.5.9 LTS, and GStreamer 1.28.9 codecparsers, videoparsersbad and libgstsoup with the controlled destination-address patch. The remaining components come from the MSYS2 runtime. Build tools and security components use separate directories without overwriting the MSYS2 installation. The receiver build validates binaries, headers, import libraries and source patches against their manifests and stops on missing or mismatched files. Ship `gstreamer-http-security-manifest.json` and `LICENSE-GStreamerHttpSecurity.txt` with the receiver. Then run the app publish command above.
+The security-component scripts verify pinned official source SHA-256 values and independently build libplist 2.8.1, OpenSSL 3.5.9 LTS, and GStreamer 1.28.9 codecparsers, videoparsersbad and libgstsoup with the controlled destination-address patch. The remaining components come from the MSYS2 runtime. Build tools and security components use separate directories without overwriting the MSYS2 installation. The receiver build validates binaries, headers, import libraries and source patches against their manifests and stops on missing or mismatched files. Ship `gstreamer-http-security-manifest.json` and `LICENSE-GStreamerHttpSecurity.txt` with the receiver. Then run the app publish command above.
 
 ### Picture quality and device acceptance checks
 

@@ -68,7 +68,7 @@ function Read-SecurityComponent([string] $Directory, [string] $Name, [string] $V
 }
 
 $components = @(
-    (Read-SecurityComponent $LibplistSecurityDirectory 'libplist' '2.8.0' 'B1F59F7634C58B2481325A23FF4E3BF51574A42D868CBE466D2B39B04550752A'),
+    (Read-SecurityComponent $LibplistSecurityDirectory 'libplist' '2.8.1' '2A1792E5820E1657C173735FDE75BAEEBD6DD967D2AC47BE1E3891DDC64EBEFA'),
     (Read-SecurityComponent $OpenSslSecurityDirectory 'openssl' '3.5.9' '603F5602E2EEF00D77FBD429D34DCD5822BB301757A1BC9CDB24C670F1EB859A')
 )
 

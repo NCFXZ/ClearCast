@@ -41,8 +41,8 @@ report = {'passed': False, 'version': dll.libplist_version().decode(),
     'library': str(library), 'sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
     'loadedDependencies': loaded_dependency_evidence(library.parent, controlled_names),
     'validRoundTrips': 0, 'explicitMalformedRejections': 0, 'sanitizedUnicodeCases': 0,
-    'boundedMutationCases': 0}
-assert report['version'] == '2.8.0', report['version']
+    'boundedMutationCases': 0, 'referenceExpansionRejections': 0}
+assert report['version'] == '2.8.1', report['version']
 
 
 def read(data, binary=True):
@@ -70,8 +70,9 @@ def reject(data, binary=True):
         dll.plist_free(node)
 
 
-def nested_binary(depth):
-    objects = [b'\xa1' + (index + 1).to_bytes(2, 'big') for index in range(depth)] + [b'\x09']
+def nested_binary(depth, fanout=1):
+    objects = [bytes([0xa0 | fanout]) + (index + 1).to_bytes(2, 'big') * fanout
+               for index in range(depth)] + [b'\x09']
     payload, offsets = bytearray(b'bplist00'), []
     for item in objects:
         offsets.append(len(payload))
@@ -131,6 +132,20 @@ try:
     finally:
         dll.plist_free(node)
     reject(nested_binary(1000))
+    # A small, valid shared-reference tree must still round-trip. Larger
+    # acyclic graphs would expand exponentially without the 2.8.1 node budget.
+    shared = True
+    for unused in range(8):
+        shared = [shared, shared]
+    result, node = read(nested_binary(8, 2))
+    try:
+        assert result == 0 and node and plistlib.loads(write(node)) == shared
+        report['validRoundTrips'] += 1
+    finally:
+        dll.plist_free(node)
+    for depth in (17, 31, 127):
+        reject(nested_binary(depth, 2))
+        report['referenceExpansionRejections'] += 1
     reject(b'<plist>' + b'<array>' * 1000 + b'<true/>' + b'</array>' * 1000 + b'</plist>', False)
     for data in (b'<plist><integer>1</integer><string>second root</string></plist>',
                  b'<plist><unknown>value</unknown></plist>', b'<plist><string>unterminated'):

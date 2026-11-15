@@ -11,14 +11,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $runtime = Join-Path $repositoryRoot '.runtime'
-$version = '2.8.0'
-$sourceUrl = 'https://github.com/libimobiledevice/libplist/releases/download/2.8.0/libplist-2.8.0.tar.bz2'
+$version = '2.8.1'
+$sourceUrl = 'https://github.com/libimobiledevice/libplist/releases/download/2.8.1/libplist-2.8.1.tar.bz2'
 # Published digest of the official GitHub release asset.
-$expectedHash = 'B1F59F7634C58B2481325A23FF4E3BF51574A42D868CBE466D2B39B04550752A'
-if (-not $ArchivePath) { $ArchivePath = Join-Path $runtime 'libplist-2.8.0.tar.bz2' }
+$expectedHash = '2A1792E5820E1657C173735FDE75BAEEBD6DD967D2AC47BE1E3891DDC64EBEFA'
+if (-not $ArchivePath) { $ArchivePath = Join-Path $runtime 'libplist-2.8.1.tar.bz2' }
 if (-not $Ucrt64Directory) { $Ucrt64Directory = Join-Path $runtime 'msys64\ucrt64' }
 if (-not $MakePath) { $MakePath = Join-Path $runtime 'build-tools\openssl-tools\usr\bin\make.exe' }
-if (-not $DiffDirectory) { $DiffDirectory = Join-Path $runtime 'build-tools\libplist-tools\usr\bin' }
+if (-not $DiffDirectory) { $DiffDirectory = Join-Path (Split-Path -Parent $Ucrt64Directory) 'usr\bin' }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $runtime 'libplist-security-build' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $runtime 'libplist-security' }
 

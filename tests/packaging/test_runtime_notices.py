@@ -67,6 +67,34 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         with self.assertRaises(ValueError):
             notices.source_licenses(source, 'pkg')
 
+    def test_controlled_source_addition_is_bound_to_manifest_digest(self):
+        source = self.work / 'libplist-2.8.1.tar.bz2'
+        source.write_bytes(b'exact upstream source fixture')
+        component = {'name': 'libplist', 'sourceUrl': 'https://example.test/' + source.name,
+                     'sourceSha256': notices.file_sha(source)}
+        baseline = self.work / 'baseline.zip'
+        with zipfile.ZipFile(baseline, 'w'):
+            pass
+        additions = {}
+        notices.controlled_source_archive(component, baseline, self.work, additions)
+        self.assertEqual(additions['libplist/' + source.name]['sha256'], component['sourceSha256'])
+        source.write_bytes(b'tampered')
+        with self.assertRaisesRegex(ValueError, 'source archive'):
+            notices.controlled_source_archive(component, baseline, self.work, {})
+
+    def test_controlled_source_baseline_is_verified(self):
+        component = {'name': 'libplist', 'sourceUrl': 'https://example.test/source.tar.bz2',
+                     'sourceSha256': hashlib.sha256(b'expected').hexdigest()}
+        baseline = self.work / 'baseline.zip'
+        with zipfile.ZipFile(baseline, 'w') as archive:
+            archive.writestr('libplist/source.tar.bz2', b'expected')
+        additions = {}
+        notices.controlled_source_archive(component, baseline, self.work, additions)
+        self.assertEqual(additions, {})
+        component['sourceSha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'source archive mismatch'):
+            notices.controlled_source_archive(component, baseline, self.work, {})
+
     def run_controlled_metadata(self, components):
         config = self.work / 'app.runtimeconfig.json'
         config.write_text(json.dumps({'runtimeOptions': {'includedFrameworks': [
@@ -118,7 +146,7 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
 
     def test_controlled_file_cannot_escape_runtime(self):
         result = self.run_controlled_metadata([
-            {'name': 'libplist', 'version': '2.8.0', 'files': [{'relativePath': '../outside.dll'}]},
+            {'name': 'libplist', 'version': '2.8.1', 'files': [{'relativePath': '../outside.dll'}]},
             {'name': 'openssl', 'version': '3.5.9', 'files': [{'relativePath': 'libcrypto-3-x64.dll'}]},
         ])
         self.assertNotEqual(result.returncode, 0)

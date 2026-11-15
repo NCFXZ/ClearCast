@@ -109,7 +109,7 @@ HTTP CTest 名称分别为 `http_headers_case_insensitive` 和 `http_request_sec
 python tests/native/libplist_security_test.py --library .runtime/receiver/libplist-2.0.dll
 ```
 
-覆盖 Unicode、整数与数据的二进制/XML 往返和复制，畸形 offset/reference/长度/嵌套边界，以及 1,000 个确定性有界变异。报告默认写入 `.runtime/qa-libplist-security-results.json`，可用 `--output` 指定。此检查验证实际加载的 2.8.0 DLL，不能替代穷尽模糊测试。
+覆盖 Unicode、整数与数据的二进制/XML 往返和复制，畸形 offset/reference/长度/嵌套边界、合法共享引用与指数引用膨胀拒绝，以及 1,000 个确定性有界变异。报告默认写入 `.runtime/qa-libplist-security-results.json`，可用 `--output` 指定。此检查验证实际加载的 2.8.1 DLL，不能替代穷尽模糊测试。
 
 ## 已解码音乐的节奏活动
 

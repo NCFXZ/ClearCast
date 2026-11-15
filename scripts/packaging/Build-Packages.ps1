@@ -82,7 +82,7 @@ foreach ($folder in @($publish, $storePublish)) {
     }
     foreach ($component in $dependencies.components) {
         $name = $component.name.ToLowerInvariant()
-        if (($name -eq 'libplist' -and ($component.version -ne '2.8.0' -or $component.files.Count -ne 1 -or
+        if (($name -eq 'libplist' -and ($component.version -ne '2.8.1' -or $component.files.Count -ne 1 -or
             $component.files[0].relativePath -ne 'libplist-2.0.dll')) -or
             ($name -eq 'openssl' -and ($component.version -ne '3.5.9' -or $component.files.Count -gt 2 -or
             @($component.files | Where-Object relativePath -eq 'libcrypto-3-x64.dll').Count -ne 1 -or

@@ -39,6 +39,26 @@ def file_sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def controlled_source_archive(component, baseline, additional_directory, additions):
+    filename = PurePosixPath(component['sourceUrl']).name
+    member = component['name'] + '/' + filename
+    safe_relative(member)
+    expected = component['sourceSha256'].lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', expected):
+        raise ValueError('Invalid controlled source digest.')
+    with zipfile.ZipFile(baseline) as archive:
+        if member in archive.namelist():
+            with archive.open(member) as stream:
+                actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if actual != expected:
+                raise ValueError('Baseline controlled source archive mismatch: ' + member)
+            return
+    source = additional_directory / filename
+    if not source.is_file() or file_sha(source) != expected:
+        raise ValueError('Missing or mismatched exact controlled source archive: ' + member)
+    additions[member] = {'path': str(source.resolve()), 'sha256': expected}
+
+
 def safe_relative(value):
     path = PurePosixPath(value.replace('\\', '/'))
     if path.is_absolute() or '..' in path.parts or ':' in value or not path.parts:
@@ -418,7 +438,7 @@ def main():
         raise ValueError('Controlled components must identify libplist and OpenSSL exactly once.')
     controlled = []
     for component in dependencies['components']:
-        expected_version = {'libplist': '2.8.0', 'openssl': '3.5.9'}[component['name']]
+        expected_version = {'libplist': '2.8.1', 'openssl': '3.5.9'}[component['name']]
         allowed_files = {'libplist': {'libplist-2.0.dll'}, 'openssl': {'libcrypto-3-x64.dll', 'libssl-3-x64.dll'}}[component['name']]
         names = [file['relativePath'] for file in component.get('files', [])]
         if (component['version'] != expected_version or not names or len(names) != len(set(names)) or
@@ -430,6 +450,7 @@ def main():
         for key in ['version', 'sourceUrl', 'sourceSha256']:
             if manifest[key].lower() != component[key].lower():
                 raise ValueError('Controlled provenance mismatch: ' + component['name'])
+        controlled_source_archive(component, args.base, args.additional_source_directory, additions)
         for file in component['files']:
             if file_sha(args.runtime_directory / file['relativePath']) != file['sha256'].lower():
                 raise ValueError('Controlled binary mismatch.')
