@@ -1,24 +1,22 @@
 # ClearCast 当前进展
 
-## 当前任务：1.3.3.0 清理、完整验证与发行
+## 当前基线：1.3.3.0
 
-- 用户已确认 Claude 修复验证码循环及删除配对后无法重新进入配对的问题。本轮保留最终密码质询与未登记密钥握手回退，按“公钥＋名称”独立保存、准入和删除，并保留其他记录的接收端身份。具体行为与共享私钥的身份边界见 [AirPlay 媒体](shared/docs/AIRPLAY_MEDIA.md)。
-- 视频模糊背景复用两张可写位图，采样和后台处理不等待淡入或逐帧 GPU 资源退役；保留音乐背景、颜色与视觉处理。
-- 用户授权清理无用文件、代码和未使用的 UI 组件/样式；Android TV 已迁至独立 [ClearCast-TV](../ClearCast-TV/README.md)，本仓库不保留其构建范围。清理须核对引用与路径，保留工具链、固定来源及许可证、当前证据、升级基线和真实状态。
-- 当前分支为 `codex/release-1.3.3.0`，版本调整为应用/Bundle/Store `1.3.3.0`、MSI `1.3.3`。发布前依赖复核发现 libplist 2.8.1 的畸形输入安全修复，正在同步官方固定来源、构建、清单及回归用例；升级后重新执行软件、协议、安装与沙箱验收。详细结果仅记录于 `.runtime/qa-release-1.3.3.0-libplist281/`。
-- 验证完成后，按本次授权提交完整源码与安装包到 GitHub，并提交微软商店更新。当前尚未发布 `1.3.3.0`。沿用既有安装升级身份、商店 Name/Publisher 与 x64 范围；更新说明只描述用户可感知的变化。
+- GitHub [v1.3.3.0](https://github.com/NCFXZ/ClearCast/releases/tag/v1.3.3.0) 已正式发布，源码与标签固定为 `ac3ac8a4164e32db7f1bb50ea0672a7321cb03e0`。发行身份、交付范围与验证入口见 [发行记录](shared/docs/releases/release-status-1.3.3.0.md)。
+- 微软商店 Submission 8（`1152921505702411362`）已提交，当前处于认证预处理，认证通过后自动发布；尚未确认本版上架。现有上架版本为 Submission 7 的 `1.3.2.0`。
+- 默认入口 `scripts/Launch-ClearCast.cmd` 已同步到最终 `.runtime/app/`，接收器位于 `.runtime/receiver/`，真实 `.clearcast-state` 的配对与偏好保持不变。自动化使用隔离状态。
 
-## 当前已交付基线
+## 本轮实现
 
-- GitHub [v1.3.2.0](https://github.com/NCFXZ/ClearCast/releases/tag/v1.3.2.0) 已发布，发行记录及资产身份见 [1.3.2.0 发行状态](shared/docs/releases/release-status-1.3.2.0.md)。
-- 本次已通过 Partner Center 确认 Submission 7 的产品更新已在商店提供，存在 Start update 入口。后续 `1.3.3.0` 提交成功与通过认证上架须分别记录。
-- 默认入口为 `scripts/Launch-ClearCast.cmd`，运行目录 `.runtime/app`，状态目录为仓库下 `.clearcast-state`。已按用户补充要求同步到本次 `1.3.3.0` 构建，保留真实配对与偏好。GitHub 首页/发行页和微软商店截图的首图统一为等待连接界面，中英文一致。自动化使用独立临时状态。
+- 视频模糊背景复用可写位图，采样与处理不等待淡入或 GPU 资源退役；保留音乐背景、媒体时钟与视觉处理。
+- 配对按“公钥＋规范化名称”独立保存、准入和删除，保留其他记录的接收端身份；删除后的设备可通过显示的验证码再次登记，保留 Claude 修复的握手回退。发送端名称及共享私钥的边界见 [AirPlay 媒体](shared/docs/AIRPLAY_MEDIA.md)。
+- 受控 libplist 更新至官方 `2.8.1`，同步固定来源、SHA-256、构建、许可证及对应源码打包门禁；构建与验证使用 SDK `10.0.404` 和自包含 .NET `10.0.15`。
+- 已核对并清理旧运行目录及无用引用；Android TV 已迁出，本仓库无其源码或构建范围。WinUI 框架隐式消费的主题资源与视觉状态保留。
+- 中英文 GitHub/商店首图均为等待连接界面；更新文案各三条，只描述用户可感知的变化。本轮软件与安装验收、源码和安装包交付已完成。
 
-## 实现与验证边界
+## 后续维护与验证边界
 
-- 共用逻辑保持单一实现，平台差异放对应适配器；只做完成本轮任务所需的清理与修复。框架隐式消费的视觉状态与主题资源不能仅凭项目内无显式引用判定为无用。
-- 接收端口测试与所有应用启动串行执行，只管理本次任务启动的进程，后台工具隐藏运行。图形资源按所有者线程与安全退役路径清理。
-- 保留原生音视频时间戳、时钟、有效编码参考帧及既有安全边界；不得以绕过 TLS、签名或完整性检查换取测试通过。
-- 工具链保持 SDK `10.0.404` 与自包含 .NET `10.0.15`；核对依赖官方安全公告、固定版本、来源哈希及许可证。若升级依赖，须同步受控清单与完整验证。
-- 入口见 [托管与 UI 测试](shared/docs/testing.md)、[原生测试](shared/docs/testing-native.md)、[打包](shared/docs/packaging.md)及[稳定性与安全](shared/docs/RELIABILITY_SECURITY.md)。测试成绩与运行产物仅留在忽略的 `.runtime/`。
-- 自动化和 Windows 沙箱不能代替真实 Apple 设备、账号/DRM、物理音画同步、GPU/音频及长期弱网验收；永久驱动或合成器故障仍可能影响安全窗口退役。
+- 后续确认商店认证及公开上架结果；提交成功与上架状态分别记录。
+- 跟进 OpenSSL 官方 Low 级公告的正式修复版本，升级时同步固定来源及完整验证；目前不使用未验证快照或绕过完整性检查。
+- 自动化及沙箱不能代替真实 Apple 设备、账号/DRM、物理音画同步、全部 GPU 或长期弱网验收。
+- 验证入口：[托管与 UI](shared/docs/testing.md)、[原生](shared/docs/testing-native.md)、[打包](shared/docs/packaging.md)及[稳定性与安全](shared/docs/RELIABILITY_SECURITY.md)。详细结果与运行产物仅留在忽略的 `.runtime/qa-release-1.3.3.0-libplist281/`，不写入本文件。
