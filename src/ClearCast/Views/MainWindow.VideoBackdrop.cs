@@ -204,7 +204,7 @@ public sealed partial class MainWindow
         _videoBackdropPending = true;
         _videoBackdropRequestedAt = Stopwatch.GetTimestamp();
         int generation = _videoBackdropGeneration;
-        bool measuredWindowed = false, transitionDelay = false;
+        bool measuredWindowed = false;
         try
         {
             var frame = await Task.Run(receiver.ReadVideoFrame);
@@ -224,8 +224,7 @@ public sealed partial class MainWindow
                     _windowedVideoBackdropPixels is { } previous && previous.AsSpan().SequenceEqual(frame.Pixels)) return;
                 _videoBackdropPixels = frame.Pixels;
                 _windowedVideoBackdropPixels = frame.Pixels;
-                transitionDelay = _motionSettings.AnimationsEnabled;
-                await MusicBackground.SetVideoFrameAsync(frame.Pixels, WindowLayout.ActualTheme == ElementTheme.Dark, transitionDelay);
+                await MusicBackground.SetVideoFrameAsync(frame.Pixels, WindowLayout.ActualTheme == ElementTheme.Dark, _motionSettings.AnimationsEnabled);
             }
             if (!_closed) UpdateMusicBackgroundState();
         }
@@ -233,9 +232,7 @@ public sealed partial class MainWindow
         {
             if (measuredWindowed && generation == _videoBackdropGeneration && !_closed && !_closing)
             {
-                double work = Stopwatch.GetElapsedTime(_videoBackdropRequestedAt).TotalMilliseconds -
-                    (transitionDelay ? MusicBackdrop.VideoTransitionMilliseconds : 0);
-                _videoBackdropCadence.Observe(TimeSpan.FromMilliseconds(Math.Max(0, work)));
+                _videoBackdropCadence.Observe(Stopwatch.GetElapsedTime(_videoBackdropRequestedAt));
             }
             _videoBackdropPending = false;
         }

@@ -327,8 +327,12 @@ const char* receiver_display_name() noexcept {
 }
 
 int load_pairing_keys() {
+    std::lock_guard<std::mutex> registration_lock(registered_client_mutex);
     registered_keys.clear();
     registered_client_metadata.clear();
+    registered_client_names.clear();
+    registered_named_keys.clear();
+    registered_client_records = 0;
     const std::unique_ptr<FILE, decltype(&fclose)> file(g_fopen(pairing_register.c_str(), "rb"), &fclose);
     if (!file) {
         return errno == ENOENT ? 0 : ERROR_READ_FAULT;
@@ -358,13 +362,15 @@ int load_pairing_keys() {
         })) {
             const std::string key(prefix, key_length);
             if (registered_client_metadata.find(key) == registered_client_metadata.end() &&
-                registered_client_metadata.size() >= clearcast_pairing_max_clients) {
+                registered_client_records >= clearcast_pairing_max_clients) {
                 capacity_exceeded = true;
                 return;
             }
             if (registered_client_metadata.emplace(key, "").second) {
                 registered_keys.emplace_back(key);
+                ++registered_client_records;
             }
+            if (truncated) registered_named_keys.insert(key);
             if (!truncated && length > key_length) {
                 const std::string row(prefix, length);
                 const size_t second_comma = row.find(',', key_length + 1);
@@ -374,6 +380,24 @@ int load_pairing_keys() {
                     if (name_comma != std::string::npos &&
                         (name_comma + 1 < metadata.size() || registered_client_metadata[key].empty())) {
                         registered_client_metadata[key] = metadata;
+                        if (name_comma + 1 < metadata.size()) {
+                            char name[513];
+                            const bool valid_name = clearcast_pairing_normalize_name(metadata.c_str() + name_comma + 1, name);
+                            if (!valid_name || *name) registered_named_keys.insert(key);
+                            if (valid_name && *name) {
+                                auto &names = registered_client_names[key];
+                                if (!names.count(name)) {
+                                    if (!names.empty()) {
+                                        if (registered_client_records >= clearcast_pairing_max_clients) {
+                                            capacity_exceeded = true;
+                                            return;
+                                        }
+                                        ++registered_client_records;
+                                    }
+                                    names.insert(name);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -397,6 +421,9 @@ int load_pairing_keys() {
     if (ferror(file.get()) || capacity_exceeded) {
         registered_keys.clear();
         registered_client_metadata.clear();
+        registered_client_names.clear();
+        registered_named_keys.clear();
+        registered_client_records = 0;
         return capacity_exceeded ? ERROR_FILE_TOO_LARGE : ERROR_READ_FAULT;
     }
     return 0;

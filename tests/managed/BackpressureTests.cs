@@ -98,6 +98,10 @@ internal static class BackpressureTests
             File.WriteAllText(clients, expected + removed + "\r\n" + removed, new UTF8Encoding(false));
             AirPlayReceiver.RemovePairing(fixture, removed);
             check(File.ReadAllText(clients) == expected, "streamed pairing removal retains exact bytes at buffer boundary " + padding);
+            File.WriteAllText(clients, expected + retained + ",date,id,Remove, 设备\n" + retained + "\r\n", new UTF8Encoding(false));
+            AirPlayReceiver.RemovePairing(fixture, retained, "Remove, 设备");
+            check(File.ReadAllText(clients) == expected,
+                "name-scoped removal preserves another same-key name and exact bytes at buffer boundary " + padding);
         }
         File.WriteAllText(clients, retained + ",date,id," + new string('x', 8 * 1024 * 1024) + "\n", new UTF8Encoding(false));
         byte[] expectedHash;
@@ -109,6 +113,14 @@ internal static class BackpressureTests
         check(allocations < 256 * 1024, "pairing removal memory stays bounded for an eight-MiB damaged row");
         using (var input = File.OpenRead(clients))
             check(SHA256.HashData(input).SequenceEqual(expectedHash), "large unrelated pairing record remains byte-for-byte unchanged");
+        File.AppendAllText(clients, retained + ",date,id,Remove\n" + retained + "\n", new UTF8Encoding(false));
+        before = GC.GetAllocatedBytesForCurrentThread();
+        AirPlayReceiver.RemovePairing(fixture, retained, "Remove");
+        allocations = GC.GetAllocatedBytesForCurrentThread() - before;
+        check(allocations < 256 * 1024, "name-scoped removal stays bounded beside an eight-MiB same-key metadata row");
+        using (var input = File.OpenRead(clients))
+            check(SHA256.HashData(input).SequenceEqual(expectedHash),
+                "name-scoped removal preserves oversized ambiguous metadata while deleting the selected complete name");
         using (var oversized = File.Open(clients, FileMode.Create)) oversized.SetLength(16 * 1024 * 1024 + 1);
         before = GC.GetAllocatedBytesForCurrentThread();
         bool oversizedRejected = false;
@@ -121,6 +133,12 @@ internal static class BackpressureTests
         bool tooManyRejected = false;
         try { AirPlayReceiver.GetSavedPairings(fixture); } catch (IOException) { tooManyRejected = true; }
         check(tooManyRejected, "pairing load rejects more than 4096 distinct clients without returning a partial trust list");
+        using (var writer = new StreamWriter(clients, false, new UTF8Encoding(false)))
+            for (int index = 0; index < 4097; index++)
+                writer.WriteLine(retained + ",date,shared-id,Fixture " + index);
+        bool tooManyNamesRejected = false;
+        try { AirPlayReceiver.GetSavedPairings(fixture); } catch (IOException) { tooManyNamesRejected = true; }
+        check(tooManyNamesRejected, "pairing load bounds distinct saved names even when every name shares one trust key");
         File.Delete(clients);
         AirPlayReceiver.RemovePairing(fixture, removed);
         check(!File.Exists(clients), "streamed removal retains missing-file no-op semantics");

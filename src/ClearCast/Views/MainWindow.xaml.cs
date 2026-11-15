@@ -741,6 +741,7 @@ public sealed partial class MainWindow : Window
                 if (update.Width is >= 1 and <= 9999 && update.Height > 0)
                 {
                     ReceiverInfoBar.IsOpen = false;
+                    SetReceiverStatus("等待 AirPlay 连接");
                     ShowPairingCode(update.Width.ToString("0000", System.Globalization.CultureInfo.InvariantCulture),
                         update.Height);
                 }

@@ -157,29 +157,42 @@ internal sealed class AirPlayReceiver
 
     public static IReadOnlyList<SavedPairing> GetSavedPairings(string root)
     {
-        var pairings = new Dictionary<string, SavedPairing>(StringComparer.Ordinal);
+        var pairings = new Dictionary<(string Id, string? Name), SavedPairing>();
+        var namedKeys = new HashSet<string>(StringComparer.Ordinal);
         // Receiver records are below 1 KiB. Keep a bounded prefix even if a damaged
         // local file contains an oversized metadata line, while still retaining its key.
         foreach (var row in ReadPairingRows(PairingPath(root)))
         {
             if (GetPairingKey(row.Span) is not { } id)
                 continue;
-            if (pairings.Count == MaximumPairings && !pairings.ContainsKey(id))
-                throw new IOException("The saved pairing registry contains too many devices.");
-
-            // UxPlay writes key, timestamp, device ID, and name. Older records can have only the key.
-            string[] fields = Encoding.UTF8.GetString(row.Span).Split(',', 4);
-            string? name = fields.Length == 4 ? fields[3].Trim().Replace('\r', ' ') : null;
+            string? name = GetPairingName(row.Span);
             if (!string.IsNullOrEmpty(name))
-                pairings[id] = new(id, name);
+            {
+                // A trust key can be reused by different named senders. Keep their
+                // names instead of replacing every earlier name with the last one.
+                namedKeys.Add(id);
+                pairings.Remove((id, null));
+            }
             else
-                pairings.TryAdd(id, new(id, null));
+            {
+                if (namedKeys.Contains(id)) continue;
+                name = null;
+            }
+            var identity = (id, name);
+            if (pairings.Count == MaximumPairings && !pairings.ContainsKey(identity))
+                throw new IOException("The saved pairing registry contains too many devices.");
+            pairings.TryAdd(identity, new(id, name));
         }
         return [.. pairings.Values];
     }
 
     // The receiver must be stopped before replacing the file it appends to and caches in memory.
-    public static void RemovePairing(string root, string id)
+    public static void RemovePairing(string root, string id) => RemovePairing(root, id, null, false);
+
+    public static void RemovePairing(string root, string id, string? storedName) =>
+        RemovePairing(root, id, NormalizePairingName(storedName), true);
+
+    private static void RemovePairing(string root, string id, string? storedName, bool matchName)
     {
         using var stateLock = AcquirePairingLock(root);
         if (stateLock is null)
@@ -192,10 +205,12 @@ internal sealed class AirPlayReceiver
             bool removed;
             using (var stream = new FileStream(temporary, FileMode.CreateNew))
             {
-                removed = CopyRetainedPairings(path, stream, id);
+                removed = CopyRetainedPairings(path, stream, id, storedName, matchName);
             }
             if (removed)
-                CommitPairingRemoval(root, temporary, path);
+                // Preserve the receiver identity so unrelated saved devices can
+                // continue verifying it after this record has been revoked.
+                File.Move(temporary, path, overwrite: true);
         }
         finally
         {
@@ -203,84 +218,17 @@ internal sealed class AirPlayReceiver
         }
     }
 
-    private static void CommitPairingRemoval(string root, string temporary, string path)
+    private static string? NormalizePairingName(string? name)
     {
-        // Apple caches the receiver public key. Retire that identity as well as
-        // revoking the client key, so a removed device can request a new PIN.
-        // Keep unique staging files until clients.txt is committed, so any I/O
-        // failure can restore both the live identity and its previous backup.
-        string state = StateDirectory(root);
-        string identity = Path.Combine(state, "receiver.pem");
-        string retired = Path.Combine(state, "receiver.unpaired.pem");
-        string transaction = Guid.NewGuid().ToString("N");
-        string stagedIdentity = identity + "." + transaction + ".tmp";
-        string stagedBackup = retired + "." + transaction + ".tmp";
-        bool identityStaged = false, backupStaged = false, identityRetired = false, committed = false;
-        try
-        {
-            identityStaged = MoveIfPresent(identity, stagedIdentity);
-            if (identityStaged)
-            {
-                backupStaged = MoveIfPresent(retired, stagedBackup);
-                File.Move(stagedIdentity, retired);
-                identityRetired = true;
-            }
-            File.Move(temporary, path, overwrite: true);
-            committed = true;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            var rollbackErrors = new List<Exception>();
-            bool identityRestored = !identityStaged;
-            if (identityStaged)
-            {
-                try
-                {
-                    File.Move(identityRetired ? retired : stagedIdentity, identity, overwrite: true);
-                    identityRestored = true;
-                }
-                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException)
-                {
-                    rollbackErrors.Add(rollback);
-                }
-            }
-            // Do not overwrite the only surviving identity if restoring it failed.
-            if (backupStaged && identityRestored)
-            {
-                try { File.Move(stagedBackup, retired, overwrite: true); }
-                catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException)
-                {
-                    rollbackErrors.Add(rollback);
-                }
-            }
-            if (rollbackErrors.Count != 0)
-                throw new IOException("Could not restore the pairing identity after a failed removal.",
-                    new AggregateException(new[] { error }.Concat(rollbackErrors)));
-            throw;
-        }
-        finally
-        {
-            if (committed)
-            {
-                // A delayed antivirus scan may hold a retired backup briefly. A
-                // cleanup failure must not turn a completed revocation into an error.
-                try { File.Delete(stagedBackup); }
-                catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { }
-            }
-        }
+        name = name?.Trim().Replace('\r', ' ');
+        return string.IsNullOrEmpty(name) ? null : name;
     }
 
-    private static bool MoveIfPresent(string source, string destination)
+    private static string? GetPairingName(ReadOnlySpan<byte> row)
     {
-        try
-        {
-            File.Move(source, destination);
-            return true;
-        }
-        catch (FileNotFoundException)
-        {
-            return false;
-        }
+        // UxPlay writes key, timestamp, device ID, and name. Names may contain commas.
+        string[] fields = Encoding.UTF8.GetString(row).Split(',', 4);
+        return fields.Length == 4 ? NormalizePairingName(fields[3]) : null;
     }
 
     private static string? GetPairingKey(ReadOnlySpan<byte> row)
@@ -300,17 +248,31 @@ internal sealed class AirPlayReceiver
         return Encoding.ASCII.GetString(row[..PairingKeyLength]);
     }
 
-    private static bool CopyRetainedPairings(string path, Stream output, string id)
+    private static bool CopyRetainedPairings(string path, Stream output, string id, string? storedName, bool matchName)
     {
         FileStream input;
         try { input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException) { return false; }
         using (input)
         {
-            byte[] buffer = new byte[8192], prefix = new byte[PairingKeyLength + 2];
+            byte[] buffer = new byte[8192], prefix = new byte[matchName ? MaximumPairingRowBytes + 1 : PairingKeyLength + 2];
             int prefixLength = 0, count;
             long remaining = input.Length;
             bool decided = false, discard = false, removed = false;
+            bool Discard(ReadOnlySpan<byte> row, bool complete)
+            {
+                if (GetPairingKey(row) != id) return false;
+                if (!matchName) { removed = true; return true; }
+                // Preserve an oversized, ambiguous metadata row rather than
+                // matching its truncated name to a different complete name.
+                if (!complete) return false;
+                string? rowName = GetPairingName(row);
+                bool selected = rowName == storedName;
+                removed |= selected;
+                // PIN placeholders must not survive as a wildcard grant after
+                // deleting a named record. They are committed only if found.
+                return selected || rowName is null;
+            }
             while (remaining > 0 && (count = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining))) != 0)
             {
                 remaining -= count;
@@ -326,8 +288,7 @@ internal sealed class AirPlayReceiver
                         offset += retained;
                         if (prefixLength == prefix.Length || end != -1)
                         {
-                            discard = GetPairingKey(prefix.AsSpan(0, prefixLength)) == id;
-                            removed |= discard;
+                            discard = Discard(prefix.AsSpan(0, prefixLength), end != -1 && offset == next);
                             decided = true;
                             if (!discard) output.Write(prefix.AsSpan(0, prefixLength));
                         }
@@ -340,8 +301,7 @@ internal sealed class AirPlayReceiver
             if (remaining != 0) throw new IOException("The saved pairing registry changed while being read.");
             if (!decided && prefixLength > 0)
             {
-                if (GetPairingKey(prefix.AsSpan(0, prefixLength)) == id) removed = true;
-                else output.Write(prefix.AsSpan(0, prefixLength));
+                if (!Discard(prefix.AsSpan(0, prefixLength), true)) output.Write(prefix.AsSpan(0, prefixLength));
             }
             return removed;
         }

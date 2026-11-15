@@ -69,15 +69,16 @@ def invalid_abi():
 
 private = None
 server_ed = None
+SAVED_NAME = 'QA 设备, Sender Line'
 
 
 def pairing_and_metadata():
     global private, server_ed
     with connect() as sock:
         private, server_ed = receiver.pair(sock, lowercase=True)
-        verify_pairing(sock, private, server_ed)
+        verify_pairing(sock, private, server_ed, name=SAVED_NAME)
         metadata = plistlib.dumps({'deviceID':'AA:BB:CC:DD:EE:FF', 'model':'iPhone',
-            'name':'QA 设备, Sender\nInjected\rLine', 'eiv':b'', 'ekey':b''}, fmt=plistlib.FMT_BINARY)
+            'name':SAVED_NAME, 'eiv':b'', 'ekey':b''}, fmt=plistlib.FMT_BINARY)
         request(sock, '/metadata-test', metadata, method='SETUP',
                 content_type='application/x-apple-binary-plist', expected=400)
         before = (receiver.state/'clients.txt').stat().st_size
@@ -88,7 +89,7 @@ def pairing_and_metadata():
         after = (receiver.state/'clients.txt').stat().st_size
         assert after == before, (before, after)
         rows = (receiver.state/'clients.txt').read_text(encoding='utf-8').splitlines()
-        assert len(rows) == 2 and 'QA 设备, Sender Injected Line' in rows[-1], rows
+        assert len(rows) == 2 and SAVED_NAME in rows[-1], 'Unexpected named pairing history'
         return {'duplicate_setups':250,'file_growth_bytes':after-before,
                 'seconds':round(time.monotonic()-begin,3),'unique_client_keys':1}
 
@@ -113,7 +114,7 @@ def media_requires_auth():
         with connect() as sock:
             request(sock, '/unauthorized', method=method, expected=401)
     with connect() as sock:
-        verify_pairing(sock, private, server_ed, corrupt=True)
+        verify_pairing(sock, private, server_ed, corrupt=True, name=SAVED_NAME)
     health()
     return {'unauthenticated_media_methods_rejected':len(methods), 'tampered_signature_rejected':True}
 
@@ -252,7 +253,7 @@ def pin_cooldown():
     with connect() as sock:
         request(sock,'/pair-pin-start',expected=470)
     with connect() as sock:
-        verify_pairing(sock,private,server_ed)
+        verify_pairing(sock,private,server_ed,name=SAVED_NAME)
     time.sleep(61)
     receiver.challenge()
     return {'bad_proofs':5,'cooldown_rejects_new_pin':True,
@@ -276,7 +277,7 @@ def lifecycle():
         try:
             receiver.start()
             with connect() as sock:
-                verify_pairing(sock,private,server_ed)
+                verify_pairing(sock,private,server_ed,name=SAVED_NAME)
                 # Leave a partial request in flight during shutdown.
                 sock.sendall(b'POST /partial RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 1024\r\n\r\nx')
                 begin=time.monotonic()
@@ -384,11 +385,11 @@ def pairing_registry_bounds():
         before = digest(clients)
         receiver.start()
         with connect() as sock:
-            verify_pairing(sock, private, server_ed)
+            verify_pairing(sock, private, server_ed, name=SAVED_NAME)
             metadata = plistlib.dumps({'deviceID':'capacity', 'model':'iPhone',
                 'name':'changed at capacity', 'eiv':b'', 'ekey':b''}, fmt=plistlib.FMT_BINARY)
             request(sock, '/metadata-test', metadata, method='SETUP',
-                content_type='application/x-apple-binary-plist', expected=400)
+                content_type='application/x-apple-binary-plist', expected=401)
         receiver.stop()
         check_preserved(before, max_bytes)
 

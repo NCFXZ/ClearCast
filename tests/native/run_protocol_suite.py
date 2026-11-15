@@ -32,6 +32,7 @@ def cases(phase, runtime):
     return [
         ("native-security", "receiver_security_test.py", [], None, "CLEARCAST_QA_REPORT"),
         ("pairing-reconnect", "pairing_reconnect_test.py", [], None, None),
+        ("named-pairing", "named_pairing_test.py", [], "--report", None),
         ("pairing-feedback", "pairing_feedback_test.py", [], None, "CLEARCAST_PAIRING_FEEDBACK_REPORT"),
         ("first-pin", "first_pin_retry_test.py", [], None, "CLEARCAST_FIRST_PIN_REPORT"),
         ("plugin-scanner", "plugin_scanner_lifecycle_test.py", [], None, "CLEARCAST_SCANNER_REPORT"),

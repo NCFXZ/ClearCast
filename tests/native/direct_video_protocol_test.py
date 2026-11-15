@@ -321,8 +321,13 @@ def main():
                     assert info["rate"] == 0 and snapshot()["kind"] == "video"
                     time.sleep(.2)
                 checks.append("Paused direct video survives beyond the mirror heartbeat limit without feedback")
+                with connect() as unnamed_auxiliary:
+                    verify_pairing(unnamed_auxiliary, private, server_key)
+                    request(unnamed_auxiliary, "/auxiliary", method="FLUSH", expected=470)
+                assert snapshot()["kind"] == "video"
+                checks.append("A named key cannot use an unnamed RTSP auxiliary transport to bypass name admission")
                 with connect() as auxiliary:
-                    verify_pairing(auxiliary, private, server_key)
+                    verify_pairing(auxiliary, private, server_key, name="Test iPhone")
                     request(auxiliary, "/auxiliary", method="FLUSH")
                     request(auxiliary, "/auxiliary", method="TEARDOWN")
                 assert snapshot()["kind"] == "video"

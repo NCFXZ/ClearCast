@@ -66,35 +66,34 @@ static object RunTests(string root)
     void CheckRollback(string name)
     {
         Check(File.ReadAllText(clients) == rowA + rowB + "unrelated legacy row\n", name + " clients unchanged");
-        Check(File.ReadAllBytes(identity).SequenceEqual(liveKey), name + " live identity restored");
-        Check(File.ReadAllBytes(retiredIdentity).SequenceEqual(oldBackup), name + " old backup restored");
+        Check(File.ReadAllBytes(identity).SequenceEqual(liveKey), name + " live identity unchanged");
+        Check(File.ReadAllBytes(retiredIdentity).SequenceEqual(oldBackup), name + " old backup unchanged");
         Check(Directory.GetFiles(state, "*.tmp").Length == 0, name + " no staging files remain");
     }
     PrepareRemoval();
     AirPlayReceiver.RemovePairing(root, key1);
     Check(File.ReadAllText(clients) == rowB + "unrelated legacy row\n", "A removed, B bytes preserved");
     Check(AirPlayReceiver.GetSavedPairings(root).Single().Name == "设备 B,名称", "B name preserved");
-    Check(!File.Exists(identity) && File.ReadAllBytes(retiredIdentity).SequenceEqual(liveKey), "successful removal retires server identity");
-    Check(Directory.GetFiles(state, "*.tmp").Length == 0, "committed removal cleans unique backup staging");
+    Check(File.ReadAllBytes(identity).SequenceEqual(liveKey) && File.ReadAllBytes(retiredIdentity).SequenceEqual(oldBackup),
+        "successful single-client revocation preserves receiver identity and prior backup for unrelated devices");
+    Check(Directory.GetFiles(state, "*.tmp").Length == 0, "committed removal cleans registry staging");
     PrepareRemoval();
     AirPlayReceiver.RemovePairing(root, key4);
     CheckRollback("missing ID");
     PrepareRemoval();
     using (var heldIdentity = new FileStream(identity, FileMode.Open, FileAccess.Read, FileShare.Read))
     {
-        bool refused = false;
-        try { AirPlayReceiver.RemovePairing(root, key1); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { refused = true; }
-        Check(refused, "locked live identity aborts removal");
+        AirPlayReceiver.RemovePairing(root, key1);
+        Check(File.ReadAllText(clients) == rowB + "unrelated legacy row\n" && File.ReadAllBytes(identity).SequenceEqual(liveKey),
+            "a locked receiver identity does not block independent client revocation or change its key");
     }
-    CheckRollback("live identity move failure");
     PrepareRemoval();
     using (var heldBackup = new FileStream(retiredIdentity, FileMode.Open, FileAccess.Read, FileShare.Read))
     {
-        bool refused = false;
-        try { AirPlayReceiver.RemovePairing(root, key1); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { refused = true; }
-        Check(refused, "locked retired backup aborts removal");
+        AirPlayReceiver.RemovePairing(root, key1);
+        Check(File.ReadAllText(clients) == rowB + "unrelated legacy row\n" && File.ReadAllBytes(retiredIdentity).SequenceEqual(oldBackup),
+            "a locked prior identity backup does not block independent client revocation");
     }
-    CheckRollback("retired backup move failure");
     PrepareRemoval();
     using (var heldClients = new FileStream(clients, FileMode.Open, FileAccess.Read, FileShare.Read))
     {
@@ -108,11 +107,60 @@ static object RunTests(string root)
     AirPlayReceiver.RemovePairing(root, key1);
     Check(File.ReadAllText(clients) == rowB + "unrelated legacy row\n", "removal without existing server key still revokes A");
     Check(File.ReadAllBytes(retiredIdentity).SequenceEqual(oldBackup), "missing live identity preserves retired backup");
+    Check(!File.Exists(identity), "client removal never creates a missing receiver identity");
 
     File.WriteAllText(clients, key1 + "\n" + key2, new UTF8Encoding(false));
     Check(AirPlayReceiver.GetSavedPairings(root).Count == 2, "last key without LF");
     File.WriteAllText(clients, key1 + "!\n" + "!" + key2[1..] + "\n" + key2 + ",date,id,Valid\r\n", new UTF8Encoding(false));
     Check(AirPlayReceiver.GetSavedPairings(root).Count == 1, "reject invalid Base64 and key delimiters");
+
+    string sharedFirst = key1 + ",date,shared-id,Fixture Phone A\n";
+    string sharedSecond = key1 + ",date,shared-id,Fixture Phone B\n";
+    File.WriteAllText(clients, key1 + "\n" + sharedFirst + sharedSecond + sharedFirst + key1 + ",date,shared-id,\n" + rowB,
+        new UTF8Encoding(false));
+    pairings = AirPlayReceiver.GetSavedPairings(root);
+    Check(pairings.Count == 3 && pairings.Count(pairing => pairing.Id == key1) == 2,
+        "distinct saved names sharing a trust key and client ID remain visible without duplicate reconnect or unnamed rows");
+    Check(pairings.Where(pairing => pairing.Id == key1).Select(pairing => pairing.Name).ToHashSet()
+        .SetEquals(["Fixture Phone A", "Fixture Phone B"]), "shared-key sender names are both preserved");
+    byte[] beforeMissingName = File.ReadAllBytes(clients);
+    AirPlayReceiver.RemovePairing(root, key1, "Missing Phone");
+    Check(File.ReadAllBytes(clients).SequenceEqual(beforeMissingName),
+        "a missing key-name target leaves the registry and unnamed placeholders byte-for-byte unchanged");
+    AirPlayReceiver.RemovePairing(root, key1, " Fixture Phone A ");
+    Check(File.ReadAllText(clients) == sharedSecond + rowB && AirPlayReceiver.GetSavedPairings(root).Count == 2,
+        "name-scoped removal deletes only its duplicate named rows and key placeholders, preserving another name on the same key");
+    Check(AirPlayReceiver.GetSavedPairings(root).Single(pairing => pairing.Id == key1).Name == "Fixture Phone B",
+        "another device sharing the public key remains saved after deleting the selected name");
+    File.AppendAllText(clients, key1 + "\n" + key1 + ",date,shared-id,\n", new UTF8Encoding(false));
+    AirPlayReceiver.RemovePairing(root, key1, "Fixture Phone B");
+    Check(File.ReadAllText(clients) == rowB && AirPlayReceiver.GetSavedPairings(root).Single().Id == key2,
+        "deleting the last name also removes that key's legacy placeholders without touching unrelated records");
+
+    File.WriteAllText(clients, key1 + "\r\n" + sharedFirst + key1 + ",date,id,Fixture\rPhone C", new UTF8Encoding(false));
+    AirPlayReceiver.RemovePairing(root, key1, (string?)null);
+    Check(File.ReadAllText(clients) == sharedFirst + key1 + ",date,id,Fixture\rPhone C",
+        "explicit null-name removal deletes only unnamed records, preserving named records on the same key");
+    AirPlayReceiver.RemovePairing(root, key1, "Fixture Phone C");
+    Check(File.ReadAllText(clients) == sharedFirst,
+        "name-scoped removal shares reader normalization and supports a final row without LF");
+
+    PrepareRemoval();
+    using (var heldClients = new FileStream(clients, FileMode.Open, FileAccess.Read, FileShare.Read))
+    {
+        bool refused = false;
+        try { AirPlayReceiver.RemovePairing(root, key1, "设备 A"); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { refused = true; }
+        Check(refused, "locked registry rejects name-scoped replacement");
+    }
+    CheckRollback("name-scoped registry replacement failure");
+
+    string exactName = key1 + ",date,id,Same Name\n";
+    string differentCase = key1 + ",date,id,same name\n";
+    string otherKeySameName = key2 + ",date,id,Same Name\n";
+    File.WriteAllText(clients, exactName + differentCase + otherKeySameName, new UTF8Encoding(false));
+    AirPlayReceiver.RemovePairing(root, key1, "Same Name");
+    Check(File.ReadAllText(clients) == differentCase + otherKeySameName,
+        "tuple removal compares names ordinally and preserves both another key's same name and this key's differently cased name");
 
     string oversized = key3 + ",date,id," + new string('x', 2 * 1024 * 1024) + "\n";
     File.WriteAllText(clients, oversized + key4 + ",date,id,Following\n", new UTF8Encoding(false));

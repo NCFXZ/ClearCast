@@ -114,8 +114,8 @@ internal sealed partial class UiText : INotifyPropertyChanged
 
     public string PairingHeading => Get("设备配对", "Device pairing");
     public string SavedPairings => Get("已保存的配对", "Saved pairings");
-    public string SavedPairingsDescription => Get("删除配对后，该设备下次需输入验证码，其他已保存设备也可能需要重新验证。",
-        "A removed device will need a pairing code next time. Other saved devices may also need to pair again.");
+    public string SavedPairingsDescription => Get("按设备名称和配对凭据保存，删除单台设备不会移除其他设备的记录。",
+        "Saved by device name and pairing credential. Removing one device keeps other devices' records.");
     public string NoSavedPairings => Get("暂无已配对设备", "No paired devices");
     public string AllSavedPairings => Get("全部配对记录", "All saved pairings");
     public string UnnamedPairing => Get("未命名设备", "Unnamed device");

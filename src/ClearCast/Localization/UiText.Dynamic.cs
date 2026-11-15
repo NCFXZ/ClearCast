@@ -38,6 +38,7 @@ internal sealed partial class UiText
         ["已删除该设备的配对记录。该设备下次屏幕镜像时需要重新验证，其他已保存设备也可能需要重新验证。"] =
             "Pairing removed. This device will need a pairing code next time. Other saved devices may also need to pair again.",
         ["无法删除配对记录，请重试。"] = "Couldn't remove the saved pairings. Try again.",
+        ["已删除该设备的配对记录，其他设备的记录已保留。"] = "Pairing removed. Other devices' records have been kept.",
         ["无法启动接收，请重试。"] = "Couldn't start the receiver. Try again.",
         ["无法停止接收，请重试。"] = "Couldn't stop the receiver. Try again.",
         ["另一个 ClearCast 窗口正在使用接收器。请关闭它后重试。"] =

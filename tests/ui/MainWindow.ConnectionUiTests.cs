@@ -115,10 +115,21 @@ public sealed partial class MainWindow
             ApplyMediaState(connected);
             CheckStatus("暂时无法接收屏幕镜像", "dismissing an error does not silently replace its failure status");
 
-            ApplyMediaState(disconnected);
-            SetReceiverStatus("等待 AirPlay 连接");
+            ApplyMediaState(connected);
+            ShowReceiveError("设备验证未通过，请在设备上重新选择 ClearCast 后重试。", 470);
+            SetReceiverStatus("AirPlay 已连接");
+            UiCheck(_mediaState.Connected && _mediaState.DeviceName.Length == 0 && ReceiverInfoBar.IsOpen,
+                "re-pairing fixture starts with a stale unnamed connected snapshot and generic verification error " + language);
             int generation = previousLatestGeneration is >= 0 and < int.MaxValue ? previousLatestGeneration + 1 : 1;
             HandlePairingEvent(new(ReceiverEventKind.PairingRequired, 2468, generation, 0, 0));
+            UiCheck(!ReceiverInfoBar.IsOpen && WaitingPairing.Visibility == Visibility.Visible && PinText.Text == "2468",
+                "a valid re-pairing challenge replaces the generic verification error with its PIN " + language);
+            CheckStatus("等待 AirPlay 连接", "a re-pairing challenge resets an obsolete connected label");
+            ApplyMediaState(connected);
+            UiCheck(WaitingPairing.Visibility == Visibility.Visible && PinText.Text == "2468" && _pairingTimer.IsRunning,
+                "a stale connected snapshot cannot hide the active re-pairing PIN " + language);
+            CheckStatus("等待 AirPlay 连接", "PIN precedence prevents stale verification from restoring the connected label");
+            ApplyMediaState(disconnected);
             HandlePairingEvent(new(ReceiverEventKind.PairingCompleted, 0, generation, 0, 0));
             UiCheck(!_mediaState.Connected && WaitingPairing.Visibility == Visibility.Collapsed,
                 "matching pairing completion hides its PIN without inventing a live connection " + language);

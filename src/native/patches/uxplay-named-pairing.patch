@@ -1,0 +1,554 @@
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -28,6 +28,11 @@
+ #include <algorithm>
+ #include <vector>
+ #include <map>
++#include <set>
++#include <mutex>
++#ifdef CLEARCAST_IN_PROCESS
++#include "clearcast_pairing_name.h"
++#endif
+ #include <array>
+ #include <fstream>
+ #include <sstream>
+@@ -224,6 +229,10 @@
+ static std::vector <std::string> registered_keys;
+ #ifdef CLEARCAST_IN_PROCESS
+ static std::map<std::string, std::string> registered_client_metadata;
++static std::map<std::string, std::set<std::string>> registered_client_names;
++static std::set<std::string> registered_named_keys;
++static size_t registered_client_records;
++static std::mutex registered_client_mutex;
+ static constexpr size_t clearcast_pairing_max_bytes = 16u * 1024u * 1024u;
+ static constexpr size_t clearcast_pairing_max_clients = 4096;
+ #endif
+@@ -3203,6 +3212,7 @@
+ extern "C" void register_client(void *cls, const char *device_id, const char *client_pk, const char *client_name) {
+     if (!registration_list || !device_id || !client_pk || !client_name) return;
+ #ifdef CLEARCAST_IN_PROCESS
++    std::lock_guard<std::mutex> lock(registered_client_mutex);
+     char saved_id[257], saved_name[513];
+     const auto copy_field = [](char* output, size_t size, const char* input, bool allow_comma) {
+         const char* end;
+@@ -3215,6 +3225,9 @@
+     };
+     copy_field(saved_id, sizeof(saved_id), device_id, false);
+     copy_field(saved_name, sizeof(saved_name), client_name, true);
++    char normalized[513];
++    if (!clearcast_pairing_normalize_name(saved_name, normalized)) return;
++    strcpy(saved_name, normalized);
+     const std::string metadata = std::string(saved_id) + "," + saved_name;
+     const auto previous = registered_client_metadata.find(client_pk);
+     if (previous == registered_client_metadata.end() &&
+@@ -3222,10 +3235,11 @@
+     // A reconnect should not append another identical row or discard a known name.
+     if (previous != registered_client_metadata.end() &&
+         (previous->second == metadata || (!*saved_name && !previous->second.empty()))) return;
+-    if (previous == registered_client_metadata.end()) {
+-        registered_keys.emplace_back(client_pk);
+-        registered_client_metadata.emplace(client_pk, "");
+-    }
++    const auto names = registered_client_names.find(client_pk);
++    if (*saved_name && names != registered_client_names.end() && names->second.count(saved_name)) return;
++    const bool adds_record = previous == registered_client_metadata.end() ||
++        (*saved_name && names != registered_client_names.end() && !names->second.empty());
++    if (adds_record && registered_client_records >= clearcast_pairing_max_clients) return;
+     FILE* file = g_fopen(pairing_register.c_str(), "a+b");
+     if (!file) return;
+     // An authenticated peer may change metadata repeatedly. Bound the append
+@@ -3248,7 +3262,19 @@
+     }
+     const bool written = fprintf(file, "%s,%s,%s\n", client_pk, time_str, metadata.c_str()) > 0;
+     const bool closed = fclose(file) == 0;
+-    if (written && closed) registered_client_metadata[client_pk] = metadata;
++    if (written && closed) {
++        if (previous == registered_client_metadata.end()) {
++            registered_keys.emplace_back(client_pk);
++            ++registered_client_records;
++        } else if (*saved_name && names != registered_client_names.end() && !names->second.empty()) {
++            ++registered_client_records;
++        }
++        registered_client_metadata[client_pk] = metadata;
++        if (*saved_name) {
++            registered_client_names[client_pk].insert(saved_name);
++            registered_named_keys.insert(client_pk);
++        }
++    }
+ #else
+     registered_keys.push_back(client_pk);
+     if (!pairing_register.empty()) {
+@@ -3272,6 +3298,7 @@
+     }
+     LOGD("check returning client's pairing registration");
+ #ifdef CLEARCAST_IN_PROCESS
++    std::lock_guard<std::mutex> lock(registered_client_mutex);
+     return client_pk && registered_client_metadata.find(client_pk) != registered_client_metadata.end();
+ #else
+     std::string pk = client_pk;
+@@ -3284,6 +3311,22 @@
+     }
+ #endif
+ }
++
++#ifdef CLEARCAST_IN_PROCESS
++extern "C" bool clearcast_pairing_name_known(const char *key, const char *name) {
++    if (!key || !name) return false;
++    std::lock_guard<std::mutex> lock(registered_client_mutex);
++    if (!registered_client_metadata.count(key)) return false;
++    if (!*name) return !registered_named_keys.count(key);
++    const auto found = registered_client_names.find(key);
++    return found != registered_client_names.end() && found->second.count(name);
++}
++extern "C" bool clearcast_pairing_remember_name(const char *key, const char *id, const char *name) {
++    if (!key || !name || !*name) return false;
++    register_client(nullptr, id ? id : "", key, name);
++    return clearcast_pairing_name_known(key, name);
++}
++#endif
+ 
+ extern "C" void get_custom_profile(void *cls, const char **custom_profile) {
+     /* fetches a pointer to  std::string custom_profile_string.c_str()  */
+--- a/lib/pairing.h
++++ b/lib/pairing.h
+@@ -45,6 +45,7 @@
+ bool pairing_session_is_verified(const pairing_session_t *session);
+ #ifdef CLEARCAST_IN_PROCESS
+ bool pairing_session_get_verified_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE]);
++bool pairing_session_get_setup_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE]);
+ #endif
+ void pairing_session_reset_pin(pairing_session_t *session);
+ int pairing_session_check_handshake_status(pairing_session_t *session);
+--- a/lib/pairing.c
++++ b/lib/pairing.c
+@@ -173,6 +173,14 @@
+ 
+ #ifdef CLEARCAST_IN_PROCESS
+ bool
++pairing_session_get_setup_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE])
++{
++    if (!session || !key || !session->pair_setup) return false;
++    memcpy(key, session->client_pk, ED25519_KEY_SIZE);
++    return true;
++}
++
++bool
+ pairing_session_get_verified_key(const pairing_session_t *session, unsigned char key[ED25519_KEY_SIZE])
+ {
+     if (!session || !key || !pairing_session_is_verified(session) || !session->ed_theirs) return false;
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -37,6 +37,12 @@
+ #include <math.h>
+ #include "clearcast_pairing_peer.h"
+ #include "clearcast_session_authorization.h"
++#include "clearcast_pairing_enrollment.h"
++#include "clearcast_pairing_name.h"
++#include "crypto.h"
++#include <plist/plist.h>
++extern bool clearcast_pairing_name_known(const char*, const char*);
++extern bool clearcast_pairing_remember_name(const char*, const char*, const char*);
+ extern void clearcast_media_verified(uint64_t, const unsigned char*, int, unsigned int);
+ extern void clearcast_media_client_name(uint64_t, const char*);
+ extern void clearcast_media_closed(uint64_t);
+@@ -112,6 +118,12 @@
+     unsigned int media_owner_zone;
+     char media_owner_session[129];
+     clearcast_session_policy media_authority;
++    clearcast_enrollment_policy pairing_enrollments;
++    uint64_t pairing_prompt_expires_at;
++    unsigned char pairing_prompt_peer[16];
++    int pairing_prompt_peer_len, pairing_prompt_generation;
++    unsigned int pairing_prompt_zone;
++    char pairing_nonce[33];
+     clearcast_session_link media_owner_authority;
+ #endif
+   
+@@ -166,17 +178,130 @@
+     uint64_t diagnostic_id;
+     bool diagnostic_skip_response;
+     clearcast_session_link media_authority;
++    bool pairing_name_authorized, pairing_name_needs_pin;
++    unsigned char pairing_name_key[32];
++    char pairing_name[513];
++    bool request_pairing_name_present, request_pairing_name_valid;
++    char request_pairing_name[513];
+ #endif
+ };
+ typedef struct raop_conn_s raop_conn_t;
+ 
+ #ifdef CLEARCAST_IN_PROCESS
++static void clearcast_pairing_forget_name(raop_conn_t *conn) {
++    conn->pairing_name_authorized = false;
++    conn->pairing_name_needs_pin = false;
++    memset(conn->pairing_name_key, 0, sizeof(conn->pairing_name_key));
++    conn->pairing_name[0] = 0;
++}
++static bool clearcast_pairing_cached_name(raop_conn_t *conn) {
++    unsigned char key[ED25519_KEY_SIZE];
++    return conn->pairing_name_authorized && pairing_session_get_verified_key(conn->session, key) &&
++        !memcmp(key, conn->pairing_name_key, sizeof(key));
++}
++
++static bool clearcast_pairing_admit_name(raop_conn_t *conn, const char *raw_name, const char *device_id) {
++    unsigned char key[ED25519_KEY_SIZE];
++    char name[513];
++    clearcast_pairing_forget_name(conn);
++    if (!pairing_session_get_verified_key(conn->session, key) ||
++        !clearcast_pairing_normalize_name(raw_name, name)) return false;
++    char *key64 = NULL;
++    ed25519_pk_to_base64(key, &key64);
++    if (!key64) return false;
++    bool known = clearcast_pairing_name_known(key64, name);
++    bool enrolled = false;
++    // Only a completed PIN proof can grant one new name, including when Apple
++    // finishes PIN setup and pair-verify on different TCP connections.
++    if (*name) {
++        AcquireSRWLockExclusive(&conn->raop->media_owner_lock);
++        enrolled = clearcast_enrollment_claim(&conn->raop->pairing_enrollments, key,
++            conn->remote, conn->remotelen, conn->zone_id, GetTickCount64(), clearcast_pin_peer_matches);
++        ReleaseSRWLockExclusive(&conn->raop->media_owner_lock);
++    }
++    if (!known && enrolled) known = clearcast_pairing_remember_name(key64, device_id, name);
++    free(key64);
++    if (known) {
++        memcpy(conn->pairing_name, name, strlen(name) + 1);
++        memcpy(conn->pairing_name_key, key, sizeof(key));
++        conn->pairing_name_authorized = true;
++    }
++    conn->pairing_name_needs_pin = !known && !enrolled && *name;
++    return known;
++}
++
++static bool clearcast_pairing_admit_request(raop_conn_t *conn, http_request_t *request, const char *method) {
++    conn->pairing_name_needs_pin = false;
++    const char *header = http_request_get_header(request, "X-Apple-Client-Name");
++    char *body_name = NULL, *device_id = NULL;
++    bool valid = true;
++    if (!strcmp(method, "SETUP")) {
++        int length = 0;
++        const char *data = http_request_get_data(request, &length);
++        plist_t root = NULL;
++        if (data && length > 0) plist_from_bin(data, length, &root);
++        if (PLIST_IS_DICT(root)) {
++            plist_t value = plist_dict_get_item(root, "name");
++            if (value) {
++                valid = PLIST_IS_STRING(value);
++                if (valid) plist_get_string_val(value, &body_name);
++            }
++            value = plist_dict_get_item(root, "deviceID");
++            if (PLIST_IS_STRING(value)) plist_get_string_val(value, &device_id);
++        }
++        if (root) plist_free(root);
++    }
++    if (valid && header && body_name) {
++        char first[513], second[513];
++        valid = clearcast_pairing_normalize_name(header, first) &&
++            clearcast_pairing_normalize_name(body_name, second) && !strcmp(first, second);
++    }
++    const char *name = body_name ? body_name : header;
++    if (valid) {
++        if (name) valid = clearcast_pairing_admit_name(conn, name, device_id);
++        else if (!clearcast_pairing_cached_name(conn)) valid = clearcast_pairing_admit_name(conn, "", NULL);
++    }
++    if (body_name) plist_mem_free(body_name);
++    if (device_id) plist_mem_free(device_id);
++    return valid;
++}
++
++static void clearcast_pairing_publish(raop_conn_t *conn, http_request_t *request) {
++    if (!clearcast_pairing_cached_name(conn) && !clearcast_pairing_admit_name(conn, "", NULL)) return;
++    clearcast_media_verified(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id);
++    clearcast_media_client_name(conn->diagnostic_id, conn->pairing_name);
++    clearcast_media_remote(conn->diagnostic_id, http_request_get_header(request, "DACP-ID"),
++        http_request_get_header(request, "Active-Remote"));
++}
++
+ static bool clearcast_media_authorize_connection(raop_conn_t *conn, const char *session) {
+     unsigned char public_key[ED25519_KEY_SIZE];
+     bool verified = pairing_session_get_verified_key(conn->session, public_key);
++    bool have_name = !verified || clearcast_pairing_cached_name(conn) || clearcast_pairing_admit_name(conn, "", NULL);
+     AcquireSRWLockExclusive(&conn->raop->media_owner_lock);
+     bool allowed = clearcast_session_authorize(&conn->raop->media_authority, &conn->media_authority,
+-        verified ? public_key : NULL, conn->remote, conn->remotelen, conn->zone_id, session, GetTickCount64());
++        verified && have_name ? public_key : NULL, conn->remote, conn->remotelen, conn->zone_id, session, GetTickCount64());
++    clearcast_session_grant *grant = allowed ? clearcast_session_lookup(&conn->raop->media_authority, conn->media_authority) : NULL;
++    if (grant) {
++        if (verified) {
++            if (!have_name) {
++                // A verified but nameless transport can inherit an existing
++                // named bearer grant, never mint one from the shared key.
++                if (!grant->name_bound || !*grant->name || memcmp(grant->key, public_key, 32)) allowed = false;
++                else {
++                    memcpy(conn->pairing_name, grant->name, strlen(grant->name) + 1);
++                    memcpy(conn->pairing_name_key, public_key, 32);
++                    conn->pairing_name_authorized = true;
++                }
++            } else if (grant->name_bound && strcmp(grant->name, conn->pairing_name) && (*grant->name || grant->active)) allowed = false;
++            else {
++                memcpy(grant->name, conn->pairing_name, strlen(conn->pairing_name) + 1);
++                grant->name_bound = true;
++            }
++        } else if (!grant->name_bound) allowed = false;
++        if (conn->request_pairing_name_present && (!conn->request_pairing_name_valid ||
++            !grant->name_bound || strcmp(grant->name, conn->request_pairing_name))) allowed = false;
++    }
+     ReleaseSRWLockExclusive(&conn->raop->media_owner_lock);
+     return allowed;
+ }
+@@ -242,6 +367,119 @@
+ #include "raop_handlers.h"
+ #include "http_handlers.h"
+ 
++#ifdef CLEARCAST_IN_PROCESS
++/* pairing_digest_verify trusts its input. Pass it only the unqualified RFC 2069
++ * form, walked exactly as it will parse it, answering the current nonce. */
++static bool clearcast_pairing_digest_shape(const char *authorization, const char *nonce) {
++    static const char *const fields[] = { "username", "realm", "nonce", "uri", "response" };
++    if (strstr(authorization, "qop")) return false;
++    for (int i = 0; i < 5; ++i) {
++        const char *value = strstr(authorization, fields[i]);
++        if (!value || !(value = strchr(value + strlen(fields[i]), '"'))) return false;
++        const char *end = strchr(++value, '"');
++        if (!end) return false;
++        if (i == 2 && ((size_t) (end - value) != strlen(nonce) || memcmp(value, nonce, end - value))) return false;
++        authorization = end + 1;
++    }
++    return true;
++}
++
++/* An iPhone whose saved pairing still verifies never repeats PIN setup. It
++ * answers a SETUP password challenge with the code its user typed instead; a
++ * correct answer earns the same one-use enrollment as an SRP PIN proof. */
++static void clearcast_pairing_answer_pin(raop_conn_t *conn, http_request_t *request, const char *method) {
++    raop_t *raop = conn->raop;
++    const char *authorization = http_request_get_header(request, "Authorization");
++    unsigned char key[ED25519_KEY_SIZE];
++    uint64_t now = GetTickCount64();
++    if (!authorization || !raop->pairing_nonce[0] || now < raop->pin_retry_after ||
++        !raop->pending_pairing_pin || now >= raop->pending_pin_expires_at ||
++        raop->pending_pairing_generation != raop->pairing_prompt_generation ||
++        !pairing_session_get_verified_key(conn->session, key) ||
++        !clearcast_pin_peer_matches(raop->pending_pin_remote, raop->pending_pin_remote_len,
++            raop->pending_pin_zone_id, conn->remote, conn->remotelen, conn->zone_id)) return;
++    char pin[6];
++    snprintf(pin, sizeof(pin), "%04u", (unsigned int) raop->pending_pairing_pin);
++    bool proven = clearcast_pairing_digest_shape(authorization, raop->pairing_nonce) &&
++        pairing_digest_verify(method, authorization, pin);
++    raop->pairing_nonce[0] = 0; // One answer per challenge.
++    conn->pairing_generation = raop->pending_pairing_generation;
++    if (proven) {
++        AcquireSRWLockExclusive(&raop->media_owner_lock);
++        proven = clearcast_enrollment_issue(&raop->pairing_enrollments, key, conn->remote, conn->remotelen,
++            conn->zone_id, conn->pairing_generation, now, clearcast_pin_peer_matches);
++        ReleaseSRWLockExclusive(&raop->media_owner_lock);
++    }
++    if (proven) {
++        clearcast_clear_pending_pin(raop);
++        raop->pairing_prompt_expires_at = 0;
++        raop->pairing_prompt_peer_len = 0;
++        clearcast_pin_failure_reset(&raop->failed_pin_attempts, &raop->pin_cooldown_level, &raop->last_pin_failure);
++        clearcast_report_pairing(conn, 2, 0);
++        return;
++    }
++    uint64_t retry_after = clearcast_pin_failure_deadline(now, &raop->failed_pin_attempts,
++        &raop->pin_cooldown_level, &raop->last_pin_failure);
++    if (retry_after) {
++        raop->pin_retry_after = retry_after;
++        clearcast_clear_pending_pin(raop);
++    }
++    clearcast_report_pairing(conn, 1, retry_after ? 4 : 2);
++}
++
++/* Some iOS clients show their PIN entry after a refused SETUP without sending
++ * pair-pin-start. Show the same pending challenge and ask for it as a password. */
++static int clearcast_pairing_require_pin(raop_conn_t *conn, http_request_t *request,
++    http_response_t *response, char **response_data, int *response_datalen) {
++    if (!conn->pairing_name_needs_pin) return 470;
++    raop_t *raop = conn->raop;
++    uint64_t now = GetTickCount64();
++    conn->pairing_feedback_reported = true;
++    if (now < raop->pin_retry_after) {
++        clearcast_report_pairing(conn, 1, 4);
++        return 470;
++    }
++    AcquireSRWLockShared(&raop->media_owner_lock);
++    bool video_owned = raop->media_owner_peer_len != 0;
++    ReleaseSRWLockShared(&raop->media_owner_lock);
++    if (video_owned || httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_RAOP)) return 503;
++    if (raop->pairing_prompt_expires_at > now &&
++        raop->pairing_prompt_generation == raop->latest_pairing_generation) {
++        if (!clearcast_pin_peer_matches(raop->pairing_prompt_peer, raop->pairing_prompt_peer_len,
++            raop->pairing_prompt_zone, conn->remote, conn->remotelen, conn->zone_id)) return 503;
++        // This also covers a claimed, in-flight SRP exchange. Never replace
++        // its code, generation or original deadline because a probe repeats.
++        conn->pairing_generation = raop->pairing_prompt_generation;
++    } else {
++        raop_handler_pairpinstart(conn, request, response, response_data, response_datalen);
++        if (!raop->pending_pairing_pin || raop->pending_pin_expires_at <= now ||
++            !clearcast_pin_peer_matches(raop->pending_pin_remote, raop->pending_pin_remote_len,
++                raop->pending_pin_zone_id, conn->remote, conn->remotelen, conn->zone_id)) return 503;
++        conn->pairing_generation = raop->pending_pairing_generation;
++    }
++    unsigned char nonce[16];
++    if (get_random_bytes(nonce, sizeof(nonce)) < 1) return 503;
++    for (int i = 0; i < 16; ++i) snprintf(raop->pairing_nonce + 2 * i, 3, "%02x", nonce[i]);
++    return 401;
++}
++
++static void clearcast_pairing_refuse(raop_conn_t *conn, http_request_t *request, http_response_t *response,
++    const char *protocol, char **response_data, int *response_datalen) {
++    int status = clearcast_pairing_require_pin(conn, request, response, response_data, response_datalen);
++    http_response_init(response, protocol, status, status == 401 ? "Unauthorized" :
++        status == 503 ? "Service Unavailable" : "Client Authentication Failure");
++    if (status != 401) {
++        http_response_set_disconnect(response, 1);
++        return;
++    }
++    // The sender may answer on this connection or on a new one.
++    char challenge[72];
++    snprintf(challenge, sizeof(challenge), "Digest realm=\"raop\", nonce=\"%s\"", conn->raop->pairing_nonce);
++    http_response_add_header(response, "WWW-Authenticate", challenge);
++}
++#endif
++
++
+ static void *
+ conn_init(void *opaque, unsigned char *local, int locallen, unsigned char *remote, int remotelen, unsigned int zone_id) {
+     raop_t *raop = opaque;
+@@ -410,6 +648,21 @@
+         !strcmp(url, "/action") || !strcmp(url, "/playback-info") || !strcmp(url, "/fp-setup2") ||
+         !strncmp(url, "/scrub", 6) || !strncmp(url, "/rate", 5) || !strncmp(url, "/getProperty", 12) ||
+         !strncmp(url, "/setProperty", 12) || strstr(url, ".m3u8");
++    // Validate the presented name before SETUP can claim a media slot, stop
++    // another owner or construct a cross-transport HTTP authorization grant.
++    const char *presented_name = http_request_get_header(request, "X-Apple-Client-Name");
++    conn->request_pairing_name_present = presented_name != NULL;
++    conn->request_pairing_name_valid = !presented_name ||
++        clearcast_pairing_normalize_name(presented_name, conn->request_pairing_name);
++    if (raop->use_pin && pairing_session_is_verified(conn->session)) clearcast_pairing_answer_pin(conn, request, method);
++    if (raop->use_pin && (clearcast_rtsp_media_method || (clearcast_media_endpoint && presented_name)) &&
++        pairing_session_is_verified(conn->session) && !clearcast_pairing_admit_request(conn, request, method)) {
++        *response = http_response_create();
++        clearcast_pairing_refuse(conn, request, *response, protocol, &response_data, &response_datalen);
++        goto finish;
++    }
++    if (pairing_session_is_verified(conn->session) && clearcast_pairing_cached_name(conn))
++        clearcast_pairing_publish(conn, request);
+     // Discovery is neutral for every protocol/header variant. It must never
+     // claim a media slot or stop an existing RAOP owner before authentication.
+     clearcast_http_discovery = !strcmp(method, "OPTIONS") || !strcmp(url, "/info") ||
+@@ -671,13 +924,16 @@
+         handler(conn, request, *response, &response_data, &response_datalen);
+ #ifdef CLEARCAST_IN_PROCESS
+         if (pairing_session_is_verified(conn->session)) {
++            const char *name = http_request_get_header(request, "X-Apple-Client-Name");
++            if (name && !clearcast_pairing_admit_name(conn, name, NULL)) {
++                free(response_data); response_data = NULL; response_datalen = 0;
++                clearcast_pairing_refuse(conn, request, *response, protocol, &response_data, &response_datalen);
++                goto finish;
++            }
+             // Some clients verify and play on one TCP transport, others pass
+             // this verified session ID to a separate HTTP transport.
+             if (client_session_id) clearcast_media_authorize_connection(conn, client_session_id);
+-            clearcast_media_verified(conn->diagnostic_id, conn->remote, conn->remotelen, conn->zone_id);
+-            clearcast_media_remote(conn->diagnostic_id, http_request_get_header(request, "DACP-ID"),
+-                http_request_get_header(request, "Active-Remote"));
+-            clearcast_media_client_name(conn->diagnostic_id, http_request_get_header(request, "X-Apple-Client-Name"));
++            clearcast_pairing_publish(conn, request);
+         }
+ #endif
+     } else {
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -283,7 +283,7 @@
+                           http_request_t *request, http_response_t *response,
+                           char **response_data, int *response_datalen) {
+     raop_t *raop = conn->raop;
+-    logger_log(raop->logger, LOGGER_INFO, "client sent PAIR-PIN-START request");
++    logger_log(raop->logger, LOGGER_INFO, "starting PIN pairing challenge");
+ #ifdef CLEARCAST_IN_PROCESS
+     uint64_t now = GetTickCount64();
+     if (now < raop->pin_retry_after) {
+@@ -304,6 +304,7 @@
+     conn->pairing_pin = 0;
+     conn->pairing_generation = 0;
+     conn->pin_expires_at = 0;
++    clearcast_pairing_forget_name(conn);
+     // Apple may close this discovery connection before sending pair-setup-pin.
+     // Keep only a short-lived challenge here; the SRP session stays connection-bound.
+     clearcast_clear_pending_pin(raop);
+@@ -330,6 +331,12 @@
+ #ifdef CLEARCAST_IN_PROCESS
+     raop->pending_pairing_generation = clearcast_begin_pairing(pin);
+     raop->latest_pairing_generation = raop->pending_pairing_generation;
++    raop->pairing_prompt_expires_at = raop->pending_pin_expires_at;
++    memcpy(raop->pairing_prompt_peer, conn->remote, conn->remotelen);
++    raop->pairing_prompt_peer_len = conn->remotelen;
++    raop->pairing_prompt_zone = conn->zone_id;
++    raop->pairing_prompt_generation = raop->pending_pairing_generation;
++    raop->pairing_nonce[0] = 0;
+ #else
+     if (raop->callbacks.display_pin) {
+          raop->callbacks.display_pin(raop->callbacks.cls, pin);
+@@ -520,6 +527,22 @@
+         conn->pairing_pin = 0;
+         conn->pin_expires_at = 0;
+         clearcast_pin_failure_reset(&raop->failed_pin_attempts, &raop->pin_cooldown_level, &raop->last_pin_failure);
++        unsigned char enrollment_key[ED25519_KEY_SIZE];
++        bool enrollment_issued = false;
++        if (pairing_session_get_setup_key(conn->session, enrollment_key)) {
++            AcquireSRWLockExclusive(&raop->media_owner_lock);
++            enrollment_issued = clearcast_enrollment_issue(&raop->pairing_enrollments, enrollment_key,
++                conn->remote, conn->remotelen, conn->zone_id, conn->pairing_generation,
++                GetTickCount64(), clearcast_pin_peer_matches);
++            ReleaseSRWLockExclusive(&raop->media_owner_lock);
++        }
++        if (!enrollment_issued) {
++            pairing_session_reset_pin(conn->session);
++            clearcast_report_pairing(conn, 1, 5);
++            http_response_init(response, "RTSP/1.0", 503, "Service Unavailable");
++            http_response_set_disconnect(response, 1);
++            return;
++        }
+         // Persist the authenticated key before Apple opens a fresh pair-verify
+         // connection. SETUP can add the sender's display name later.
+         if (raop->callbacks.register_client) {
+@@ -530,6 +553,10 @@
+                 raop->callbacks.register_client(raop->callbacks.cls, client_id, client_key, "");
+             }
+             free(client_key);
++        }
++        if (raop->pairing_prompt_generation == conn->pairing_generation) {
++            raop->pairing_prompt_expires_at = 0;
++            raop->pairing_prompt_peer_len = 0;
+         }
+         clearcast_report_pairing(conn, 2, 0);
+ #endif
+@@ -616,6 +643,7 @@
+             http_response_init(response, "RTSP/1.0", 400, "Bad Request");
+             return;
+         }
++        clearcast_pairing_forget_name(conn);
+         const unsigned char *client_key = data + 4 + X25519_KEY_SIZE;
+         if (raop->use_pin && !pairing_session_has_pin_key(conn->session, client_key)) {
+             char *key64 = NULL;
+@@ -627,6 +655,18 @@
+ #ifdef CLEARCAST_IN_PROCESS
+                 /* A remembered key may be probed before Apple asks for a new PIN. */
+                 clearcast_report_pairing(conn, 0, 0);
++                // iOS treats a refused probe as a failed connection and keeps
++                // retrying it, but starts PIN setup again once the reply does
++                // not prove the receiver it saved. This session stays unverified.
++                *response_data = malloc(X25519_KEY_SIZE + PAIRING_SIG_SIZE);
++                if (*response_data && get_random_bytes((unsigned char *) *response_data,
++                        X25519_KEY_SIZE + PAIRING_SIG_SIZE) > 0) {
++                    http_response_add_header(response, "Content-Type", "application/octet-stream");
++                    *response_datalen = X25519_KEY_SIZE + PAIRING_SIG_SIZE;
++                    return;
++                }
++                free(*response_data);
++                *response_data = NULL;
+ #endif
+                 http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+                 http_response_set_disconnect(response, 1);

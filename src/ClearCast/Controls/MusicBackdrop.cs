@@ -16,7 +16,7 @@ using Windows.UI;
 
 namespace ClearCast;
 
-public sealed class MusicBackdrop : UserControl, IDisposable
+public sealed partial class MusicBackdrop : UserControl, IDisposable
 {
     internal const int VideoTransitionMilliseconds = 100;
     private sealed class FlowResources(Compositor compositor)
@@ -39,7 +39,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         internal bool BeatEnabled, BeatScheduled;
         internal bool ClockStarted;
         internal bool RateControlUnavailable;
-        internal bool VideoFrame;
 #if CLEARCAST_UI_TESTS
         internal Func<Task>? BeforeResourceCommit;
         internal Action? Retired;
@@ -106,7 +105,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private float _appliedMotionRate = MusicMotion.BaseRate;
     private int _artworkGeneration;
     private bool _active, _animate, _loaded, _disposed;
-    internal bool IsVideoTransitioning { get; private set; }
+    internal bool IsVideoTransitioning => _videoTransitionAt != 0 &&
+        Stopwatch.GetElapsedTime(_videoTransitionAt).TotalMilliseconds < VideoTransitionMilliseconds;
 #if CLEARCAST_UI_TESTS
     internal Func<Task>? UiBeforeImageDecodeAsync;
     internal int UiImageDecodeStarts, UiImageDecodeActive, UiMaxImageDecodeActive;
@@ -119,6 +119,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     public MusicBackdrop()
     {
         _fallback.Background = _fallbackBrush;
+        _fallback.Child = _videoHost;
         Content = _fallback;
         IsHitTestVisible = false;
         AutomationProperties.SetAccessibilityView(this, AccessibilityView.Raw);
@@ -129,8 +130,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
 
     internal bool IsActive { get; private set; }
     internal bool IsAnimating { get; private set; }
-    internal int TextureFrameCount => _flow?.Surfaces.Count ?? 0;
-    internal bool HasArtworkFlow => TextureFrameCount == (_flow?.VideoFrame == true ? 1 : ArtworkFlow.FrameCount);
+    internal int TextureFrameCount => _videoPixels is not null ? 1 : _flow?.Surfaces.Count ?? 0;
+    internal bool HasArtworkFlow => _videoPixels is not null || TextureFrameCount == ArtworkFlow.FrameCount;
     internal int RateControlledChannelCount => _flow?.Controller is null ? 0 : 1;
     internal int AnimationChannelCount => IsAnimating && _flow is { } flow ? flow.Animations.Count + 1 + BeatAnimationChannelCount : 0;
     internal long AnimationStartCount { get; private set; }
@@ -152,7 +153,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     {
         get
         {
-            try { return _flow?.VideoFrame == true ? (float)(_videoClock.Elapsed.TotalSeconds / 48 % 1) : _flow?.Controller?.Progress; }
+            try { return _videoPixels is not null ? (float)(_videoClock.Elapsed.TotalSeconds / 48 % 1) : _flow?.Controller?.Progress; }
             catch (Exception error) when (IsCompositionFailure(error)) { return null; }
         }
     }
@@ -284,12 +285,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         _imageRequest = null;
         // Logical stop does not wait for a GPU retirement fence. Keep the last
         // live flow owned and visible until normal retirement can safely finish.
-        if (_flow is { VideoFrame: true } flow)
-        {
-            CloseComposition(() => flow.Root.StopAnimation("Opacity"));
-            CloseComposition(() => flow.Root.Opacity = 1);
-            IsVideoTransitioning = false;
-        }
+        StopVideoTransition();
     }
 
     private Task SetImageAsync(byte[]? bytes, bool darkTheme, bool videoFrame, bool smooth)
@@ -307,7 +303,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 ResetBeatActivity();
                 // Clearing must not wait behind an uncancellable decoder/upload.
                 SetStaticPalette(MusicPalette.FromBgra([], darkTheme));
-                IsVideoTransitioning = false;
             }
             catch (Exception error) when (IsCompositionFailure(error)) { return Task.FromException(error); }
             return Task.CompletedTask;
@@ -351,7 +346,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         CancellationToken token = cancellation.Token;
         MusicPalette palette = MusicPalette.FromBgra([], darkTheme);
         FlowResources? pending = null;
-        FlowResources? retired = null;
         try
         {
 #if CLEARCAST_UI_TESTS
@@ -407,48 +401,28 @@ public sealed class MusicBackdrop : UserControl, IDisposable
             token.ThrowIfCancellationRequested();
             if (_disposed || generation != _artworkGeneration) return;
             EnsureVisuals();
-            pending = await CreateFlowAsync(frames, generation, token, videoFrame);
+            if (videoFrame)
+            {
+                if (_flow is not null) ClearFlow();
+                ApplyVideoPixels(frames[0], smooth);
+                _palette = palette;
+                ApplyPalette();
+                UpdatePlayback();
+                return;
+            }
+            pending = await CreateFlowAsync(frames, generation, token);
             token.ThrowIfCancellationRequested();
             if (_disposed || generation != _artworkGeneration) return;
-            if (videoFrame)
-            {
-                retired = _flow;
-                _flow = null;
-                IsAnimating = false;
-            }
-            else
-            {
-                ClearFlow();
-                await _flowRetirement;
-                token.ThrowIfCancellationRequested();
-                if (_disposed || generation != _artworkGeneration) return;
-                _palette = palette;
-                ApplyPalette();
-            }
+            ClearFlow();
+            await _flowRetirement;
+            token.ThrowIfCancellationRequested();
+            if (_disposed || generation != _artworkGeneration) return;
+            _palette = palette;
+            ApplyPalette();
             _flow = pending;
             pending = null;
-            if (videoFrame) _flow.Root.Opacity = 0;
             _root!.Children.InsertAtTop(_flow.Root);
             UpdatePlayback();
-            if (videoFrame)
-            {
-                if (smooth)
-                {
-                    IsVideoTransitioning = true;
-                    using var fade = _root.Compositor.CreateScalarKeyFrameAnimation();
-                    fade.InsertKeyFrame(0, 0);
-                    fade.InsertKeyFrame(1, 1, _root.Compositor.CreateLinearEasingFunction());
-                    fade.Duration = TimeSpan.FromMilliseconds(VideoTransitionMilliseconds);
-                    _flow.Root.StartAnimation("Opacity", fade);
-                    await Task.Delay(VideoTransitionMilliseconds, token);
-                }
-                token.ThrowIfCancellationRequested();
-                if (_disposed || generation != _artworkGeneration) return;
-                _flow.Root.StopAnimation("Opacity");
-                _flow.Root.Opacity = 1;
-                _palette = palette;
-                ApplyPalette();
-            }
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (IsCompositionFailure(error) || error is IOException or TimeoutException)
@@ -460,17 +434,11 @@ public sealed class MusicBackdrop : UserControl, IDisposable
 #if CLEARCAST_UI_TESTS
             UiImageDecodeActive--;
 #endif
-            if (generation == _artworkGeneration) IsVideoTransitioning = false;
-            if (retired is not null)
-            {
-                CloseComposition(() => _root?.Children.Remove(retired.Root));
-                await retired.DisposeAsync();
-            }
             if (pending is not null) await pending.DisposeAsync();
         }
     }
 
-    private async Task<FlowResources> CreateFlowAsync(byte[][] frames, int generation, CancellationToken cancellation, bool videoFrame)
+    private async Task<FlowResources> CreateFlowAsync(byte[][] frames, int generation, CancellationToken cancellation)
     {
         var compositor = _root!.Compositor;
         var flow = new FlowResources(compositor);
@@ -480,7 +448,6 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         flow.Retired = () => UiFlowGroupsRetired++;
 #endif
         flow.ArtworkGeneration = generation;
-        flow.VideoFrame = videoFrame;
         flow.Root.RelativeSizeAdjustment = Vector2.One;
         flow.Clock.InsertScalar("Phase", 0);
         try
@@ -509,7 +476,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 }
                 finally { surface.LoadCompleted -= Loaded; }
             }
-            for (int index = 0; index < (videoFrame ? 1 : ArtworkFlow.FrameCount + 1); index++)
+            for (int index = 0; index <= ArtworkFlow.FrameCount; index++)
             {
                 var brush = compositor.CreateSurfaceBrush(flow.Surfaces[index % frames.Length]);
                 brush.Stretch = CompositionStretch.Fill;
@@ -517,21 +484,14 @@ public sealed class MusicBackdrop : UserControl, IDisposable
                 var layer = compositor.CreateSpriteVisual();
                 layer.RelativeSizeAdjustment = Vector2.One;
                 layer.Brush = brush;
-                layer.Opacity = videoFrame ? 1 : ArtworkFlow.LayerOpacity(index, 0);
+                layer.Opacity = ArtworkFlow.LayerOpacity(index, 0);
                 flow.Layers.Add(layer);
                 flow.Root.Children.InsertAtTop(layer);
-                if (videoFrame) continue;
                 var opacity = compositor.CreateExpressionAnimation(OpacityExpression(index));
                 opacity.SetReferenceParameter("clock", flow.Clock);
                 layer.StartAnimation("Opacity", opacity);
                 AnimationStartCount++;
                 flow.Animations.Add(opacity);
-            }
-            if (videoFrame)
-            {
-                flow.Root.Scale = new Vector3(BeatImpulse.BaselineScale, BeatImpulse.BaselineScale, 1);
-                UpdateBeatGeometry(flow);
-                return flow;
             }
             flow.Timeline = compositor.CreateScalarKeyFrameAnimation();
             flow.Timeline.InsertKeyFrame(0, 0);
@@ -674,7 +634,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         if (_root is not null && !_disposed)
         {
             _root.Size = new Vector2((float)Math.Max(0, ActualWidth), (float)Math.Max(0, ActualHeight));
-            if (_flow is { } flow && (flow.BeatEnabled || flow.VideoFrame))
+            if (_flow is { BeatEnabled: true } flow)
             {
                 try { UpdateBeatGeometry(flow); }
                 catch (Exception error) when (IsCompositionFailure(error)) { DisableBeatVisuals(flow); _beat.Reset(); }
@@ -688,12 +648,13 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         bool visible = _active && _loaded && ActualWidth > 0 && ActualHeight > 0;
         IsActive = visible;
         _fallback.Opacity = visible ? 1 : 0;
-        if (_root is not null) _root.Opacity = visible ? 1 : 0;
+        if (_root is not null) _root.Opacity = visible && _videoPixels is null ? 1 : 0;
         bool run = visible && _animate && HasArtworkFlow;
-        if (_flow?.VideoFrame == true)
+        if (_videoPixels is not null)
         {
             if (run) _videoClock.Start();
             else _videoClock.Stop();
+            if (!run) StopVideoTransition();
             IsAnimating = run;
             return;
         }
@@ -783,6 +744,7 @@ public sealed class MusicBackdrop : UserControl, IDisposable
     private void ClearFlow()
     {
         _videoClock.Stop();
+        ClearVideoPixels();
         ResetBeatActivity();
         IsAnimating = false;
         if (_flow is null) return;
@@ -817,6 +779,8 @@ public sealed class MusicBackdrop : UserControl, IDisposable
         // before closing parent visuals or allowing the owning window to be destroyed.
         await _imagePump;
         await _flowRetirement;
+        _videoFade?.Dispose();
+        _videoFadeEasing?.Dispose();
         _fill?.Dispose();
         _fillBrush?.Dispose();
         _root?.Clip?.Dispose();

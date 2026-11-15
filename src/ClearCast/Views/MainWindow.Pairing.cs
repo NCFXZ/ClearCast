@@ -4,7 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace ClearCast;
 
-internal sealed record PairingDeviceRow(string Id, string Name, string RemoveText, string RemoveAutomationName);
+internal sealed record PairingDeviceRow(string Id, string Name, string RemoveText, string RemoveAutomationName, string? SavedName);
 
 public sealed partial class MainWindow
 {
@@ -39,7 +39,7 @@ public sealed partial class MainWindow
             {
                 string label = duplicateName ? $"{group.Key} ({++index})" : group.Key;
                 items.Add(new PairingDeviceRow(pairing.Id, label, Texts.RemovePairing,
-                    Texts.Get($"删除 {label} 的配对记录", $"Remove pairing for {label}")));
+                    Texts.Get($"删除 {label} 的配对记录", $"Remove pairing for {label}"), pairing.Name));
             }
         }
 
@@ -60,10 +60,19 @@ public sealed partial class MainWindow
     private async void RemoveDevicePairingClicked(object sender, RoutedEventArgs e)
     {
         if (sender is Button { DataContext: PairingDeviceRow row })
-            await RemoveSavedPairingsAsync(row.Id, row.Name);
+            await RemoveSavedPairingsAsync(row.Id, row.Name, row.SavedName);
     }
 
-    private async Task RemoveSavedPairingsAsync(string? id, string? name)
+    private string PairingRemovalMessage(string? id, string? name)
+    {
+        if (id is null)
+            return Texts.Get("删除后，所有设备下次屏幕镜像时都需要重新验证。",
+                "All saved devices will need a pairing code the next time they connect.");
+        return Texts.Get($"删除「{name}」的配对记录后，该设备下次连接时需要重新验证。其他设备的配对记录将保留。",
+            $"“{name}” will need to pair again the next time it connects. Pairing records for other devices will be kept.");
+    }
+
+    private async Task RemoveSavedPairingsAsync(string? id, string? name, string? savedName = null)
     {
         if (_resettingPairings || _startingReceiver || _hasVideo || _closing || _closed || _stopTask is not null)
             return;
@@ -79,11 +88,7 @@ public sealed partial class MainWindow
                 Content = new TextBlock
                 {
                     TextWrapping = TextWrapping.Wrap,
-                    Text = id is null
-                        ? Texts.Get("删除后，所有设备下次屏幕镜像时都需要重新验证。",
-                            "All saved devices will need a pairing code the next time they connect.")
-                        : Texts.Get($"删除「{name}」的配对记录后，该设备下次屏幕镜像时需要重新验证。其他已保存设备也可能需要重新验证。",
-                            $"“{name}” will need a pairing code the next time it connects. Other saved devices may also need to pair again.")
+                    Text = PairingRemovalMessage(id, name)
                 },
                 PrimaryButtonText = Texts.RemovePairing,
                 CloseButtonText = Texts.Get("取消", "Cancel"),
@@ -105,8 +110,8 @@ public sealed partial class MainWindow
             }
             else
             {
-                AirPlayReceiver.RemovePairing(_root, id);
-                ShowPairingResetFeedback("已删除该设备的配对记录。该设备下次屏幕镜像时需要重新验证，其他已保存设备也可能需要重新验证。");
+                AirPlayReceiver.RemovePairing(_root, id, savedName);
+                ShowPairingResetFeedback("已删除该设备的配对记录，其他设备的记录已保留。");
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

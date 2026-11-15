@@ -135,6 +135,18 @@ void clearcast_media_verified(uint64_t id, const unsigned char *peer, int length
 void clearcast_media_closed(uint64_t id) {}
 void clearcast_media_remote(uint64_t id, const char *dacp, const char *remote) {}
 void clearcast_media_client_name(uint64_t id, const char *name) {}
+/* This fixture isolates crypto/dispatch. Named registry enforcement is covered
+ * by the real-DLL named-pairing protocol test, not a second registry mock. */
+bool clearcast_pairing_name_known(const char *key, const char *name) {
+#ifdef CLEARCAST_HTTP_INPUT_FIXTURE
+    return key && name;
+#else
+    return key && name && fixture_check(NULL, key);
+#endif
+}
+bool clearcast_pairing_remember_name(const char *key, const char *id, const char *name) {
+    (void)id; return clearcast_pairing_name_known(key, name);
+}
 void clearcast_media_retain_peer(const unsigned char *peer, int length, unsigned int zone, bool retain) {}
 bool clearcast_direct_video_uri_allowed(const char *uri) {
 #ifdef CLEARCAST_HTTP_INPUT_FIXTURE

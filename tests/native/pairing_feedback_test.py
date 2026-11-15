@@ -48,8 +48,11 @@ def challenge():
 def unknown_key_probe():
     key = raw_public(ed25519.Ed25519PrivateKey.generate().public_key())
     with connect() as sock:
-        request(sock, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + key,
-                content_type='application/octet-stream', expected=470)
+        # A physical iPhone only restarts PIN setup after a reply it cannot
+        # verify; a refused probe leaves it retrying a failed connection.
+        _, reply, _ = request(sock, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + key,
+                              content_type='application/octet-stream')
+        check(len(reply) == 96, 'unknown saved key receives an unverifiable handshake reply')
     events = receiver.events()
     check(len(events) == 1 and events[0] == [12, 0, 0, 0, 0],
           'unknown saved key requires authentication without a failed-PIN event')

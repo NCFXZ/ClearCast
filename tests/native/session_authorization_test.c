@@ -97,6 +97,51 @@ int main(void) {
     clearcast_session_end(&family,&owner);
     CHECK(!clearcast_session_authorize(&family,&a,NULL,peer,4,0,"family",5));
     CHECK(!clearcast_session_authorize(&family,&b,NULL,v6,16,7,"family",5));
+    // A shared signing key and session token do not merge two distinct named
+    // grants, even when each sender has established a verified transport.
+    clearcast_session_policy named = {0};
+    a = (clearcast_session_link){0}; b = (clearcast_session_link){0};
+    CHECK(clearcast_session_authorize(&named,&a,key,peer,4,0,"shared-token",1));
+    CHECK(clearcast_session_authorize(&named,&b,key,different_peer,4,0,"shared-token",1));
+    clearcast_session_grant *first_named = clearcast_session_lookup(&named,a);
+    clearcast_session_grant *second_named = clearcast_session_lookup(&named,b);
+    CHECK(first_named && second_named && first_named != second_named);
+    first_named->name_bound = second_named->name_bound = true;
+    strcpy(first_named->name,"Fixture Phone A");
+    strcpy(second_named->name,"Fixture Phone B");
+    CHECK(!clearcast_session_same_owner(&named,a,b,"shared-token"));
+    strcpy(second_named->name,"Fixture Phone A");
+    CHECK(clearcast_session_same_owner(&named,a,b,"shared-token"));
+    second_named->name_bound = false;
+    CHECK(!clearcast_session_same_owner(&named,a,b,"shared-token"));
+    second_named->name_bound = true; first_named->name_bound = false;
+    CHECK(!clearcast_session_same_owner(&named,a,b,"shared-token"));
+    clearcast_session_policy named_end = {0};
+    a = (clearcast_session_link){0}; b = (clearcast_session_link){0};
+    clearcast_session_link same_name_v6 = {0};
+    CHECK(clearcast_session_authorize(&named_end,&a,key,peer,4,0,"shared-end",1));
+    CHECK(clearcast_session_authorize(&named_end,&b,key,different_peer,4,0,"shared-end",1));
+    CHECK(clearcast_session_authorize(&named_end,&same_name_v6,key,v6,16,7,"shared-end",1));
+    first_named = clearcast_session_lookup(&named_end,a);
+    second_named = clearcast_session_lookup(&named_end,b);
+    clearcast_session_grant *family_named = clearcast_session_lookup(&named_end,same_name_v6);
+    first_named->name_bound = second_named->name_bound = family_named->name_bound = true;
+    strcpy(first_named->name,"Fixture Phone A");
+    strcpy(second_named->name,"Fixture Phone B");
+    strcpy(family_named->name,"Fixture Phone A");
+    first_named->active = true;
+    owner = a;
+    clearcast_session_link ended_owner = a, other_name_idle = b, same_name_idle = same_name_v6;
+    clearcast_session_close(&named_end,&a,2);
+    clearcast_session_close(&named_end,&b,2);
+    clearcast_session_close(&named_end,&same_name_v6,2);
+    clearcast_session_end(&named_end,&owner);
+    CHECK(!clearcast_session_lookup(&named_end,ended_owner));
+    CHECK(!clearcast_session_lookup(&named_end,same_name_idle));
+    CHECK(clearcast_session_lookup(&named_end,other_name_idle) &&
+        !strcmp(clearcast_session_lookup(&named_end,other_name_idle)->name,"Fixture Phone B"));
+    CHECK(clearcast_session_authorize(&named_end,&b,NULL,different_peer,4,0,"shared-end",3));
+    CHECK(!clearcast_session_authorize(&named_end,&same_name_v6,NULL,v6,16,7,"shared-end",3));
     printf("%u session authorization checks passed\n",checks);
     return 0;
 }

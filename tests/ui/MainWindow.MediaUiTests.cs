@@ -666,10 +666,11 @@ public sealed partial class MainWindow
         double preparationMilliseconds = sceneChangeWatch.Elapsed.TotalMilliseconds;
         MusicBackground.PauseFlowClockForTest(true);
         await Task.Delay(MusicBackdrop.VideoTransitionMilliseconds / 3);
-        UiCheck(!transition.IsCompleted && MusicBackground.IsVideoTransitioning && MusicBackground.Palette == oldPalette,
-            "an abrupt video scene change retains the previous base palette while crossfading");
+        UiCheck(transition.IsCompletedSuccessfully && MusicBackground.IsVideoTransitioning,
+            "video publication completes while its GPU crossfade continues, leaving the next sample unblocked");
         var duringCut = await Task.Run(() => UiCaptureOwnedWindow(ownedWindow));
         await transition;
+        await Task.Delay(MusicBackdrop.VideoTransitionMilliseconds + 50);
         UiCheck(!MusicBackground.IsVideoTransitioning && MusicBackground.Palette != oldPalette && MusicBackground.HasArtworkFlow,
             "video scene transition finishes without dropping the shared flowing texture set");
         var afterCut = await Task.Run(() => UiCaptureOwnedWindow(ownedWindow));
@@ -702,17 +703,43 @@ public sealed partial class MainWindow
         await UiSaveCompositorFrameAsync(output, "video-cut-after", afterCut);
         MusicBackground.PauseFlowClockForTest(false);
         var timings = new List<double>();
+        int bitmapCreations = MusicBackground.UiVideoBitmapCreations;
         for (int index = 0; index < 12; ++index)
         {
             var updateWatch = Stopwatch.StartNew();
             await MusicBackground.SetVideoFrameAsync(Frame((byte)(40 + index * 12), 95, (byte)(220 - index * 12)), dark);
             timings.Add(updateWatch.Elapsed.TotalMilliseconds);
         }
-        UiCheck(MusicBackground.TextureFrameCount == 1 && timings.Max() <= 250,
-            "video updates reuse the shared warp renderer with one texture and finish within 250 ms on this host");
+        UiCheck(MusicBackground.TextureFrameCount == 1 && timings.Average() < 50 && timings.Count(value => value < 100) >= 10,
+            "video preparation and publication are no longer limited by the 100 ms visual transition");
+        UiCheck(bitmapCreations == 2 && MusicBackground.UiVideoBitmapCreations == bitmapCreations && MusicBackground.IsVideoTransitioning,
+            "continuous video samples reuse two bitmaps and can replace a target before its fade completes");
         _uiTestLayouts.Add(new { phase = "video backdrop update latency", samples = timings,
             meanMilliseconds = timings.Average(), maximumMilliseconds = timings.Max(),
             transitionMilliseconds = MusicBackdrop.VideoTransitionMilliseconds });
+        var streamedColors = new List<double[]>();
+        int interruptedFades = 0;
+        for (int index = 0; index < 12; ++index)
+        {
+            if (MusicBackground.IsVideoTransitioning) interruptedFades++;
+            await MusicBackground.SetVideoFrameAsync(Frame((byte)(210 - index * 14), 85, (byte)(40 + index * 14)), dark);
+            await Task.Delay(33);
+            streamedColors.Add(Mean(await Task.Run(() => UiCaptureOwnedWindow(ownedWindow))));
+        }
+        double[] changes = streamedColors.Zip(streamedColors.Skip(1), (left, right) =>
+            Enumerable.Range(0, 3).Sum(channel => Math.Abs(left[channel] - right[channel]))).ToArray();
+        bool streamingCaptured = changes.Count(value => value > 0.1) >= 9;
+        UiCheck(interruptedFades >= 10 && MusicBackground.UiVideoBitmapCreations == bitmapCreations,
+            "paced streaming updates continue through unfinished fades without allocating new bitmaps");
+        _uiTestLayouts.Add(new { phase = "video backdrop streaming continuity", status = streamingCaptured ? "captured" : "unsupported",
+            colors = streamedColors, changes, interruptedFades, bitmapCreations,
+            limitation = "Owned-window samples establish changing colors during interrupted fades, not physical display FPS." });
+        MusicBackground.CancelPendingImageWork();
+        UiCheck(!MusicBackground.IsVideoTransitioning && MusicBackground.HasArtworkFlow,
+            "logical video stop cancels its fade while retaining the last owned frame");
+        await MusicBackground.SetVideoFrameAsync(_videoBackdropPixels, dark, false);
+        UiCheck(!MusicBackground.IsVideoTransitioning,
+            "disabled motion publishes a video sample without leaving a running fade");
         await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
         UiCheckAppWideMusicBackdrop("video settings");
         await UiCaptureAsync(output, "video-background-settings");
@@ -1739,6 +1766,81 @@ public sealed partial class MainWindow
         }
     }
 
+    private async Task UiTestSavedPairingListAsync(string output)
+    {
+        UiCheck(UiTestsAreConfigured() && _receiver is null && !_hasVideo,
+            "saved-device list uses marked disposable state and a stopped receiver");
+        string path = Path.Combine(_root, ".clearcast-state", "clients.txt");
+        byte[]? original = File.Exists(path) ? await File.ReadAllBytesAsync(path) : null;
+        string identityPath = Path.Combine(_root, ".clearcast-state", "receiver.pem");
+        byte[]? receiverIdentity = File.Exists(identityPath) ? await File.ReadAllBytesAsync(identityPath) : null;
+        bool english = Texts.IsEnglish, expanded = PairingExpander.IsExpanded;
+        object? selection = MainNavigation.SelectedItem;
+        string Key(int shift) => Convert.ToBase64String(Enumerable.Range(0, 32).Select(i => (byte)(i + shift)).ToArray());
+        string shared = Key(0), independent = Key(1), unnamed = Key(2);
+        try
+        {
+            string first = shared + ",date,shared-client,Fixture Phone A\n";
+            await File.WriteAllTextAsync(path, shared + "\n" + first + shared + ",date,shared-client,Fixture Phone B\n" + first +
+                independent + ",date,other-client,Fixture Phone A\n" + unnamed + "\n");
+            await UiNavigateAsync(SettingsNavigationItem, SettingsPage);
+            PairingExpander.IsExpanded = true;
+            var scroll = UiDescendants<ScrollViewer>(SettingsPage).First();
+            foreach (bool useEnglish in new[] { false, true })
+            {
+                Texts.SetEnglish(useEnglish);
+                RefreshDynamicText();
+                RefreshSavedPairings();
+                await UiWaitForStableLayout(PairingDeviceList);
+                scroll.ChangeView(null, double.MaxValue, null, true);
+                await Task.Delay(150);
+                var rows = PairingDeviceList.Items.Cast<PairingDeviceRow>().ToArray();
+                UiCheck(rows.Length == 4 && rows.Count(row => row.Id == shared) == 2 &&
+                    rows.Any(row => row.Name == "Fixture Phone B") && rows.Count(row => row.Name.StartsWith("Fixture Phone A (")) == 2 &&
+                    rows.Any(row => row.Name == Texts.UnnamedPairing),
+                    "shared-key names, duplicate names and an unnamed device all remain separate list rows " + useEnglish);
+                UiCheck(rows.Count(row => row.SavedName == "Fixture Phone A") == 2 &&
+                    rows.Where(row => row.Name.StartsWith("Fixture Phone A (")).All(row => row.SavedName == "Fixture Phone A") &&
+                    rows.Single(row => row.Id == unnamed).SavedName is null,
+                    "saved-device identities retain raw names independently of duplicate suffixes and localized unnamed labels " + useEnglish);
+                var buttons = UiDescendants<Button>(PairingDeviceList).Where(button => button.DataContext is PairingDeviceRow).ToArray();
+                UiCheck(buttons.Length == 4 && buttons.All(button => button.ActualHeight >= 32) &&
+                    buttons.Select(button => UiMeasure(button).Y).Distinct().Count() == 4,
+                    "every saved-device row has a separate arranged delete action " + useEnglish);
+                string warning = PairingRemovalMessage(shared, "Fixture Phone A (1)");
+                string retainedMessage = useEnglish ? "Pairing records for other devices will be kept." : "其他设备的配对记录将保留。";
+                UiCheck(warning.Contains("Fixture Phone A (1)") && warning.Contains(retainedMessage) &&
+                    PairingRemovalMessage(independent, "Fixture Phone A (2)").Contains(retainedMessage) &&
+                    !PairingRemovalMessage(null, null).Contains(retainedMessage),
+                    "localized single-device removal confirmation retains other records while clear-all remains distinct " + useEnglish);
+                await UiCaptureAsync(output, "saved-pairings-" + (useEnglish ? "en" : "zh"));
+            }
+            var selected = PairingDeviceList.Items.Cast<PairingDeviceRow>().Single(row => row.Id == shared && row.SavedName == "Fixture Phone A");
+            UiCheck(selected.Name == "Fixture Phone A (1)", "selected duplicate-name row has a display suffix distinct from its saved name");
+            AirPlayReceiver.RemovePairing(_root, selected.Id, selected.SavedName);
+            RefreshSavedPairings();
+            var remaining = PairingDeviceList.Items.Cast<PairingDeviceRow>().ToArray();
+            UiCheck(remaining.Length == 3 && remaining.Single(row => row.Id == shared).SavedName == "Fixture Phone B" &&
+                remaining.Single(row => row.Id == independent).SavedName == "Fixture Phone A" &&
+                remaining.Single(row => row.Id == unnamed).SavedName is null,
+                "tuple removal refresh keeps the other shared-key device, a same-label device on another key and the unnamed device");
+            UiCheck(File.Exists(identityPath) == (receiverIdentity is not null) &&
+                (receiverIdentity is null || (await File.ReadAllBytesAsync(identityPath)).SequenceEqual(receiverIdentity)),
+                "independent saved-device removal preserves the receiver identity across list refresh");
+            await UiCaptureAsync(output, "saved-pairings-after-remove");
+        }
+        finally
+        {
+            if (original is not null) await File.WriteAllBytesAsync(path, original);
+            else File.Delete(path);
+            Texts.SetEnglish(english);
+            RefreshDynamicText();
+            RefreshSavedPairings();
+            PairingExpander.IsExpanded = expanded;
+            MainNavigation.SelectedItem = selection;
+        }
+    }
+
     private async Task UiTestRenderingBackpressureAsync()
     {
         await UiWaitUntil(() => !_videoHostUpdateQueued, "prior video layout request settles");
@@ -1868,10 +1970,8 @@ public sealed partial class MainWindow
         try
         {
             await UiWaitUntil(() => backdrop.IsLoaded, "GPU-retirement fixture loads");
-            var pixels = new byte[ReceiverVideoFrame.ByteCount];
-            for (int pixel = 0; pixel < pixels.Length; pixel += 4)
-            { pixels[pixel] = 220; pixels[pixel + 1] = 70; pixels[pixel + 2] = 30; pixels[pixel + 3] = 255; }
-            await backdrop.SetVideoFrameAsync(pixels, false, false);
+            byte[] artwork = await UiCreateRhythmArtworkAsync();
+            await backdrop.SetArtworkAsync(artwork, false);
             backdrop.UiBeforeResourceCommitAsync = async () =>
             {
                 fenceEntered.TrySetResult();
@@ -1879,10 +1979,10 @@ public sealed partial class MainWindow
                 // compositor, without force-releasing any in-use COM objects.
                 await releaseFence.Task;
             };
-            Task replacement = backdrop.SetVideoFrameAsync(pixels, true, false);
+            Task replacement = backdrop.SetArtworkAsync(artwork, true);
             await fenceEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Task latest = replacement;
-            for (int sample = 0; sample < 5000; sample++) latest = backdrop.SetVideoFrameAsync(pixels, false, false);
+            for (int sample = 0; sample < 5000; sample++) latest = backdrop.SetArtworkAsync(artwork, false);
             UiCheck(backdrop.UiFlowGroupsCreated == 2 && backdrop.UiRetainedFlowGroups == 2 && backdrop.UiImagePending,
                 "a stalled GPU retirement admits no additional flow groups during a five-thousand-frame burst");
             backdrop.CancelPendingImageWork();

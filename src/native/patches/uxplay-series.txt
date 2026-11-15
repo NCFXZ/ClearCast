@@ -25,3 +25,4 @@ uxplay-input-safety.patch
 uxplay-session-authorization.patch
 uxplay-interface-scope.patch
 uxplay-media-cleanup.patch
+uxplay-named-pairing.patch

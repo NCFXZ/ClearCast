@@ -52,8 +52,19 @@ try:
         verify_pairing(returning, private, server_ed)
     with connect() as unknown:
         unknown_ed = raw_public(ed25519.Ed25519PrivateKey.generate().public_key())
-        request(unknown, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + unknown_ed,
+        # The probe gets a reply it cannot verify, which sends a physical
+        # iPhone back to PIN setup; the unknown key itself is never verified.
+        _, first, _ = request(unknown, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + unknown_ed,
+                              content_type='application/octet-stream')
+        _, second, _ = request(unknown, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + unknown_ed,
+                               content_type='application/octet-stream')
+        assert len(first) == 96 and len(second) == 96 and first != second, 'Unknown-key replies must be random'
+        request(unknown, '/pair-verify', b'\0\0\0\0' + bytes(64),
                 content_type='application/octet-stream', expected=470)
+    with connect() as unknown:
+        request(unknown, '/pair-verify', b'\1\0\0\0' + bytes(range(32)) + unknown_ed,
+                content_type='application/octet-stream')
+        request(unknown, '/unknown-key', method='SETUP', expected=401)
 
     receiver.stop()
     receiver.start()

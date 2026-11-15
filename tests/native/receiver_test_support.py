@@ -55,8 +55,10 @@ def connect(source=None, timeout=5, host='127.0.0.1'):
 
 
 def request(sock, path, body=b'', method='POST', content_type=None, expected=200,
-            lowercase=False):
+            lowercase=False, headers=None):
     fields = {'CSeq': '1', 'Content-Length': str(len(body))}
+    if headers:
+        fields.update(headers)
     if content_type:
         fields['Content-Type'] = content_type
     header = f'{method} {path} RTSP/1.0\r\n'
@@ -163,11 +165,14 @@ class Receiver:
         pending = self.events()
         return str(next(e[1] for e in pending if e[0] == 6)).zfill(4)
 
-    def pair(self, sock, pin=None, private=None, username='AA:BB:CC:DD:EE:FF', lowercase=False):
+    def pair(self, sock, pin=None, private=None, username='AA:BB:CC:DD:EE:FF', lowercase=False,
+             after_challenge=None):
         if pin is None:
             pin = self.challenge()
         challenge = plist_request(sock, {'method': 'pin', 'user': username},
                                   lowercase=lowercase)
+        if after_challenge:
+            after_challenge()
         salt, B = challenge['salt'], int.from_bytes(challenge['pk'], 'big')
         a = secrets.randbits(256)
         A = pow(2, a, N)
@@ -193,11 +198,16 @@ class Receiver:
         return private, server_ed
 
 
-def verify_pairing(sock, private, server_ed, corrupt=False):
+def verify_pairing(sock, private, server_ed, corrupt=False, name=None, expected=200, session=None):
+    headers = {}
+    if name is not None:
+        headers['X-Apple-Client-Name'] = name
+    if session is not None:
+        headers['X-Apple-Session-ID'] = session
     ephemeral = x25519.X25519PrivateKey.generate()
     client_ecdh = raw_public(ephemeral.public_key())
     _, reply, _ = request(sock, '/pair-verify', b'\1\0\0\0' + client_ecdh +
-                         raw_public(private.public_key()), content_type='application/octet-stream')
+                         raw_public(private.public_key()), content_type='application/octet-stream', headers=headers)
     shared = ephemeral.exchange(x25519.X25519PublicKey.from_public_bytes(reply[:32]))
     key = hashlib.sha512(b'Pair-Verify-AES-Key' + shared).digest()[:16]
     iv = hashlib.sha512(b'Pair-Verify-AES-IV' + shared).digest()[:16]
@@ -209,4 +219,4 @@ def verify_pairing(sock, private, server_ed, corrupt=False):
         signature[0] ^= 1
     body = b'\0\0\0\0' + cipher.update(bytes(signature))
     return request(sock, '/pair-verify', body, content_type='application/octet-stream',
-                   expected=470 if corrupt else 200)
+                   expected=470 if corrupt else expected, headers=headers)

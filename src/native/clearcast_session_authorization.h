@@ -17,6 +17,8 @@ typedef struct {
     uint64_t generation, closed;
     bool active;
     char session[129];
+    bool name_bound;
+    char name[513];
 } clearcast_session_grant;
 typedef struct {
     clearcast_session_grant grants[CLEARCAST_SESSION_LIMIT];
@@ -103,7 +105,8 @@ static bool clearcast_session_same_owner(clearcast_session_policy *policy,
     clearcast_session_grant *a = clearcast_session_lookup(policy, owner);
     clearcast_session_grant *b = clearcast_session_lookup(policy, candidate);
     return a && b && session && !strcmp(a->session, session) && !strcmp(b->session, session) &&
-        !memcmp(a->key, b->key, 32);
+        !memcmp(a->key, b->key, 32) && a->name_bound == b->name_bound &&
+        (!a->name_bound || !strcmp(a->name, b->name));
 }
 static void clearcast_session_close(clearcast_session_policy *policy, clearcast_session_link *link,
     uint64_t now) {
@@ -114,17 +117,20 @@ static void clearcast_session_close(clearcast_session_policy *policy, clearcast_
 static void clearcast_session_end(clearcast_session_policy *policy, clearcast_session_link *owner) {
     clearcast_session_grant *grant = clearcast_session_lookup(policy, *owner);
     if (grant) {
-        unsigned char key[32]; char session[129];
+        unsigned char key[32]; char session[129], name[513];
+        const bool name_bound = grant->name_bound;
         memcpy(key, grant->key, sizeof(key));
         memcpy(session, grant->session, sizeof(session));
+        memcpy(name, grant->name, sizeof(name));
         grant->active = false;
         // One device/session can use both IPv4 and IPv6 transports. Ending its
         // owner also revokes idle sibling grants, without clearing a different
-        // grant that already became active during an ownership handoff.
+        // named device or a grant already active during an ownership handoff.
         for (unsigned i = 0; i < CLEARCAST_SESSION_LIMIT; ++i) {
             grant = &policy->grants[i];
             if (grant->generation && !grant->references && !grant->active &&
-                !memcmp(grant->key, key, sizeof(key)) && !strcmp(grant->session, session))
+                !memcmp(grant->key, key, sizeof(key)) && !strcmp(grant->session, session) &&
+                grant->name_bound == name_bound && (!name_bound || !strcmp(grant->name, name)))
                 memset(grant, 0, sizeof(*grant));
         }
     }

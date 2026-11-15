@@ -1077,6 +1077,22 @@ public sealed partial class MainWindow
                 receiverStopped = true;
                 if (Environment.GetEnvironmentVariable("CLEARCAST_UI_LYRICS_STRESS") is { Length: > 0 } lyricsStress)
                 {
+                    if (lyricsStress == "pairings")
+                    {
+                        await UiTestPairingReadRecoveryAsync();
+                        await UiTestSavedPairingListAsync(output);
+                        object? previousLanguage = LanguageButton.SelectedItem;
+                        try
+                        {
+                            foreach (var language in new[] { ChineseLanguageItem, EnglishLanguageItem })
+                            {
+                                LanguageButton.SelectedItem = language;
+                                await UiTestConnectionStatusAsync();
+                            }
+                        }
+                        finally { LanguageButton.SelectedItem = previousLanguage; }
+                        return;
+                    }
                     if (lyricsStress == "preferences")
                     {
                         await UiTestPlaybackPreferencesAsync(output);
@@ -1170,6 +1186,7 @@ public sealed partial class MainWindow
                 await UiTestMusicArtworkBackpressureAsync();
                 await UiTestReceiverNetworkChangesAsync();
                 await UiTestPairingReadRecoveryAsync();
+                await UiTestSavedPairingListAsync(output);
                 return;
             }
             if (Environment.GetEnvironmentVariable("CLEARCAST_UI_DIAGNOSTICS_ONLY") == "1")
@@ -1197,6 +1214,7 @@ public sealed partial class MainWindow
             await UiTestMusicArtworkBackpressureAsync();
             await UiTestReceiverNetworkChangesAsync();
             await UiTestPairingReadRecoveryAsync();
+            await UiTestSavedPairingListAsync(output);
             await UiTestFrameworkErrorLanguageAsync();
             await UiTestFrameworkScrollBarLanguageAsync();
             // Keep artwork decode and intentional landing-view pauses outside
