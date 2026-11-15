@@ -76,7 +76,9 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         with zipfile.ZipFile(baseline, 'w'):
             pass
         additions = {}
-        notices.controlled_source_archive(component, baseline, self.work, additions)
+        record = notices.controlled_source_archive(component, baseline, self.work, additions)
+        self.assertEqual(record, {'member': 'libplist/' + source.name,
+                                 'sha256': component['sourceSha256'], 'location': 'additional'})
         self.assertEqual(additions['libplist/' + source.name]['sha256'], component['sourceSha256'])
         source.write_bytes(b'tampered')
         with self.assertRaisesRegex(ValueError, 'source archive'):
@@ -89,7 +91,8 @@ class RuntimeNoticeBoundaries(unittest.TestCase):
         with zipfile.ZipFile(baseline, 'w') as archive:
             archive.writestr('libplist/source.tar.bz2', b'expected')
         additions = {}
-        notices.controlled_source_archive(component, baseline, self.work, additions)
+        record = notices.controlled_source_archive(component, baseline, self.work, additions)
+        self.assertEqual(record['location'], 'baseline')
         self.assertEqual(additions, {})
         component['sourceSha256'] = '0' * 64
         with self.assertRaisesRegex(ValueError, 'source archive mismatch'):

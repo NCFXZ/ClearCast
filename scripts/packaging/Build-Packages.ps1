@@ -234,11 +234,23 @@ if (-not $PreflightFixture) {
             $record.pkgbuildSha256 -match '^[A-Fa-f0-9]{64}$'
         $httpSource = $source.Name -ceq 'gstreamer/gst-plugins-good-1.28.9.tar.xz' -and $record.sha256 -eq $httpSourceHash
         $parserSource = $source.Name -ceq 'gstreamer/gst-plugins-bad-1.28.9.tar.xz' -and $record.sha256 -eq $sourceHash
-        if ((-not $msysSource -and -not $httpSource -and -not $parserSource) -or
+        $libplistSource = $source.Name -ceq 'libplist/libplist-2.8.1.tar.bz2' -and
+            $record.sha256 -eq '2a1792e5820e1657c173735fde75baeebd6dd967d2ac47be1e3891ddc64ebefa'
+        if ((-not $msysSource -and -not $httpSource -and -not $parserSource -and -not $libplistSource) -or
             $record.sha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
             [IO.Path]::GetFileName($record.path) -ne [IO.Path]::GetFileName($source.Name) -or
             -not (Test-Path -LiteralPath $record.path -PathType Leaf) -or (Get-FileHash -LiteralPath $record.path).Hash -ne $record.sha256) {
             throw 'An exact additional source archive is missing or does not match source coverage.'
+        }
+    }
+    foreach ($component in $dependencies.components) {
+        $source = $coverage.controlledSources.($component.name)
+        $member = $component.name + '/' + [IO.Path]::GetFileName($component.sourceUrl)
+        if ($source.member -cne $member -or $source.sha256 -ne $component.sourceSha256 -or
+            $source.location -notin @('baseline', 'additional') -or
+            ($source.location -eq 'additional' -and
+                $coverage.additionalSources.($member).sha256 -ne $source.sha256)) {
+            throw 'Source coverage does not bind the exact controlled dependency source archive.'
         }
     }
     if ($coverage.httpSource.sha256 -ne $httpSourceHash -or

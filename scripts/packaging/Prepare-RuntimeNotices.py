@@ -52,11 +52,12 @@ def controlled_source_archive(component, baseline, additional_directory, additio
                 actual = hashlib.file_digest(stream, 'sha256').hexdigest()
             if actual != expected:
                 raise ValueError('Baseline controlled source archive mismatch: ' + member)
-            return
+            return {'member': member, 'sha256': expected, 'location': 'baseline'}
     source = additional_directory / filename
     if not source.is_file() or file_sha(source) != expected:
         raise ValueError('Missing or mismatched exact controlled source archive: ' + member)
     additions[member] = {'path': str(source.resolve()), 'sha256': expected}
+    return {'member': member, 'sha256': expected, 'location': 'additional'}
 
 
 def safe_relative(value):
@@ -437,6 +438,7 @@ def main():
     if dependencies.get('schemaVersion') != 1 or sorted(item.get('name', '') for item in dependencies.get('components', [])) != ['libplist', 'openssl']:
         raise ValueError('Controlled components must identify libplist and OpenSSL exactly once.')
     controlled = []
+    controlled_sources = {}
     for component in dependencies['components']:
         expected_version = {'libplist': '2.8.1', 'openssl': '3.5.9'}[component['name']]
         allowed_files = {'libplist': {'libplist-2.0.dll'}, 'openssl': {'libcrypto-3-x64.dll', 'libssl-3-x64.dll'}}[component['name']]
@@ -450,7 +452,8 @@ def main():
         for key in ['version', 'sourceUrl', 'sourceSha256']:
             if manifest[key].lower() != component[key].lower():
                 raise ValueError('Controlled provenance mismatch: ' + component['name'])
-        controlled_source_archive(component, args.base, args.additional_source_directory, additions)
+        controlled_sources[component['name']] = controlled_source_archive(
+            component, args.base, args.additional_source_directory, additions)
         for file in component['files']:
             if file_sha(args.runtime_directory / file['relativePath']) != file['sha256'].lower():
                 raise ValueError('Controlled binary mismatch.')
@@ -517,6 +520,7 @@ def main():
     result = {'noticeDirectory': str(output), 'msysPackageCount': len(grouped), 'fileCount': len(records),
               'peFileCount': sum(Path(item['relativePath']).suffix.lower() in {'.dll', '.exe'} for item in records),
               'baselineSha256': args.base_sha256.lower(), 'additionalSources': additions,
+              'controlledSources': controlled_sources,
               'httpSource': http_source,
               'parserSource': parser_source,
               'dotnetRuntime': {'version': runtime_version, 'runtimeconfigSha256': file_sha(args.app_runtimeconfig),

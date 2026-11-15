@@ -42,6 +42,11 @@ try {
     Reject 'Stale inventory text rejected' { [IO.File]::AppendAllText($inventory, "`nSTALE FIXTURE") } { [IO.File]::WriteAllBytes($inventory, $originalInventory) } '*Source coverage does not match*'
     $coverage = Join-Path $fixture 'source-coverage.json'
     $originalCoverage = [IO.File]::ReadAllBytes($coverage)
+    Reject 'Missing controlled source binding rejected' {
+        $value = Get-Content -LiteralPath $coverage -Raw | ConvertFrom-Json
+        $value.PSObject.Properties.Remove('controlledSources')
+        $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $coverage
+    } { [IO.File]::WriteAllBytes($coverage, $originalCoverage) } '*controlled dependency source archive*'
     Reject 'Empty source coverage rejected' { [IO.File]::WriteAllText($coverage, '{}') } { [IO.File]::WriteAllBytes($coverage, $originalCoverage) } '*Source coverage does not match*'
     Reject 'Wrong covered file count rejected' {
         $value = Get-Content -LiteralPath $coverage -Raw | ConvertFrom-Json
